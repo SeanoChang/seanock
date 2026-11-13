@@ -1037,3 +1037,93 @@ changes it.
   `sed`.
 - The real installer against a live home folder. `tests/test_install_manifest.py`
   runs it in a temp dir only.
+
+## Floor guard (`config/claude/hooks/floor-guard.py`, 2026-11-13)
+
+### By design
+
+- **It reads names, not runner settings.** A path with a test name counts as
+  collected, unless a folder on it starts with a dot or is `node_modules`. The
+  guard does not read `testpaths`, ignore patterns, or `collect_ignore`, so a
+  change to those settings is not seen.
+- **Some default rules of runners are not known to it.** Each of these moves
+  stops the test running and gives no finding: `tests/test_a.py` to
+  `build/test_a.py` or `venv/test_a.py` (pytest skips those folders);
+  `pkg/x_test.go` to `pkg/_old/x_test.go` or `pkg/testdata/x_test.go` (the go
+  tool); `spec/models/user_spec.rb` to `lib/user_spec.rb` (RSpec reads only
+  `spec/`); `src/test/java/FooTest.java` to `src/main/java/FooTest.java`
+  (Maven); `src/a.test.ts` to `dist/a.test.ts` (Vitest).
+- **A file that is a test only by its folder cannot move quietly.** A helper
+  or a fixture moved from one test folder to another is reported as
+  `test-moved-out`. The guard cannot tell whether a runner still collects it.
+- **An empty test file that is deleted is reported.** So is one of two test
+  files with the same bytes.
+- **A code file with a skip marker that moves to a test path is not
+  reported.** Both paths are code, and no test stops running.
+- **It checks the working tree, not `HEAD`.** A test removed from the commit
+  but left on disk as an untracked file reads as present.
+- **A weakened assertion that keeps the count is not seen.** Neither is an
+  assertion that is commented out, or a test renamed and edited in one step:
+  that one reports as `deleted-test`.
+- **A default base that is there but broken ends the run.** With no `--base`,
+  the base is the first of `origin/dev`, `develop`, `development`,
+  `integration`, `main`, `master` that is there. When that ref names no commit
+  (a lost object, a damaged ref file, a symbolic ref that points nowhere), the
+  guard exits 2. It does not go on to the next name, because that would
+  compare with the wrong base. Finding the default base needs git 2.43 or
+  later (`show-ref --exists`); with an older git, pass `--base`.
+- **An untracked twin of a tracked file is left out.** On a disk that takes
+  two spellings of a name as one file, git can list a tracked file twice. The
+  guard drops the second entry only when it is the same file on disk (device
+  and inode) and the names differ only in letter case or Unicode form. An
+  untracked hard link under any other name is a copy, and is read.
+
+### Minor
+
+- **Some spellings of a weakened workflow step are not matched:**
+  `continue-on-error: ${{ true }}`, `continue-on-error: "true"`, `|| exit 0`,
+  and `||` with `true` on the next line.
+- **A workflow file whose extension is `.YML` is not treated as a workflow.**
+  Whether GitHub runs such a file was not checked.
+- **Markers match with exact letter case,** so `# NOQA` is missed.
+- **A file with CR-only line ends is read as one line.** A second marker line
+  added to it is missed.
+- **A case-only rename made with plain `mv` reads as clean** on a disk that
+  ignores letter case. The index still holds the old name, and git commits
+  nothing for it.
+- **A file named `test`, `tests` or `spec` counts as a test by its own
+  name,** so deleting `scripts/test` is reported.
+- **Any warning from git ends the run with exit 2.** A machine whose git
+  always warns (a config file it cannot read) gets no result until that is
+  fixed. A repo can do the same to itself: a committed `.gitignore` that is a
+  symlink makes git warn on every run.
+- **The answer "no such ref" is read by its exact words.** The guard takes a
+  default ref as not there only when git exits 2 and prints
+  `error: reference does not exist` and nothing more. A git release that
+  words this in another way makes every run with no `--base` exit 2 until the
+  guard is updated.
+- **A default ref whose file is a symlink to nothing reads as not there.**
+  Git itself reports that ref as missing, so the guard goes on to the next
+  name. Only a damaged `.git` folder holds such a file.
+- **Time and memory grow with the tree.** A tree of 20,000 files with one
+  200 MB source file took 60 s and 1.2 GB.
+
+### Not tested
+
+- Linux. The tests ran on macOS only, and CI runs on macOS only.
+- **The inode half of the twin rule has no test in CI.** Its one test needs a
+  disk that keeps letter case apart: an untracked `A.py` beside a tracked
+  `a.py` is its own file. On the CI disk the test is skipped. It ran once by
+  hand on a case-sensitive APFS image (2026-11-13): all 183 tests passed
+  there, and the test failed when the inode check was removed. On a disk that
+  ignores letter case the inode check cannot change a result.
+- A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`, and a real
+  git older than 2.43 (the test uses a stand-in that rejects the option).
+- Refs kept in the reftable format, and a broken entry in `packed-refs`. The
+  broken-ref tests write loose ref files. Both ended with exit 2 in a review
+  by hand, and have no test.
+- Sparse checkouts and Git LFS pointers. These show as deletions or changes.
+- That `GIT_OPTIONAL_LOCKS=0` is needed. The test that nothing is written
+  passes without it.
+- Replace refs, a full disk, and a signal sent to git while it runs, except
+  during the lookup of the default base, which is tested.

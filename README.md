@@ -97,7 +97,12 @@ names its model and effort.
 in `CLAUDE.md`. `visual-artifacts-route.sh` points a request for a page at the
 right skill. `second-brain-log-prompt.sh` logs each prompt for 30 days.
 `second-brain-sweep.sh` is a read-only command that lists the logged questions
-when you ask for a sweep. Each hook has tests in `config/claude/hooks/tests/`.
+when you ask for a sweep. `floor-guard.py` is a command too, for a reviewer:
+it compares the working tree with the base branch and reports a change that
+lowers the quality bar, such as a deleted test, a new skip marker, a new lint
+suppression, fewer assertions, or a CI step that may now fail silently. It
+exits 0 when clean, 1 with findings, and 2 when it could not finish. Each hook
+has tests in `config/claude/hooks/tests/`.
 
 **Status line.** `statusline-command.sh` draws three lines under the prompt:
 

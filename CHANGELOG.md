@@ -4,6 +4,19 @@ One entry per release of the harness. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says what MAJOR, MINOR and PATCH
 mean. The newest entry is first.
 
+## 0.2.0 (unreleased)
+
+Added:
+
+- `floor-guard.py`, a command that flags a change that lowers the quality
+  bar. It compares the working tree with the merge base of the base branch
+  and reports six kinds of change: a deleted test, a test moved to where no
+  runner collects it, a new skip marker, a new lint or type suppression,
+  fewer assertion lines in a test file, and a workflow step that may now fail
+  silently. It exits 0 when clean, 1 with findings, and 2 when it could not
+  finish, so a run that failed never reads as clean. What it does not see is
+  in `docs/known-limits.md`.
+
 ## 0.1.0 (2026-11-13)
 
 The first release of the harness as its own repo. Before this it was part of
