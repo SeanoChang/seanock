@@ -13,7 +13,7 @@
 #       WORKER_CAST_SOURCE  needs a file that is not in the repo;
 #       COACH_LIVE          starts a live Claude session, which costs model calls;
 #       CODEX_PROMPT        needs the Codex CLI.
-# The job runs on macOS only, the system these dotfiles are for.
+# The job runs on macOS only, the system this harness is for.
 name: ci
 
 on:

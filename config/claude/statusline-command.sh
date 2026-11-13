@@ -1,9 +1,10 @@
 #!/bin/sh
-# Claude Code status line — up to three lines, TokyoNight Moon palette (same as tmux.conf §6)
-#   line 1: [ssh host]  dir │  branch* ↑↓ │ <tier icon> model <pie> effort │ vim │ style │ session
+# Claude Code status line — up to three lines, TokyoNight Moon palette (the tmux status bar uses the same)
+#   line 1: [ssh host]  dir │  branch* ↑↓ │ <tier icon> model <pie> effort │ vim │ style │ session │ vX.Y.Z
 #   line 2: usage: 󰍛 context bar │ 5h bar + reset │ 7d bar + reset
 #   line 3: prompt cache: TTL draining bar, hit ratio, misses, cold-rebuild cost
-# Test overrides: STATUSLINE_NOW (epoch), STATUSLINE_KEEPALIVE (keep-alive file).
+# Test overrides: STATUSLINE_NOW (epoch), STATUSLINE_KEEPALIVE (keep-alive file),
+# STATUSLINE_HARNESS_DIR (the folder whose release tag line 1 shows).
 # Runs under macOS /bin/sh (bash 3.2, POSIX mode): no \u escapes, so glyphs are octal UTF-8.
 input=$(cat)
 
@@ -109,6 +110,79 @@ bar() {
 line=""
 add() { [ -z "$1" ] && return; [ -n "$line" ] && line="$line$SEP"; line="$line$1"; }
 
+# This script runs git in folders it does not control: the session's working
+# folder can be any repo, and a repo that came as an archive brings its own
+# config. `git status` can start programs that this config names. Each one is
+# switched off for the calls below, and tests/test_statusline_git_safety.py
+# holds a trap for each:
+#   - a partial clone that lacks objects would fetch them through the transport
+#     its config names: no git call here may fetch;
+#   - the file monitor (core.fsmonitor);
+#   - the clean and process filters, whatever their names are. The names are
+#     read from the config, which runs nothing, and each filter is set to
+#     empty through the environment, because `-c name=value` would split a
+#     name that holds "=";
+#   - the same programs in a submodule: its working tree is not looked at. A
+#     new commit in a submodule still counts as a change.
+# Costs: no speed-up from a file monitor in a very large repo, and a file under
+# a filter that was touched but not changed can show as changed.
+export GIT_NO_LAZY_FETCH=1
+
+# A config can hold thousands of filters, or names thousands of characters
+# long. One environment entry for each would take minutes in this shell, or
+# pass the size limit of the environment. Up to these sizes the filters are
+# switched off one by one. Past them the status call is left out, so nothing
+# can run, and the tree is marked "?" for "not read". An ordinary repo has a
+# few filter keys at most.
+MAX_FILTER_KEYS=64
+MAX_FILTER_BYTES=8192
+
+# quiet_status DIR → `git status --porcelain=v2 --branch` of DIR, tracked files
+# only. For a config past the sizes above it prints the two branch lines from
+# calls that read no file content, and then "# unread".
+quiet_status() (
+  keys=$(git -C "$1" config --name-only --get-regexp \
+    '^filter\..*\.(clean|process|required)$' 2>/dev/null)
+  count=$(printf '%s\n' "$keys" | grep -c '^filter\.')
+  if [ "$count" -gt "$MAX_FILTER_KEYS" ] || [ "${#keys}" -gt "$MAX_FILTER_BYTES" ]; then
+    oid=$(git -C "$1" rev-parse --verify --quiet HEAD 2>/dev/null) || oid="(initial)"
+    head=$(git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null)
+    printf '# branch.oid %s\n# branch.head %s\n# unread\n' "$oid" "${head:-(detached)}"
+    exit 0
+  fi
+  export GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
+  n=1
+  while IFS= read -r key; do
+    case "$key" in
+      filter.*.required) value=false ;;
+      filter.*)          value= ;;
+      *)                 continue ;;
+    esac
+    export "GIT_CONFIG_KEY_$n=$key" "GIT_CONFIG_VALUE_$n=$value"
+    n=$((n + 1))
+  done <<EOF
+$keys
+EOF
+  export GIT_CONFIG_COUNT="$n"
+  git -C "$1" --no-optional-locks status --porcelain=v2 --branch -uno \
+    --ignore-submodules=dirty 2>/dev/null
+)
+
+# repo_state DIR → "branch ahead behind changed" on one line, or nothing when
+# status cannot run there (a bare repo). The branch is the short commit id for
+# a detached HEAD. changed: 0 no, 1 tracked files changed, 2 not read.
+repo_state() {
+  quiet_status "$1" | awk '
+    /^# branch.oid/  { oid = substr($3, 1, 7) }
+    /^# branch.head/ { head = $3 }
+    /^# branch.ab/   { a = substr($3, 2); b = substr($4, 2) }
+    /^[12u] /        { d = 1 }
+    /^# unread/      { d = 2 }
+    END { if (head == "") exit
+          if (head == "(detached)") head = oid
+          print head, a + 0, b + 0, d + 0 }'
+}
+
 # ── line 1: where ────────────────────────────────────────────────────────────
 [ -n "$SSH_CONNECTION" ] && add "${CYAN}${I_HOST} $(hostname -s)${RST}"
 
@@ -124,18 +198,16 @@ fi
 # git: one status call gives branch, ahead/behind, and dirty (tracked files only)
 if [ -n "$root" ]; then
   read -r branch ahead behind dirty <<EOF
-$(git -C "$cwd" --no-optional-locks status --porcelain=v2 --branch -uno 2>/dev/null | awk '
-  /^# branch.oid/  { oid = substr($3, 1, 7) }
-  /^# branch.head/ { head = $3 }
-  /^# branch.ab/   { a = substr($3, 2); b = substr($4, 2) }
-  /^[12u] /        { d = 1 }
-  END { if (head == "(detached)") head = oid; print head, a + 0, b + 0, d + 0 }')
+$(repo_state "$cwd")
 EOF
-  g="${MAGENTA}${I_BRANCH} ${branch}"
-  [ "$dirty" = 1 ] && g="$g${YELLOW}*"
-  [ "$ahead" -gt 0 ] 2>/dev/null && g="$g ${GREEN}${UP}${ahead}"
-  [ "$behind" -gt 0 ] 2>/dev/null && g="$g ${RED}${DOWN}${behind}"
-  add "$g$RST"
+  if [ -n "$branch" ]; then
+    g="${MAGENTA}${I_BRANCH} ${branch}"
+    [ "$dirty" = 1 ] && g="$g${YELLOW}*"
+    [ "$dirty" = 2 ] && g="$g${YELLOW}?"
+    [ "$ahead" -gt 0 ] 2>/dev/null && g="$g ${GREEN}${UP}${ahead}"
+    [ "$behind" -gt 0 ] 2>/dev/null && g="$g ${RED}${DOWN}${behind}"
+    add "$g$RST"
+  fi
 fi
 
 # model: icon + color by tier; effort: pie fills and warms with level
@@ -170,6 +242,39 @@ case "$output_style" in
 esac
 
 [ -n "$session_name" ] && add "${FGD}${I_TAG} ${session_name}${RST}"
+
+# harness version: the newest release tag (vX.Y.Z) that the live harness tree
+# has reached. The tree is the folder this script really lives in, so the
+# symlink in ~/.claude is followed to the repo. Marks, each one a character so
+# none depends on colour: +N commits past the tag, * tracked files changed,
+# @branch when the tree is not on main. No release tag: no segment.
+hdir=$STATUSLINE_HARNESS_DIR
+if [ -z "$hdir" ]; then
+  self=$0
+  while [ -L "$self" ]; do
+    target=$(readlink "$self")
+    case "$target" in
+      /*) self=$target ;;
+      *)  self="$(dirname "$self")/$target" ;;
+    esac
+  done
+  hdir=$(dirname "$self")
+fi
+hver=$(git -C "$hdir" --no-optional-locks describe --tags --long \
+  --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null)
+if [ -n "$hver" ]; then
+  # v1.2.3-4-gabc1234 → tag v1.2.3, 4 commits past it
+  hver=${hver%-g*}; hpast=${hver##*-}; hver=${hver%-*}
+  read -r hbranch hahead hbehind hdirty <<EOF
+$(repo_state "$hdir")
+EOF
+  h="${FGD}${hver}"
+  [ "$hpast" -gt 0 ] 2>/dev/null && h="$h${YELLOW}+${hpast}"
+  [ "$hdirty" = 1 ] && h="$h${YELLOW}*"
+  [ "$hdirty" = 2 ] && h="$h${YELLOW}?"
+  [ -n "$hbranch" ] && [ "$hbranch" != main ] && h="$h${ORANGE}@${hbranch}"
+  add "$h$RST"
+fi
 
 line1=$line
 

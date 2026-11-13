@@ -13,32 +13,11 @@
 #
 # The group name for `--only <group>` is the path segment after config/.
 
-# ── ghostty ──────────────────────────────────────────────────────────────────
-link   config/ghostty/config                 ~/.config/ghostty/config
-
-# ── tmux ─────────────────────────────────────────────────────────────────────
-link   config/tmux/tmux.conf                 ~/.config/tmux/tmux.conf
-
-# ── nvim (LazyVim) ───────────────────────────────────────────────────────────
-link   config/nvim                           ~/.config/nvim
-
-# ── mermaid theme (used by nvim snacks.image) ────────────────────────────────
-link   config/mermaid/tokyonight.json        ~/.config/mermaid/tokyonight.json
-
-# ── zsh ──────────────────────────────────────────────────────────────────────
-link   config/zsh/zshrc                      ~/.zshrc
-link   config/zsh/zprofile                   ~/.zprofile
-link   config/zsh/zshenv                     ~/.zshenv
-link   config/zsh/p10k.zsh                   ~/.p10k.zsh
-
-# ── git ──────────────────────────────────────────────────────────────────────
-link   config/git/ignore                     ~/.config/git/ignore
-copy   config/git/gitconfig.tmpl             ~/.gitconfig
-
 # ── claude code ──────────────────────────────────────────────────────────────
 link   config/claude/CLAUDE.md               ~/.claude/CLAUDE.md
 link   config/claude/settings.json.tmpl      ~/.claude/settings.json
 link   config/claude/statusline-command.sh   ~/.claude/statusline-command.sh
+merge  config/claude/agents                  ~/.claude/agents
 merge  config/claude/commands                ~/.claude/commands
 merge  config/claude/skills                  ~/.claude/skills
 merge  config/claude/hooks                   ~/.claude/hooks
