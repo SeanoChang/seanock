@@ -91,6 +91,43 @@ def test_every_part_under_config_has_a_row_or_a_reason():
     )
 
 
+def test_the_tests_write_no_bytecode_under_config(tmp_path):
+    """Two test files load a source file of config/ as a module: the AGENTS.md
+    build and the merge gate. With bytecode on, Python writes a __pycache__
+    folder beside each. The one under config/codex fails the test above, and
+    the installer would link the one under config/claude/hooks. The conftest.py
+    of each test folder turns bytecode off. This runs both loads in a copy of
+    the repo, with the caller's own switch taken away."""
+    copy = tmp_path / "repo"
+    tracked = subprocess.run(["git", "ls-files", "-z"], cwd=REPO, capture_output=True, check=True).stdout
+    for name in filter(None, tracked.decode().split("\0")):
+        source = REPO / name
+        if source.is_file():                 # a tracked file that is deleted in the work tree is not copied
+            target = copy / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+    for conftest in ("tests/conftest.py", "config/claude/hooks/tests/conftest.py"):
+        (copy / conftest).write_bytes((REPO / conftest).read_bytes())      # also before the first commit that holds them
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"}
+    # One run for each folder, as the README gives them. In one run pytest
+    # reads both conftest.py files first, and either one alone would do.
+    # Each run names one test, so that a renamed test is seen here.
+    for path, one_test in (
+        ("tests/test_codex_rules.py", "test_the_built_file_is_current"),
+        ("config/claude/hooks/tests/test_merge_gate.py", "test_an_internal_error_after_the_merge_is_seen_is_a_deny"),
+    ):
+        done = subprocess.run(
+            ["python3", "-m", "pytest", path, "-q", "-p", "no:cacheprovider", "-k", one_test],
+            cwd=copy, env=env, capture_output=True, text=True,
+        )
+        assert done.returncode == 0 and "1 passed" in done.stdout, (
+            f"the run of {one_test} in {path} did not pass with exactly one test:\n" + done.stdout + done.stderr
+        )
+    written = sorted(p.relative_to(copy).as_posix() for p in (copy / "config").rglob("__pycache__"))
+    # pytest writes this one for the conftest.py itself, before the file can turn bytecode off.
+    assert written in ([], ["config/claude/hooks/tests/__pycache__"]), f"bytecode was written under config/: {written}"
+
+
 def test_every_row_and_every_reason_names_a_real_path():
     for _, source, _ in rows():
         assert (REPO / source).exists(), f"manifest.txt names {source}, which is not there"
