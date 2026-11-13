@@ -786,6 +786,15 @@ the run may change.
   tested; if it does, this kill reaches few of them. The kill comes after
   bash has collected Codex's exit, so it trusts that the group's number was
   not given to another group in between.
+  Two additions from 2026-11-13 (the adversary, confirmed by the verifier).
+  The programs of codex-cli 0.167.1 import `setpgid`, `setsid`, `killpg` and
+  `posix_spawnattr_setpgroup` (`nm -u`), which points to tool commands in
+  groups of their own; no real run was made to show it. And the same limit
+  now holds for a run that the watchdog killed, because that run gets a count
+  too: a stand-in whose child made a group of its own gave "0 file(s)
+  changed" with exit 124, and the child wrote a file four seconds later. A
+  hung tool command is the usual cause of a kill, so read that count as "at
+  the moment of the kill".
 - **The check reads the disk, not git.** `codex-run` records each file's kind,
   size and content hash before Codex starts, keeps the record in its own
   memory, and compares after the run. Two earlier versions asked git, and git
@@ -950,17 +959,39 @@ the run may change.
     written from `codex exec --help` and from three parse errors of the real
     program (a repeated `--cd`, a repeated `--model`, `--c`). No test starts
     the real `codex` with these arguments.
-  - That model differs from the real program in one place (the verifier, a
-    nit). It takes the word after an option that needs a value as the value,
-    also when the word starts with a dash (`-o -C/tmp`). codex 0.167.1
-    refuses such a list ("a value is required"). The model lets through only
-    lists that Codex does not run, and `codex-run` refuses them anyway.
+  - That model differs from the real program in one place that lets a list
+    through (the verifier, a nit). It takes the word after an option that
+    needs a value as the value, also when the word starts with a dash
+    (`-o -C/tmp`). codex 0.167.1 refuses such a list ("a value is
+    required"). The model lets through only lists that Codex does not run,
+    and `codex-run` refuses them anyway. Its other differences make it
+    stricter than the real program: it reads a folder in `-hC/tmp` and
+    `-VC`, where Codex prints its help or version and stops, and in
+    `-xC/tmp`, where Codex stops on the unknown letter.
   - The model scan is as wide as the folder scan, and that has a cost (the
     verifier, a nit). A word that starts with `-m` counts as the caller's
     model wherever it is, also after a `--` in the codex args, where Codex
     reads it as the prompt. With `--role`, such a prompt leaves the role's
     model out, and Codex runs on the model of its own config. The folder is
     not changed by this.
+  - The folder rule misses some words in four locales (the adversary, a nit,
+    confirmed by the verifier). The scan runs in the caller's locale. Under
+    zh_TW.Big5, zh_CN.GB18030, ja_JP.SJIS and ja_JP.eucJP, bash 3.2 reads the
+    byte `C` as the second half of a two-byte character when the byte before
+    it is 0x81 or higher. So a word such as `-中C/tmp`, typed as UTF-8, is
+    not refused there (exit 0, Codex is started); under a UTF-8 locale or the
+    C locale it is refused. No folder reaches a run this way: codex 0.167.1
+    stops on such a word ("unexpected argument '-中'"), and a `C` that comes
+    after ASCII letters only, or first in the word, is seen in every locale.
+    To close it, run the scan with `LC_ALL=C`. Only bash 3.2 was tried.
+  - A last log line with no line end joins the next line of the report (the
+    adversary, a nit, there before this change). On a kill, `codex-run`
+    prints the last events with `tail` and `cut`, which add no line end. The
+    line "codex-run: the worktree is still at ..." then follows the run's own
+    text on the same line. The count line comes on a line of its own.
+  - Not tried: whether `codex exec resume` runs in the folder that was
+    stored with the session and not in the `-C` folder that `codex-run`
+    adds. Only a real run can show it.
 
 ### Tested (2026-11-11, codex-cli 0.167.0)
 
