@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# install.sh — link this repo's configs into $HOME.
+# install.sh — link this repo's harness files into ~/.claude and ~/.codex.
 #
 #   ./install.sh                 install everything
 #   ./install.sh --dry-run       print what would happen, change nothing
-#   ./install.sh --only nvim     install one group (see manifest.txt)
+#   ./install.sh --only codex    install one group (see manifest.txt)
 #   ./install.sh --force         re-render templates even when the live file drifted
 #
 # Anything it would overwrite is moved to ~/.dotfiles-backup/<timestamp>/ first.
@@ -13,6 +13,10 @@
 #
 # It never runs sudo, never touches the network, and never deletes anything —
 # files in the way are moved, not removed.
+#
+# The render and backup folders keep the names they had when the harness lived
+# in the dotfiles repo. The live settings file is a rendered copy in that
+# folder, and a new name would leave it behind.
 
 set -euo pipefail
 
@@ -30,7 +34,7 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY_RUN=1; shift ;;
     --force)   FORCE=1; shift ;;
     --only)    ONLY="${2:-}"; [ -n "$ONLY" ] || { echo "--only needs a group name" >&2; exit 2; }; shift 2 ;;
-    -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)         echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -151,7 +155,7 @@ check_drift() {
 [ -f "$MANIFEST" ] || { echo "manifest not found: $MANIFEST" >&2; exit 1; }
 
 echo
-echo "dotfiles → $HOME"
+echo "seanock → $HOME"
 [ "$DRY_RUN" -eq 1 ] && echo "${C_WARN}dry run — nothing will be changed${C_OFF}"
 [ -n "$ONLY" ]       && echo "group filter: $ONLY"
 echo
@@ -230,11 +234,7 @@ echo "$count entries processed."
 cat <<'EOF'
 
 Next steps
-  1. exec zsh                                  reload the shell
-  2. git clone https://github.com/tmux-plugins/tpm ~/.config/tmux/plugins/tpm
-     then inside tmux: prefix (C-b) + I        install tmux plugins
-  3. nvim                                      lazy.nvim bootstraps on first run
-  4. edit ~/.gitconfig                         set user.name and user.email
-  5. see README.md § Authentication            everything that needs a login
+  1. start a new Claude Code session           a running session keeps its old rules
+  2. see README.md § Requirements              the tools the hooks and the status line need
 EOF
 echo

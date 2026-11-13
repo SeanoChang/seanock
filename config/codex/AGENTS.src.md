@@ -54,7 +54,7 @@
 {{rule: second-brain}}
 <!-- adapts: verify.recurs@ae4c79d178 -->
 - When the same issue recurs, fix it at the source: a lint rule, a hook, a
-  skill, or the rules. The rules have one root in my dotfiles repo:
+  skill, or the rules. The rules have one root in my harness repo:
   `config/claude/CLAUDE.md`, with `config/codex/AGENTS.src.md` for what only
   Codex needs. This file is built from those two; never edit it by hand.
 
