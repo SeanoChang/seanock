@@ -17,6 +17,15 @@ Added:
   finish, so a run that failed never reads as clean. What it does not see is
   in `docs/known-limits.md`.
 
+Changed:
+
+- The skills `tui-design` and `ccdash-analysis` are removed. The harness
+  keeps the skills of the development cycle, and these two were for one kind
+  of product and one tool. The installer does not remove a link whose source
+  is gone, so on a machine that installed them, delete
+  `~/.claude/skills/tui-design` and `~/.claude/skills/ccdash-analysis` by
+  hand.
+
 ## 0.1.0 (2026-11-13)
 
 The first release of the harness as its own repo. Before this it was part of

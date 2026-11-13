@@ -55,7 +55,7 @@ hook. Every other step is a rule that the agent must follow.
 | Rules       | `config/claude/CLAUDE.md`             | `tests/test_global_rules.py`      |
 | Codex rules | `config/codex/AGENTS.md`              | `tests/test_codex_rules.py`       |
 | Workers     | `config/claude/agents/` (6 files)     | `tests/test_worker_roles.py`      |
-| Skills      | `config/claude/skills/` (12 folders)  | `tests/test_skill_frontmatter.py` |
+| Skills      | `config/claude/skills/` (10 folders)  | `tests/test_skill_frontmatter.py` |
 | Hooks       | `config/claude/hooks/`                | `config/claude/hooks/tests/`      |
 | Permissions | `config/claude/settings.json.tmpl`    | Not tested                        |
 | Commands    | `config/claude/commands/` (2 files)   | Not tested                        |
