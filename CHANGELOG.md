@@ -26,6 +26,19 @@ Changed:
   `~/.claude/skills/tui-design` and `~/.claude/skills/ccdash-analysis` by
   hand.
 
+Fixed:
+
+- `codex-run --worktree` refuses a folder argument in the codex args in every
+  spelling. Before, only `-C <dir>`, `--cd <dir>` and `--cd=<dir>` were seen,
+  and `-C<dir>` went on to Codex. The rule is wide on purpose: a word that
+  starts with one dash and holds a capital `C` is refused.
+- `codex-run --role` leaves the role's model out when the caller's model is
+  written as `-m<model>` or `-m=<model>`. Before, both models were sent and
+  Codex refused the run.
+- A run that the watchdog killed has its files compared with `--allow`, like
+  any other run. Before, `codex-run` ended with 124 and printed no list. The
+  code is still 124.
+
 ## 0.1.0 (2026-11-13)
 
 The first release of the harness as its own repo. Before this it was part of

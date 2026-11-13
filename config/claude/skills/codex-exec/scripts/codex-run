@@ -25,7 +25,8 @@
 #               new file and a removed file. A cache file, a file that git
 #               ignores and a file the run committed count like any other.
 #
-# exit: Codex's own exit code; 124 when the watchdog killed it; 3 when Codex
+# exit: Codex's own exit code; 124 when the watchdog killed it (with
+#       --worktree the files are still compared and listed); 3 when Codex
 #       ended well but changed a file outside --allow, changed the worktree's
 #       .git entry, left a folder that cannot be read, or the files could not
 #       be compared; 127 when codex is not on PATH or cannot be started;
@@ -80,13 +81,28 @@ if ! command -v codex >/dev/null 2>&1; then
   exit 127
 fi
 
-# What the caller already chose in the codex args.
+# What the caller already chose in the codex args. Codex refuses an option
+# that is given twice, so the role and --worktree must add none that is there.
+#
+# The folder: Codex takes it as -C or --cd. It reads a value in the same word
+# as its option (-C/dir, -C=/dir, --cd=/dir), and it reads a word of
+# one-letter options letter by letter, so a C can come after another letter
+# (-xC/dir). This script does not know every one-letter option of every Codex
+# version. So each word that starts with one dash and holds a capital C counts
+# as a folder argument, wherever it is in the list, also after a `--`. That is
+# wider than Codex's own reading on purpose: such a word that is in fact a
+# value (-oC.md) is refused with --worktree, and the message says how to write
+# it. Codex takes no shortened long option, so --cd is matched by its whole
+# name.
 has_model=0 has_effort=0 has_cd=0
 for arg in "$@"; do
   case "$arg" in
-    -m|--model|--model=*)        has_model=1 ;;
+    -m*|--model|--model=*)       has_model=1 ;;   # -m takes a value, so -mX and -m=X are the model too
     *model_reasoning_effort*)    has_effort=1 ;;
-    -C|--cd|--cd=*)              has_cd=1 ;;
+  esac
+  case "$arg" in
+    --cd|--cd=*)                 has_cd=1 ;;
+    -C*|-[!-]*C*)                has_cd=1 ;;
   esac
 done
 
@@ -230,7 +246,7 @@ PY
 
 before=""
 if [ -n "$worktree" ]; then
-  [ "$has_cd" -eq 0 ] || fail "--worktree sets the folder; leave -C out of the codex args"
+  [ "$has_cd" -eq 0 ] || fail "--worktree sets the folder; leave -C and --cd out of the codex args. A word that starts with one dash and holds a capital C is read as -C: write the value of an option as a word of its own (-o C.md, not -oC.md)"
   command -v python3 >/dev/null || fail "--worktree needs python3 on PATH"
   if [ -e "$worktree" ] || [ -L "$worktree" ]; then
     fail "--worktree needs a path that does not exist yet: $worktree"
@@ -293,22 +309,25 @@ if [ -n "$reason" ]; then
     tail -n 5 "$log" | cut -c1-300 >&3
   } 2>/dev/null
   [ -z "$worktree" ] || echo "codex-run: the worktree is still at $worktree" >&2
-  exit 124
-fi
+  # The group is dead, as it is on the other path below. A killed run has
+  # written files too, so its files are compared like those of any other run.
+  # The code stays 124 whatever the compare finds.
+  code=124
+else
+  wait "$pid"
+  code=$?
+  if [ "$code" -eq 127 ]; then
+    echo "codex-run: codex did not start, or ended with 127 itself. See the end of $log" >&2
+  fi
 
-wait "$pid"
-code=$?
-if [ "$code" -eq 127 ]; then
-  echo "codex-run: codex did not start, or ended with 127 itself. See the end of $log" >&2
-fi
-
-# Codex has ended. A process it left behind could still write into the
-# worktree after the files are compared, so what is left of its group ends
-# here too. (A process that made a session of its own is not reached.)
-if kill -0 -- "-$pid" 2>/dev/null; then
-  kill -TERM -- "-$pid" 2>/dev/null
-  sleep "$poll"
-  kill -KILL -- "-$pid" 2>/dev/null
+  # Codex has ended. A process it left behind could still write into the
+  # worktree after the files are compared, so what is left of its group ends
+  # here too. (A process that made a session of its own is not reached.)
+  if kill -0 -- "-$pid" 2>/dev/null; then
+    kill -TERM -- "-$pid" 2>/dev/null
+    sleep "$poll"
+    kill -KILL -- "-$pid" 2>/dev/null
+  fi
 fi
 
 if [ -n "$worktree" ]; then
