@@ -1,9 +1,10 @@
 #!/bin/sh
-# Claude Code status line — up to three lines, TokyoNight Moon palette (same as tmux.conf §6)
-#   line 1: [ssh host]  dir │  branch* ↑↓ │ <tier icon> model <pie> effort │ vim │ style │ session
+# Claude Code status line — up to three lines, TokyoNight Moon palette (the tmux status bar uses the same)
+#   line 1: [ssh host]  dir │  branch* ↑↓ │ <tier icon> model <pie> effort │ vim │ style │ session │ vX.Y.Z
 #   line 2: usage: 󰍛 context bar │ 5h bar + reset │ 7d bar + reset
 #   line 3: prompt cache: TTL draining bar, hit ratio, misses, cold-rebuild cost
-# Test overrides: STATUSLINE_NOW (epoch), STATUSLINE_KEEPALIVE (keep-alive file).
+# Test overrides: STATUSLINE_NOW (epoch), STATUSLINE_KEEPALIVE (keep-alive file),
+# STATUSLINE_HARNESS_DIR (the folder whose release tag line 1 shows).
 # Runs under macOS /bin/sh (bash 3.2, POSIX mode): no \u escapes, so glyphs are octal UTF-8.
 input=$(cat)
 
@@ -170,6 +171,42 @@ case "$output_style" in
 esac
 
 [ -n "$session_name" ] && add "${FGD}${I_TAG} ${session_name}${RST}"
+
+# harness version: the newest release tag (vX.Y.Z) that the live harness tree
+# has reached. The tree is the folder this script really lives in, so the
+# symlink in ~/.claude is followed to the repo. Marks, each one a character so
+# none depends on colour: +N commits past the tag, * tracked files changed,
+# @branch when the tree is not on main. No release tag: no segment.
+hdir=$STATUSLINE_HARNESS_DIR
+if [ -z "$hdir" ]; then
+  self=$0
+  while [ -L "$self" ]; do
+    target=$(readlink "$self")
+    case "$target" in
+      /*) self=$target ;;
+      *)  self="$(dirname "$self")/$target" ;;
+    esac
+  done
+  hdir=$(dirname "$self")
+fi
+hver=$(git -C "$hdir" --no-optional-locks describe --tags --long \
+  --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null)
+if [ -n "$hver" ]; then
+  # v1.2.3-4-gabc1234 → tag v1.2.3, 4 commits past it
+  hver=${hver%-g*}; hpast=${hver##*-}; hver=${hver%-*}
+  read -r hbranch hdirty <<EOF
+$(git -C "$hdir" --no-optional-locks status --porcelain=v2 --branch -uno 2>/dev/null | awk '
+  /^# branch.oid/  { oid = substr($3, 1, 7) }
+  /^# branch.head/ { head = $3 }
+  /^[12u] /        { d = 1 }
+  END { if (head == "(detached)") head = oid; print head, d + 0 }')
+EOF
+  h="${FGD}${hver}"
+  [ "$hpast" -gt 0 ] 2>/dev/null && h="$h${YELLOW}+${hpast}"
+  [ "$hdirty" = 1 ] && h="$h${YELLOW}*"
+  [ -n "$hbranch" ] && [ "$hbranch" != main ] && h="$h${ORANGE}@${hbranch}"
+  add "$h$RST"
+fi
 
 line1=$line
 
