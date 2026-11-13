@@ -1,7 +1,7 @@
 # seanock
 
 An agent harness for Claude Code and Codex: global working rules, six workers,
-twelve skills, hooks that check risky steps with code, and the tests that keep
+ten skills, hooks that check risky steps with code, and the tests that keep
 all of it in step.
 
 It was part of the terminal setup in
@@ -141,10 +141,8 @@ loads whichever one matches the request:
 | `writing-markdown-docs` | House style for docs, with a reference per document type and a `check_doc.py` linter                           |
 | `visual-artifacts`      | Learning pages, prototypes, guides and plan pages published as Claude Artifacts, with a render checker         |
 | `brief-artifact`        | A decision or a short report as one page: markdown in, and a "Copy response" button gives the answer to paste |
-| `tui-design`            | Designing and reviewing terminal UIs: layout, keybindings, colour, redraw and resize                           |
 | `scaffold-docs`         | Writes a `CLAUDE.md` entry point into each meaningful folder and keeps a versioned changelog                   |
 | `orient`                | Reads those scaffold docs at the start of a session instead of exploring the tree again                        |
-| `ccdash-analysis`       | Turns a local [ccdash](https://github.com/SeanoChang/ccdash) archive into ranked changes to model routing      |
 
 ## Codex
 
