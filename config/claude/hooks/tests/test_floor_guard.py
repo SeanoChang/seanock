@@ -922,3 +922,13 @@ def test_reference_itself_on_known_cases():
     assert ref_decide({}, {".github/workflows/c.yml": CI_ON.encode()}) == {
         ("ci-weakened", ".github/workflows/c.yml")}
     assert ref_decide({}, {"a.py": b"sys.exit(1)\ncommit.skipper\n"}) == set()
+
+
+def test_closed_stdout_fails_closed(tmp_path):
+    repo = make(tmp_path, {"a.py": "x\n"})
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    proc = subprocess.Popen([sys.executable, "-I", str(GUARD), "--base", "HEAD"], cwd=repo,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    proc.stdout.close()  # the guard writes only after all git calls, so this comes first
+    err = proc.stderr.read().decode()
+    assert proc.wait(timeout=60) == 2, err

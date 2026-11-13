@@ -321,8 +321,12 @@ def main(argv=None):
         lines.append("floor-guard: summary " + " ".join(f"{k}={v}" for k, v in counts.items()))
     else:
         lines.append("floor-guard: clean")
-    sys.stdout.buffer.write(("\n".join(lines) + "\n").encode("utf-8"))
-    sys.stdout.flush()
+    try:
+        sys.stdout.buffer.write(("\n".join(lines) + "\n").encode("utf-8"))
+        sys.stdout.flush()
+    except OSError as e:  # a closed pipe: the result was not delivered
+        print(f"floor-guard: error: cannot write the result: {e}", file=sys.stderr)
+        os._exit(2)  # skip the flush at exit, which would fail again and change the code
     return 1 if hits else 0
 
 
