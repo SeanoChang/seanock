@@ -1009,6 +1009,16 @@ changes it.
 - **A workflow file whose extension is `.YML` is not treated as a workflow.**
   Whether GitHub runs such a file was not checked.
 - **Markers match with exact letter case,** so `# NOQA` is missed.
+- **A file with CR-only line ends is read as one line.** A second marker line
+  added to it is missed.
+- **A case-only rename made with plain `mv` reads as clean** on a disk that
+  ignores letter case. The index still holds the old name, and git commits
+  nothing for it.
+- **A file named `test`, `tests` or `spec` counts as a test by its own
+  name,** so deleting `scripts/test` is reported.
+- **Any warning from git ends the run with exit 2.** A machine whose git
+  always warns (a config file it cannot read) gets no result until that is
+  fixed.
 - **Time and memory grow with the tree.** A tree of 20,000 files with one
   200 MB source file took 60 s and 1.2 GB.
 
@@ -1017,3 +1027,6 @@ changes it.
 - Linux. The tests ran on macOS only.
 - A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`.
 - Sparse checkouts and Git LFS pointers. These show as deletions or changes.
+- That `GIT_OPTIONAL_LOCKS=0` is needed. The test that nothing is written
+  passes without it.
+- Replace refs, a full disk, and a signal sent to git while it runs.

@@ -1257,3 +1257,129 @@ def test_partial_clone_does_not_fetch_and_fails_closed(tmp_path):
     # The trap is live: reading a missing blob the plain way does fetch.
     git(clone, "cat-file", "-p", "HEAD:a.py", check=False)
     assert marker.exists()
+
+
+# ---------------------------------------------------------------- reading the two trees
+
+def test_criss_cross_history_checks_every_merge_base(tmp_path):
+    # dev and the work branch each merged the other's parent, so they have two
+    # best common ancestors. Only one of them holds the test.
+    repo = make(tmp_path, {"r.txt": "r\n"})
+    git(repo, "branch", "-m", "dev")
+    git(repo, "checkout", "-q", "-b", "A")
+    put(repo, "tests/test_a.py", TEST_BODY)
+    commit_all(repo, "a")
+    git(repo, "checkout", "-q", "dev")
+    git(repo, "checkout", "-q", "-b", "B")
+    put(repo, "b.txt", "b\n")
+    commit_all(repo, "b")
+    git(repo, "checkout", "-q", "-b", "X", "A")
+    git(repo, "merge", "-q", "--no-edit", "B")
+    git(repo, "checkout", "-q", "-b", "Y", "B")
+    git(repo, "merge", "-q", "--no-edit", "A")
+    git(repo, "branch", "-f", "dev", "X")
+    git(repo, "checkout", "-q", "Y")
+    bases = git(repo, "merge-base", "--all", "dev", "HEAD").stdout.split()
+    assert len(bases) == 2, "the history must have two merge bases for this test"
+    assert_clean(run("--base", "dev", cwd=repo))
+    git(repo, "rm", "-q", "tests/test_a.py")
+    commit_all(repo, "del")
+    assert_only(run("--base", "dev", cwd=repo), "deleted-test", "tests/test_a.py")
+
+
+@getattr(pytest.mark, "skip" "if")(hasattr(os, "geteuid") and os.geteuid() == 0,
+                                   reason="root reads anything")
+def test_folder_that_git_cannot_open_fails_closed(tmp_path):
+    repo = make(tmp_path, {"a.py": "x\n"})
+    put(repo, "newmod/b.py", f"{SKIP1}\ndef f(): pass\n")
+    os.chmod(repo / "newmod", 0)
+    try:
+        res = guard(repo)
+    finally:
+        os.chmod(repo / "newmod", 0o755)
+    assert res.rc == 2 and "newmod" in res.err, (res.out, res.err)
+    assert_only(guard(repo), "skip-added", "newmod/b.py", 1)
+
+
+def test_ambiguous_base_name_fails_closed(tmp_path):
+    repo = make(tmp_path, {"tests/test_a.py": TEST_BODY})
+    git(repo, "branch", "-m", "work")
+    git(repo, "branch", "dev")
+    put(repo, "x.py", "x\n")
+    commit_all(repo, "later")
+    git(repo, "tag", "dev")            # the tag and the branch now name two commits
+    (repo / "tests/test_a.py").unlink()
+    res = run("--base", "dev", cwd=repo)
+    assert res.rc == 2 and "ambiguous" in res.err, (res.out, res.err)
+    assert_only(run("--base", "refs/heads/dev", cwd=repo), "deleted-test", "tests/test_a.py")
+
+
+def test_executable_test_script_deleted_fires(tmp_path):
+    repo = make(tmp_path, {"a.py": "x\n"})
+    put(repo, "tests/test-run.sh", "#!/bin/sh\nexit 0\n")
+    os.chmod(repo / "tests/test-run.sh", 0o755)
+    commit_all(repo, "script")
+    mode = git(repo, "ls-files", "-s", "tests/test-run.sh").stdout.split()[0]
+    assert mode == b"100755"
+    (repo / "tests/test-run.sh").unlink()
+    assert_only(guard(repo), "deleted-test", "tests/test-run.sh")
+
+
+def test_unexpected_git_output_fails_closed(tmp_path):
+    """A crash inside the guard must end as exit 2, never as clean."""
+    repo = make(tmp_path, {"tests/test_a.py": TEST_BODY})
+    (repo / "tests/test_a.py").unlink()
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    real = shutil.which("git")
+    (fake / "git").write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do [ "$a" = ls-tree ] && { printf "garbage"; exit 0; }; done\n'
+        f'exec "{real}" "$@"\n')
+    (fake / "git").chmod(0o755)
+    res = run("--base", "HEAD", cwd=repo, path=f"{fake}{os.pathsep}{os.environ['PATH']}")
+    assert res.rc == 2 and "internal error" in res.err, (res.out, res.err)
+    assert res.out == ""
+
+
+def test_git_that_never_answers_is_stopped(tmp_path):
+    repo = make(tmp_path, {"a.py": "x\n"})
+    (repo / "sub").mkdir()
+    os.mkfifo(repo / "sub" / ".gitignore")     # git waits on it for ever
+    res = run("--base", "HEAD", "--git-timeout", "3", cwd=repo)
+    assert res.rc == 2 and "did not finish" in res.err, (res.out, res.err)
+
+
+def name_forms_are_one_file(folder):
+    """True on a disk that takes the two Unicode forms of a name as one file."""
+    nfd = folder / "probe-é"
+    nfd.write_text("x")
+    same = (folder / "probe-é").exists()
+    nfd.unlink()
+    return same
+
+
+def test_name_listed_in_two_unicode_forms_is_one_file(tmp_path):
+    if not name_forms_are_one_file(tmp_path):
+        getattr(pytest, "sk" "ip")("this disk keeps the two forms of a name apart")
+    body = TEST_BODY
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "config", "core.precomposeunicode", "false")
+    put(repo, "tests/test_é.py", body)            # decomposed form in the index
+    put(repo, "tests/old/test_dup.py", body)
+    put(repo, "src/café.py", f"{SKIP1}\n")
+    commit_all(repo, "base")
+    git(repo, "config", "core.precomposeunicode", "true")
+    listed = git(repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard").stdout
+    assert listed.count(b"test_") > 2, "git must list the name twice for this test"
+    assert_clean(guard(repo))                             # no marker counted twice
+    (repo / "tests/old/test_dup.py").unlink()
+    assert_only(guard(repo), "deleted-test", "tests/old/test_dup.py")
+
+
+def test_hard_link_under_another_name_is_a_copy_not_a_twin(tmp_path):
+    repo = make(tmp_path, {"src/a.py": f"{SKIP1}\n"})
+    os.link(repo / "src/a.py", repo / "src/b.py")
+    assert_only(guard(repo), "skip-added", "src/b.py", 1)

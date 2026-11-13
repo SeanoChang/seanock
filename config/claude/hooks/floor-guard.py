@@ -3,7 +3,8 @@
 
 It compares the tree at merge-base(<base>, HEAD) with the working tree as it
 is on disk: committed, staged and unstaged changes to tracked files, plus
-untracked files that git does not ignore. Loosening is loud; tightening is
+untracked files that git does not ignore. When the history has more than one
+best common ancestor (a criss-cross merge), it checks each and joins the hits. Loosening is loud; tightening is
 silent. It reports six kinds:
 
   deleted-test       a test file at the base that is gone, with no move that
@@ -20,8 +21,8 @@ Every rule looks at paths of one scope, and the scope comes from the path
 alone:
 
   test      2 = the file name matches a test pattern (test_*.py, *.test.ts ...),
-            which a runner collects by name; 1 = only a folder named tests,
-            test, __tests__ or spec is on the path; 0 = neither. A folder does
+            which a runner collects by name; 1 = only a folder, or the file
+            itself, named tests, test, __tests__ or spec; 0 = neither. A folder does
             not say what a runner collects, so rank 1 only means "report it
             when it goes"
   workflow  .github/workflows/<name>.yml or .yaml
@@ -60,8 +61,10 @@ git for a diff, so no external diff or textconv runs, and it never fetches: in
 a partial clone a missing object ends the run with exit 2 (GIT_NO_LAZY_FETCH).
 Base content comes from the object store; new content comes from disk.
 Symlinks are never followed. It writes nothing (GIT_OPTIONAL_LOCKS=0).
+Anything git prints as a warning ends the run with exit 2, and so does a git
+call that does not finish in time: the answer would not be the whole truth.
 
-Usage: floor-guard.py [--base <ref>] [--repo <dir>]
+Usage: floor-guard.py [--base <ref>] [--repo <dir>] [--git-timeout <seconds>]
 Exit:  0 clean, 1 at least one hit, 2 could not run or finish (reason on stderr).
 
 Tests: PYTHONDONTWRITEBYTECODE=1 python3 -m pytest ~/.claude/hooks/tests/test_floor_guard.py -q -p no:cacheprovider
@@ -73,6 +76,7 @@ import re
 import stat
 import subprocess
 import sys
+import unicodedata
 
 DEFAULT_BASES = ["dev", "develop", "development", "integration", "main", "master"]
 KINDS = ["deleted-test", "test-moved-out", "skip-added", "suppression-added",
@@ -120,8 +124,15 @@ class GuardError(Exception):
     pass
 
 
-def git(root, *args, stdin=None):
-    """Run one git command; return stdout bytes or raise GuardError."""
+GIT_TIMEOUT = 120  # seconds for one git call; --git-timeout sets it
+
+
+def git(root, *args, stdin=None, quiet_failure=False):
+    """Run one git command; return stdout bytes or raise GuardError.
+
+    Anything on stderr is an error, also with exit 0. With quiet_failure, a
+    failure that says nothing returns None (rev-parse --quiet on a missing ref).
+    """
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env["GIT_OPTIONAL_LOCKS"] = "0"
     # A partial clone fetches a missing object through the transport its config
@@ -129,20 +140,31 @@ def git(root, *args, stdin=None):
     env["GIT_NO_LAZY_FETCH"] = "1"
     cmd = ["git", "-c", "core.fsmonitor=", "-c", "core.quotepath=off", "-C", root, *args]
     try:
-        proc = subprocess.run(cmd, input=stdin, capture_output=True, env=env)
+        proc = subprocess.run(cmd, input=stdin, capture_output=True, env=env,
+                              timeout=GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise GuardError(f"git {args[0]} did not finish in {GIT_TIMEOUT} s")
     except OSError as e:
         raise GuardError(f"cannot run git: {e}")
+    msg = proc.stderr.decode("utf-8", "replace").strip()
     if proc.returncode != 0:
-        msg = proc.stderr.decode("utf-8", "replace").strip()
+        if quiet_failure and not msg:
+            return None
         raise GuardError(f"git {args[0]} failed: {msg}")
+    if msg:
+        # git warns and exits 0 when it cannot open a folder, or when a name
+        # is ambiguous. What it then printed is not the whole truth.
+        raise GuardError(f"git {args[0]} warned: {msg}")
     return proc.stdout
 
 
 def resolve(root, ref):
-    try:
-        return git(root, "rev-parse", "--verify", "--quiet", ref + "^{commit}").decode().strip()
-    except GuardError:
+    """The commit a ref names, or None when there is no such ref."""
+    if git(root, "rev-parse", "--verify", "--quiet", ref + "^{commit}", quiet_failure=True) is None:
         return None
+    # Asked again without --quiet, git warns when the name is ambiguous (a tag
+    # and a branch of one name), and a warning ends the run.
+    return git(root, "rev-parse", "--verify", ref + "^{commit}").decode().strip()
 
 
 def base_tree(root, commit):
@@ -171,9 +193,21 @@ def base_tree(root, commit):
     return {path: content[oid] for path, oid in blobs.items()}
 
 
+def same_name(path):
+    """A path as a disk that ignores letter case and Unicode form reads it."""
+    return unicodedata.normalize("NFC", path.decode("utf-8", "surrogateescape")).casefold()
+
+
 def work_tree(root):
-    """Return {path: bytes} for regular files on disk that git tracks or would add."""
-    listed = git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    """Return {path: bytes} for regular files on disk that git tracks or would add.
+
+    On a disk that takes two spellings of a name as one file (macOS), git can
+    list a tracked file a second time as untracked, under the other spelling.
+    Such a twin is the same file: it is left out. An untracked hard link under
+    a different name is a copy, and is read.
+    """
+    tracked = git(root, "ls-files", "-z", "--cached")
+    untracked = git(root, "ls-files", "-z", "--others", "--exclude-standard")
     broot = os.fsencode(root)
     linked = {}  # directory prefix -> is it a symlink (or not a directory)
 
@@ -191,20 +225,28 @@ def work_tree(root):
         return False
 
     files = {}
-    for path in set(listed.split(b"\0")):
-        if not path or path.endswith(b"/") or under_link(path):
-            continue
-        full = os.path.join(broot, path)
-        try:
-            if not stat.S_ISREG(os.lstat(full).st_mode):
+    tracked_files = {}  # (device, inode) -> the names of the tracked paths there
+    for listed, is_tracked in ((tracked, True), (untracked, False)):
+        for path in sorted(set(listed.split(b"\0"))):
+            if not path or path.endswith(b"/") or path in files or under_link(path):
                 continue
-            fd = os.open(full, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-            with os.fdopen(fd, "rb") as f:
-                files[path] = f.read()
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        except OSError as e:
-            raise GuardError(f"cannot read {esc(path)}: {e.strerror}")
+            full = os.path.join(broot, path)
+            try:
+                st = os.lstat(full)
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+                where = (st.st_dev, st.st_ino)
+                if is_tracked:
+                    tracked_files.setdefault(where, set()).add(same_name(path))
+                elif same_name(path) in tracked_files.get(where, ()):
+                    continue  # a tracked file under the other spelling of its name
+                fd = os.open(full, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                with os.fdopen(fd, "rb") as f:
+                    files[path] = f.read()
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError as e:
+                raise GuardError(f"cannot read {esc(path)}: {e.strerror}")
     return files
 
 
@@ -369,19 +411,35 @@ def run(repo, base_ref):
         if base is None:
             raise GuardError("no base ref resolves; tried " + ", ".join(refs) + "; pass --base")
     try:
-        merge_base = git(root, "merge-base", base, "HEAD").decode().strip()
+        merge_bases = git(root, "merge-base", "--all", base, "HEAD").decode().split()
     except GuardError as e:
         raise GuardError(f"no merge base between {base_ref or base} and HEAD "
                          f"(a shallow clone or unrelated history?): {e}")
-    return check(base_tree(root, merge_base), work_tree(root))
+    if not merge_bases:
+        raise GuardError(f"no merge base between {base_ref or base} and HEAD")
+    # A criss-cross history has more than one best common ancestor. A floor
+    # that any of them holds counts, so each is checked and the hits are joined.
+    new = work_tree(root)
+    hits = []
+    for merge_base in merge_bases:
+        for hit in check(base_tree(root, merge_base), new):
+            if hit not in hits:
+                hits.append(hit)
+    return hits
 
 
 def main(argv=None):
+    global GIT_TIMEOUT
     parser = argparse.ArgumentParser(description="Flag a change that lowers the quality bar.")
     parser.add_argument("--base", help="ref to compare against (default: first of origin/"
                         + ", origin/".join(DEFAULT_BASES) + ")")
     parser.add_argument("--repo", default=".", help="repo directory (default: .)")
+    parser.add_argument("--git-timeout", type=int, default=GIT_TIMEOUT, metavar="SECONDS",
+                        help=f"give up on one git call after this long (default: {GIT_TIMEOUT})")
     args = parser.parse_args(argv)
+    if args.git_timeout <= 0:
+        parser.error("--git-timeout must be above 0")
+    GIT_TIMEOUT = args.git_timeout
     try:
         hits = run(args.repo, args.base)
     except GuardError as e:
