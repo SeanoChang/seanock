@@ -1032,19 +1032,26 @@ changes it.
   always warns (a config file it cannot read) gets no result until that is
   fixed. A repo can do the same to itself: a committed `.gitignore` that is a
   symlink makes git warn on every run.
+- **A default ref whose file is a symlink to nothing reads as not there.**
+  Git itself reports that ref as missing, so the guard goes on to the next
+  name. Only a damaged `.git` folder holds such a file.
 - **Time and memory grow with the tree.** A tree of 20,000 files with one
   200 MB source file took 60 s and 1.2 GB.
 
 ### Not tested
 
-- Linux. The tests ran on macOS only. One test runs only on a disk that keeps
-  letter case apart, so it has not run yet: an untracked `A.py` beside a
-  tracked `a.py` is its own file. It is the only test of the inode half of
-  the twin rule.
+- Linux. The tests ran on macOS only, and CI runs on macOS only.
+- **The inode half of the twin rule has no test in CI.** Its one test needs a
+  disk that keeps letter case apart: an untracked `A.py` beside a tracked
+  `a.py` is its own file. On the CI disk the test is skipped. It ran once by
+  hand on a case-sensitive APFS image (2026-11-13): all 183 tests passed
+  there, and the test failed when the inode check was removed. On a disk that
+  ignores letter case the inode check cannot change a result.
 - A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`, and a real
   git older than 2.43 (the test uses a stand-in that rejects the option).
-- Refs kept in the reftable format. The broken-ref tests write loose ref
-  files.
+- Refs kept in the reftable format, and a broken entry in `packed-refs`. The
+  broken-ref tests write loose ref files. Both ended with exit 2 in a review
+  by hand, and have no test.
 - Sparse checkouts and Git LFS pointers. These show as deletions or changes.
 - That `GIT_OPTIONAL_LOCKS=0` is needed. The test that nothing is written
   passes without it.
