@@ -27,7 +27,7 @@ adversary pass. Codex never merges and never commits.
 ## Roles
 
 A role is a Codex agent file in `~/.codex/agents/` (source:
-`config/codex/agents/` in the dotfiles repo). `codex-run --role <name>` sends
+`config/codex/agents/` in the harness repo). `codex-run --role <name>` sends
 the role's instructions with the run and sets its model and effort.
 
 | Role        | Use for                                                        | Model, effort          | Where it runs                 |

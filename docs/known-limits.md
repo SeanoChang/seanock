@@ -972,3 +972,68 @@ changes it.
 - **Which model is better on hard work.** No graded task failed in either arm.
 - **The install step.** `./install.sh --dry-run --only codex` lists the three
   agent links; the real run waits for the merge.
+
+## Status line (`config/claude/statusline-command.sh`, 2026-11-13)
+
+### By design
+
+- **The script's git calls run none of a repo's own programs, at a cost.**
+  The file monitor is off for the status call, so a very large repo gets no
+  speed-up from it. Every clean and process filter is set to empty for that
+  call, so a file under a filter that was touched but not changed can show
+  `*`. A submodule's working tree is not looked at; only a new commit in a
+  submodule counts as a change. `tests/test_statusline_git_safety.py` holds a
+  trap for each program.
+- **The protection covers this script only.** Claude Code and the shell prompt
+  run their own git commands in the same folder.
+- **A config with very many filters is not read.** Past 64 filter keys, or
+  8,192 bytes of their names, the script leaves the status call out and marks
+  the tree `?`. Switching each filter off takes one environment entry, and
+  thousands of them stalled the script for minutes. The branch name still
+  shows; the changed mark and the ahead and behind counts do not.
+
+### Minor
+
+- **A tag with a suffix counts as a release tag.** The pattern
+  `v[0-9]*.[0-9]*.[0-9]*` also matches `v1.3.0-rc1`, so line 1 shows it when
+  it is the nearest tag. The harness makes no such tags.
+- **Two release tags on one commit.** `git describe` takes the nearest tag.
+  Among lightweight tags on the same commit it takes the first by name, so
+  `v1.2.3` wins over `v1.2.4`. Annotated tags are taken by date.
+- **The name limit counts characters, not bytes.** In a UTF-8 locale, 4,100
+  two-byte characters pass the limit of 8,192, and each filter is still
+  switched off. The real limit is then up to about 32 KB, which is far under
+  the size limit of the environment. Both outcomes are safe.
+- **Filters in your own git config count toward the 64 keys.** Git LFS adds
+  three, so a repo has 61 left.
+- **A bare repo as the harness folder, with a config past the limit, shows
+  `?` after the version.** With a small config it shows no mark. The installed
+  script never lives in a bare repo.
+
+### Not tested
+
+- The time the script takes in a very large repo. In this repo, 20 draws took
+  2.12 s with the protection and 1.95 s without it.
+- A session where `GIT_DIR` or `GIT_WORK_TREE` is set in the environment.
+- A config file, or a file it includes, that is a named pipe. Every git
+  command would wait on it, the ones before this change too.
+- A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`.
+
+## Installer (`install.sh`, 2026-11-13)
+
+### Minor
+
+- **A rendered file is written through a symlink.** When
+  `~/.dotfiles-rendered/claude/settings.json` is a symlink, the render writes
+  to the place it points at, which can be outside the home folder. A random
+  test of 550 home folders found it; it was there before 0.1.0.
+
+### Not tested
+
+- Two runs in the same second. They would share one backup folder. A change
+  to `backup` that removed an older backup of the same name first would pass
+  the tests, and it could lose a file only in this case.
+- A home folder whose path holds `|` or `&`. The render passes the path to
+  `sed`.
+- The real installer against a live home folder. `tests/test_install_manifest.py`
+  runs it in a temp dir only.
