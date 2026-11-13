@@ -597,10 +597,13 @@ def test_a_worktree_needs_a_new_path_a_repository_and_no_folder_argument(box, le
     assert done.returncode == 2 and box.args() is None and not (box.tmp / "wt").exists()
 
 
-# Every way the codex args can name a folder of their own. Codex reads a value
+# The ways the codex args can name a folder of their own. Codex reads a value
 # in the same word as its option (-C/dir, -C=/dir, --cd=/dir), and a word of
 # one-letter options is read letter by letter, so a C can come after another
-# letter (-hC/dir).
+# letter (-hC/dir). The last two lists name no folder for codex 0.167.1: it
+# refuses the first ("a value is required") and reads the second as the
+# prompt. They are here because the rule of codex-run is wider than Codex's
+# reading and must refuse them too.
 FOLDER_ARGS = [
     ["-C", "/tmp", "p"],
     ["-C/tmp", "p"],
@@ -650,6 +653,10 @@ def test_without_a_worktree_the_folder_argument_passes_to_codex(box):
 # --help`): which one-letter options take a value, and which long ones do.
 # A one-letter option this table does not know is taken as a switch with no
 # value, which is the reading that lets the most words reach -C.
+# One difference from the real program: the model takes the word after an
+# option that needs a value as that value, also when the word starts with a
+# dash (-o -C/tmp). codex 0.167.1 refuses such a list ("a value is
+# required"). So the model lets through only lists that Codex does not run.
 SHORT_WITH_VALUE = set("cimpsCo")
 LONG_WITH_VALUE = {"config", "enable", "disable", "image", "model", "local-provider", "profile", "sandbox", "cd",
                    "add-dir", "thread-source", "cyber-access-program", "output-schema", "color", "output-last-message"}

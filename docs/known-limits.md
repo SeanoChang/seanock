@@ -950,6 +950,17 @@ the run may change.
     written from `codex exec --help` and from three parse errors of the real
     program (a repeated `--cd`, a repeated `--model`, `--c`). No test starts
     the real `codex` with these arguments.
+  - That model differs from the real program in one place (the verifier, a
+    nit). It takes the word after an option that needs a value as the value,
+    also when the word starts with a dash (`-o -C/tmp`). codex 0.167.1
+    refuses such a list ("a value is required"). The model lets through only
+    lists that Codex does not run, and `codex-run` refuses them anyway.
+  - The model scan is as wide as the folder scan, and that has a cost (the
+    verifier, a nit). A word that starts with `-m` counts as the caller's
+    model wherever it is, also after a `--` in the codex args, where Codex
+    reads it as the prompt. With `--role`, such a prompt leaves the role's
+    model out, and Codex runs on the model of its own config. The folder is
+    not changed by this.
 
 ### Tested (2026-11-11, codex-cli 0.167.0)
 
