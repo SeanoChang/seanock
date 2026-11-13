@@ -258,3 +258,19 @@ def test_a_real_folder_in_the_way_is_moved_with_everything_in_it(home):
     assert len(kept) == 1 and kept[0].is_dir() and not kept[0].is_symlink()
     assert (kept[0] / "SKILL.md").read_text(encoding="utf-8") == "my own version"
     assert (kept[0] / "notes" / "a.txt").read_text(encoding="utf-8") == "keep me"
+
+
+def test_a_changed_rendered_file_also_stops_a_run_for_its_own_group(installed):
+    """--only must not skip the check that protects the live settings file."""
+    live = installed / ".dotfiles-rendered" / "claude" / "settings.json"
+    live.write_text(live.read_text(encoding="utf-8") + '"my edit"\n', encoding="utf-8")
+    before = snapshot(installed)
+
+    result = install(installed, "--only", "claude")
+    assert result.returncode == 1
+    assert "drifted" in result.stdout
+    assert snapshot(installed) == before
+
+    other = install(installed, "--only", "codex")
+    assert other.returncode == 0, other.stdout + other.stderr
+    assert snapshot(installed) == before, "another group's run must leave the file alone"

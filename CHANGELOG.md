@@ -4,7 +4,7 @@ One entry per release of the harness. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says what MAJOR, MINOR and PATCH
 mean. The newest entry is first.
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-11-13)
 
 The first release of the harness as its own repo. Before this it was part of
 the terminal setup repo `ghostty-tmux-nvim`; this repo keeps that history, and

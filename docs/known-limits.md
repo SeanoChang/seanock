@@ -1000,6 +1000,15 @@ changes it.
 - **Two release tags on one commit.** `git describe` takes the nearest tag.
   Among lightweight tags on the same commit it takes the first by name, so
   `v1.2.3` wins over `v1.2.4`. Annotated tags are taken by date.
+- **The name limit counts characters, not bytes.** In a UTF-8 locale, 4,100
+  two-byte characters pass the limit of 8,192, and each filter is still
+  switched off. The real limit is then up to about 32 KB, which is far under
+  the size limit of the environment. Both outcomes are safe.
+- **Filters in your own git config count toward the 64 keys.** Git LFS adds
+  three, so a repo has 61 left.
+- **A bare repo as the harness folder, with a config past the limit, shows
+  `?` after the version.** With a small config it shows no mark. The installed
+  script never lives in a bare repo.
 
 ### Not tested
 
@@ -1021,7 +1030,9 @@ changes it.
 
 ### Not tested
 
-- Two runs in the same second. They would share one backup folder.
+- Two runs in the same second. They would share one backup folder. A change
+  to `backup` that removed an older backup of the same name first would pass
+  the tests, and it could lose a file only in this case.
 - A home folder whose path holds `|` or `&`. The render passes the path to
   `sed`.
 - The real installer against a live home folder. `tests/test_install_manifest.py`
