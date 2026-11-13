@@ -9,7 +9,7 @@ silent. It reports six kinds:
   deleted-test       a test file at the base that is gone, with no move that
                      keeps it a test (see "Moves")
   test-moved-out     a test file that is gone, and its content is now only at
-                     a new path that a test runner does not collect
+                     a new path that does not have a test name
   skip-added         more lines with a skip marker in a file than at the base
   suppression-added  more lines with a lint or type suppression than at the base
   assert-removed     fewer assertion lines in a test file than at the base
@@ -21,7 +21,9 @@ alone:
 
   test      2 = the file name matches a test pattern (test_*.py, *.test.ts ...),
             which a runner collects by name; 1 = only a folder named tests,
-            test, __tests__ or spec is on the path; 0 = neither
+            test, __tests__ or spec is on the path; 0 = neither. A folder does
+            not say what a runner collects, so rank 1 only means "report it
+            when it goes"
   workflow  .github/workflows/<name>.yml or .yaml
   code      every path that is not prose (.md, .mdx, .rst, .txt, .adoc); the
             skip and suppression rules read code only
@@ -32,10 +34,12 @@ A path that is new counts from zero.
 Moves. A path that is gone and a path that is new are one move when both hold
 the same bytes (CRLF equals LF) and the new path keeps the rule's scope. Each
 path takes part in one move for a rule. Paths are taken in byte order.
-  - A gone test keeps its floor at a new path of test rank 2. A gone test of
-    rank 1 may also go to a new path of rank 1 with the same file extension.
-    A rank 1 test takes a rank 1 path before a rank 2 path, so that it
-    leaves the rank 2 paths to the tests that need one.
+  - A gone test, of rank 1 or 2, keeps its floor only at a new path of rank
+    2 that no runner skips by default: no folder on it starts with a dot or
+    is node_modules. So a helper moved from one test folder to another is
+    reported as test-moved-out: the guard cannot tell whether a runner still
+    collects it. The guard reads names only. It does not know a runner's
+    settings (testpaths, ignore patterns).
   - A gone workflow keeps its floor at a new workflow path.
   - For a marker rule, a new path in scope is a move, with nothing to count,
     when a gone path in the same scope held its bytes. So a file moved into a
@@ -102,10 +106,11 @@ CI_RE = re.compile(rb"continue-on-error:[ \t]*" + rb"true|\|\|[ \t]*" + rb"true"
 ASSERT_RE = re.compile(rb"\bassert\w*\b|\bexpect\(|\brequire\.\w+\(|\bt\.(?:Error|Fatal|Fail)\w*\(")
 
 TEST_DIRS = {"tests", "test", "__tests__", "spec"}
-TEST_GLOBS = ["test_*.py", "*_test.py", "*_test.go", "*.test.js", "*.test.jsx",
-              "*.test.ts", "*.test.tsx", "*.spec.js", "*.spec.jsx", "*.spec.ts",
-              "*.spec.tsx", "*_test.rs", "test-*.sh", "*_test.sh", "*.bats",
-              "*Test.java", "*Tests.swift"]
+TEST_GLOBS = ["test_*.py", "*_test.py", "*_test.go", "*_test.rs", "test-*.sh",
+              "*_test.sh", "*.bats", "*Test.java", "*Tests.swift",
+              "*_spec.rb", "*_test.rb", "test_*.rb"]
+TEST_GLOBS += [f"*.{word}.{ext}" for word in ("test", "spec")
+               for ext in ("js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts")]
 PROSE_EXTS = (b".md", b".mdx", b".rst", b".txt", b".adoc")
 
 
@@ -210,16 +215,12 @@ def test_rank(path):
     return 1 if TEST_DIRS.intersection(parts) else 0
 
 
-def extension(path):
-    name = path.rsplit(b"/", 1)[-1]
-    return name[name.rindex(b"."):] if b"." in name else b""
-
-
-def keeps_test(old, new):
-    """Is the new path as much a test as the old one was?"""
-    if test_rank(new) == 2:
-        return True
-    return test_rank(old) == 1 and test_rank(new) == 1 and extension(old) == extension(new)
+def runner_reads(path):
+    """A test name, at a path that no runner skips by default."""
+    folders = path.split(b"/")[:-1]
+    if any(f.startswith(b".") or f == b"node_modules" for f in folders):
+        return False
+    return test_rank(path) == 2
 
 
 def is_workflow(path):
@@ -277,20 +278,20 @@ def added_lines(old, new, regex):
     return hits
 
 
-def floor_files(base, gone, fresh_at, in_scope, keeps, prefer):
-    """Pair each gone floor file with a new path that keeps its scope.
+def floor_files(base, gone, fresh_at, in_scope, keeps):
+    """Pair each gone floor file with a new path that keeps its floor.
 
     Yield (path, where) for each one left with no such path. `where` is a new
-    path that holds its bytes but does not keep the scope, or None.
+    path that holds its bytes but does not keep the floor, or None.
     """
     taken = set()
     for p in (p for p in gone if in_scope(p)):
         spots = [q for q in fresh_at.get(norm(base[p]), ()) if q not in taken]
-        fits = sorted((q for q in spots if keeps(p, q)), key=lambda q: (prefer(p, q), q))
-        if fits:
-            taken.add(fits[0])
+        fit = next((q for q in spots if keeps(q)), None)
+        if fit is not None:
+            taken.add(fit)
         else:
-            yield p, next((q for q in spots if not keeps(p, q)), None)
+            yield p, (spots[0] if spots else None)
 
 
 def check(base, new):
@@ -303,19 +304,15 @@ def check(base, new):
         fresh_at.setdefault(norm(new[q]), []).append(q)
 
     # A test or a workflow that is gone must have moved to where it still counts.
-    lost_tests = floor_files(
-        base, gone, fresh_at, in_scope=test_rank,
-        keeps=keeps_test,
-        prefer=lambda p, q: 0 if test_rank(q) == test_rank(p) == 1 else 1)
+    lost_tests = floor_files(base, gone, fresh_at, in_scope=test_rank,
+                             keeps=runner_reads)
     for p, where in lost_tests:
         if where is None:
             hits.append(("deleted-test", p, None, "gone, and no new test path has its content"))
         else:
             hits.append(("test-moved-out", p, None,
-                         f"now only at {esc(where)}, which no test runner collects"))
-    lost_workflows = floor_files(
-        base, gone, fresh_at, in_scope=is_workflow,
-        keeps=lambda p, q: is_workflow(q), prefer=lambda p, q: 0)
+                         f"now only at {esc(where)}, which no test runner collects by name"))
+    lost_workflows = floor_files(base, gone, fresh_at, in_scope=is_workflow, keeps=is_workflow)
     for p, where in lost_workflows:
         if where is None:
             hits.append(("ci-weakened", p, None, "workflow removed"))

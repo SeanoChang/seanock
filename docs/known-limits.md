@@ -972,3 +972,41 @@ changes it.
 - **Which model is better on hard work.** No graded task failed in either arm.
 - **The install step.** `./install.sh --dry-run --only codex` lists the three
   agent links; the real run waits for the merge.
+
+## Floor guard (`config/claude/hooks/floor-guard.py`, 2026-11-13)
+
+### By design
+
+- **It reads names, not runner settings.** A path with a test name counts as
+  collected, unless a folder on it starts with a dot or is `node_modules`. The
+  guard does not read `testpaths`, ignore patterns, or `collect_ignore`, so a
+  change to those settings is not seen.
+- **A file that is a test only by its folder cannot move quietly.** A helper
+  or a fixture moved from one test folder to another is reported as
+  `test-moved-out`. The guard cannot tell whether a runner still collects it.
+- **An empty test file that is deleted is reported.** So is one of two test
+  files with the same bytes.
+- **A code file with a skip marker that moves to a test path is not
+  reported.** Both paths are code, and no test stops running.
+- **It checks the working tree, not `HEAD`.** A test removed from the commit
+  but left on disk as an untracked file reads as present.
+- **A weakened assertion that keeps the count is not seen.** Neither is an
+  assertion that is commented out, or a test renamed and edited in one step:
+  that one reports as `deleted-test`.
+
+### Minor
+
+- **Some spellings of a weakened workflow step are not matched:**
+  `continue-on-error: ${{ true }}`, `continue-on-error: "true"`, `|| exit 0`,
+  and `||` with `true` on the next line.
+- **A workflow file whose extension is `.YML` is not treated as a workflow.**
+  Whether GitHub runs such a file was not checked.
+- **Markers match with exact letter case,** so `# NOQA` is missed.
+- **Time and memory grow with the tree.** A tree of 20,000 files with one
+  200 MB source file took 60 s and 1.2 GB.
+
+### Not tested
+
+- Linux. The tests ran on macOS only.
+- A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`.
+- Sparse checkouts and Git LFS pointers. These show as deletions or changes.

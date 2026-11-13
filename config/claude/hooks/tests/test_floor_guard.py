@@ -195,10 +195,10 @@ def ref_rank(path):
     parts = path.split("/")
     n = parts[-1]
     ends = ["_test.py", "_test.go", "_test.rs", "_test.sh", ".bats",
-            "Test.java", "Tests.swift"]
-    for ext in ("js", "jsx", "ts", "tsx"):
+            "Test.java", "Tests.swift", "_spec.rb", "_test.rb"]
+    for ext in ("js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts"):
         ends += [".test." + ext, ".spec." + ext]
-    if n.startswith("test_") and n.endswith(".py"):
+    if n.startswith("test_") and (n.endswith(".py") or n.endswith(".rb")):
         return 2
     if n.startswith("test-") and n.endswith(".sh"):
         return 2
@@ -209,9 +209,14 @@ def ref_rank(path):
     return 0
 
 
-def ref_ext(path):
-    n = path.split("/")[-1]
-    return n[n.rfind("."):] if "." in n else ""
+def ref_runner_reads(path):
+    """A test name, at a path no runner skips by default: no folder that starts
+    with a dot, and no node_modules."""
+    folders = path.split("/")[:-1]
+    for f in folders:
+        if f.startswith(".") or f == "node_modules":
+            return False
+    return ref_rank(path) == 2
 
 
 def ref_ci_path(path):
@@ -240,23 +245,18 @@ def ref_decide(base, new):
     gone = sorted([p for p in base if p not in new], key=in_bytes)
     fresh = sorted([p for p in new if p not in base], key=in_bytes)
 
-    # A gone test must have moved to a new path that is as much a test.
+    # A gone test must have moved to a new path that a runner collects by
+    # name. A folder says nothing about what a runner collects.
     used = []
     for p in gone:
         if ref_rank(p) == 0:
             continue
         twins = [q for q in fresh if q not in used and same(new[q], base[p])]
         pick = None
-        if ref_rank(p) == 1:
-            for q in twins:
-                if ref_rank(q) == 1 and ref_ext(q) == ref_ext(p):
-                    pick = q
-                    break
-        if pick is None:
-            for q in twins:
-                if ref_rank(q) == 2:
-                    pick = q
-                    break
+        for q in twins:
+            if ref_runner_reads(q):
+                pick = q
+                break
         if pick is not None:
             used.append(pick)
         elif twins:
@@ -856,7 +856,9 @@ NAMES = ["tests/test_a.py", "tests/test_b.py", "tests/unit/helper.py", "src/a_te
          # paths one rename away from another scope
          "tests/test_a.py.disabled", "tests/attic/notes.txt", "tests/attic/helper.py",
          "spec/b.py", "test/c.js", ".github/workflows/ci.yml.off", "ci/ci.yml",
-         "docs/snip.txt", "src/snip.py"]
+         "docs/snip.txt", "src/snip.py", "spec/models/user_spec.rb", "spec/models/user.rb",
+         "test/x_test.rb", "tests/a.test.mjs", "tests/a.mjs", ".attic/test_a.py",
+         "node_modules/p/b.test.js"]
 PLAIN = ["x = 1", "def f():", "    return 2", "", "sys.exit(0)", "commit.skipper()",
          "reassert(x)", "myexpect(1)", "require.(x)", "bit.Fatal(x)", "continue-on-error: false",
          "jobs:", "  # comment"]
@@ -982,11 +984,19 @@ def test_reference_itself_on_known_cases():
     assert ref_decide({t: b"assert 1\n"}, {"spec/b.py": b"assert 1\n"}) == {("test-moved-out", t)}
     assert ref_decide({t: b"assert 1\n"}, {t + ".off": b"assert 1\n"}) == {("test-moved-out", t)}
     h = "tests/helper.py"
-    assert ref_decide({h: b"x\n"}, {"spec/h.py": b"x\n"}) == set()
-    assert ref_decide({h: b"x\n"}, {"spec/h.txt": b"x\n"}) == {("test-moved-out", h)}
-    assert ref_decide({h: b"x\n", t: b"x\n"}, {"lib/x_test.py": b"x\n", "spec/h.py": b"x\n"}) == set()
-    assert ref_decide({"tests/a.py": b"x\n", "tests/b.sh": b"x\n"},
-                      {"spec/a.py": b"x\n", "lib/z_test.py": b"x\n"}) == set()
+    assert ref_decide({h: b"x\n"}, {"spec/h.py": b"x\n"}) == {("test-moved-out", h)}
+    assert ref_decide({h: b"x\n"}, {"tests/unit/helper.py": b"x\n"}) == {("test-moved-out", h)}
+    assert ref_decide({h: b"x\n"}, {"lib/helper_test.py": b"x\n"}) == set()
+    assert ref_decide({h: b"x\n", t: b"x\n"}, {"lib/x_test.py": b"x\n", "spec/h.py": b"x\n"}) == {
+        ("test-moved-out", t)}
+    assert ref_decide({t: b"x\n"}, {".attic/test_a.py": b"x\n"}) == {("test-moved-out", t)}
+    assert ref_decide({t: b"x\n"}, {"node_modules/p/test_a.py": b"x\n"}) == {("test-moved-out", t)}
+    assert ref_decide({".attic/test_a.py": b"x\n"}, {}) == {("deleted-test", ".attic/test_a.py")}
+    r = "spec/models/user_spec.rb"
+    assert ref_decide({r: b"x\n"}, {"spec/models/user.rb": b"x\n"}) == {("test-moved-out", r)}
+    assert ref_decide({r: b"x\n"}, {"spec/user_spec.rb": b"x\n"}) == set()
+    assert ref_decide({"tests/a.test.mjs": b"x\n"}, {"tests/a.mjs": b"x\n"}) == {
+        ("test-moved-out", "tests/a.test.mjs")}
     assert ref_decide({h: b"x\n", t: b"x\n"}, {t: b"x\n"}) == {("deleted-test", h)}
     assert ref_decide({t: b" \n"}, {}) == {("deleted-test", t)}
     w, off = ".github/workflows/c.yml", ".github/workflows/c.yml.off"
@@ -1135,16 +1145,20 @@ def test_test_renamed_so_that_no_runner_collects_it_fires(tmp_path, dest):
 
 
 @pytest.mark.parametrize("old,new,clean", [
-    ("tests/helper.py", "tests/unit/helper.py", True),
-    ("tests/helper.py", "spec/support.py", True),
+    # A folder does not say what a runner collects, so only a new path with a
+    # test name keeps the floor of a file that was a test by its folder.
     ("tests/helper.py", "lib/helper_test.py", True),
+    ("tests/foo.rs", "tests/foo_test.rs", True),
+    ("tests/helper.py", "tests/unit/helper.py", False),
+    ("tests/helper.py", "spec/support.py", False),
+    ("tests/foo.rs", "tests/sub/foo.rs", False),          # cargo: no longer a test crate
     ("tests/helper.py", "tests/helper.py.bak", False),
     ("tests/run.sh", "tests/run.txt", False),
     ("tests/helper.py", "src/helper.py", False),
     ("src/__tests__/q.js", "src/__tests__/q.js.off", False),
-    ("tests/Makefile", "tests/unit/Makefile", True),
+    ("tests/Makefile", "tests/unit/Makefile", False),
 ])
-def test_file_in_a_test_folder_keeps_its_extension(tmp_path, old, new, clean):
+def test_file_that_is_a_test_only_by_its_folder_cannot_move_quietly(tmp_path, old, new, clean):
     repo = make(tmp_path, {old: "x = 1\n", "a.py": "x\n"})
     move(repo, old, new)
     res = guard(repo)
@@ -1169,18 +1183,48 @@ def test_two_tests_with_the_same_content_need_two_new_paths(tmp_path):
     assert_clean(guard(repo))
 
 
-def test_a_helper_leaves_the_named_path_to_the_file_that_needs_it(tmp_path):
-    # a.py may go to spec/a.py or to lib/z_test.py; b.sh fits only lib/z_test.py.
-    # Byte order alone would give lib/z_test.py to a.py and report b.sh.
-    repo = make(tmp_path, {"tests/a.py": "x = 1\n", "tests/b.sh": "x = 1\n"})
-    move(repo, "tests/a.py", "spec/a.py")
-    move(repo, "tests/b.sh", "lib/z_test.py")
+@pytest.mark.parametrize("old,new", [
+    ("spec/models/user_spec.rb", "spec/models/user.rb"),      # RSpec
+    ("test/x_test.rb", "test/x.rb"),                          # Minitest
+    ("test/test_x.rb", "test/x.rb"),
+    ("tests/a.test.mjs", "tests/a.mjs"),                      # Vitest, Node
+    ("tests/a.spec.cts", "tests/a.cts"),
+])
+def test_rename_that_drops_the_test_name_fires(tmp_path, old, new):
+    repo = make(tmp_path, {old: "x = 1\n", "a.py": "x\n"})
+    move(repo, old, new)
+    res = guard(repo)
+    assert_only(res, "test-moved-out", old)
+    assert new in res.hits[0]
+
+
+@pytest.mark.parametrize("new", [".attic/test_a.py", "tests/.old/test_a.py",
+                                 "node_modules/pkg/test_a.py", "web/node_modules/test_a.py"])
+def test_test_moved_to_a_folder_that_runners_skip_fires(tmp_path, new):
+    repo = make(tmp_path, {"tests/test_a.py": TEST_BODY, "a.py": "x\n"})
+    put(repo, ".gitignore", "")          # node_modules must not be ignored here
+    commit_all(repo, "ignore file")
+    move(repo, "tests/test_a.py", new)
+    res = guard(repo)
+    assert_only(res, "test-moved-out", "tests/test_a.py")
+    assert new in res.hits[0]
+
+
+def test_test_that_lives_in_a_dot_folder_is_still_a_test_when_it_goes(tmp_path):
+    repo = make(tmp_path, {".ci/test_a.py": TEST_BODY, "a.py": "x\n"})
+    (repo / ".ci/test_a.py").unlink()
+    assert_only(guard(repo), "deleted-test", ".ci/test_a.py")
+
+
+@pytest.mark.parametrize("old,new", [
+    ("spec/models/user_spec.rb", "spec/user_spec.rb"),
+    ("test/x_test.rb", "test/unit/y_test.rb"),
+    ("tests/a.test.mjs", "src/a.spec.mts"),
+])
+def test_rename_that_keeps_a_test_name_does_not_fire(tmp_path, old, new):
+    repo = make(tmp_path, {old: "x = 1\n", "a.py": "x\n"})
+    move(repo, old, new)
     assert_clean(guard(repo))
-    repo2 = make(tmp_path, {"tests/helper.py": "x = 1\n", "tests/test_x.py": "x = 1\n"},
-                 name="repo2")
-    move(repo2, "tests/helper.py", "spec/h.py")
-    move(repo2, "tests/test_x.py", "lib/x_test.py")
-    assert_clean(guard(repo2))
 
 
 @pytest.mark.parametrize("body", ["", "\n", "  \n\t\n"])
