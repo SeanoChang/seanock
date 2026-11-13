@@ -888,9 +888,10 @@ the run may change.
     lost by this; a session reads a few more words.
 - **Small faults in `codex-run` that the adversary found at `95252c9`, not
   changed:**
-  - `-Cx`, `-mfoo` and `-m=foo` in the codex args are not seen as a folder or
-    a model, so `--worktree` or the role adds its own; codex 0.167 then
-    refuses the repeated flag. A worktree is left behind.
+  - `-Cx`, `-mfoo` and `-m=foo` in the codex args were not seen as a folder
+    or a model, so `--worktree` or the role added its own; codex 0.167 then
+    refused the repeated flag, and a worktree was left behind. Closed on
+    2026-11-13: see "The folder and the model in the codex args" below.
   - A model given as `-c model=...` or by `-p profile` loses to the role's
     `-m`.
   - An agent file with `model = ""` starts Codex, which refuses it. A DEL
@@ -922,6 +923,44 @@ the run may change.
   - A `--idle` or `--max` value that is not a number (`5m`) turns that limit
     off, with only a shell warning.
   - Killing `codex-run` itself leaves Codex running with no watchdog.
+- **The folder and the model in the codex args (2026-11-13, codex-cli
+  0.167.1).** With `--worktree`, `codex-run` refuses a folder argument in the
+  codex args, and a role leaves its model out when the caller gave one. Both
+  scans now see a value in the same word as its option.
+  - The folder rule is wider than Codex's own reading: every word that starts
+    with one dash and holds a capital `C` is refused, wherever it is in the
+    list, also after a `--`. So `-oC.md`, `-cKEY=C` and a prompt that starts
+    with a dash and holds a `C` are refused with `--worktree` (exit 2, nothing
+    is made). Write the value as a word of its own.
+  - The rule reads the spelling of the arguments, not what Codex does with
+    them. A later Codex with a new name for the option (not `-C` or `--cd`),
+    or one that takes shortened long options, would get past it. Version
+    0.167.1 refuses `--c` ("unexpected argument").
+  - The folder is not the only way out of the worktree. `--add-dir <DIR>`,
+    the sandbox mode (`-s danger-full-access`), the two `--dangerously-*`
+    switches, a profile (`-p`) and a `-c` config value are passed to Codex as
+    they are. The skill forbids the dangerous switches in words only.
+  - Codex 0.167.1 has an option of its own named `--worktree`. `codex-run`
+    does not look for it in the codex args, and no test or live run used the
+    two together.
+  - A run that the watchdog killed has its files compared now, and the code
+    stays 124. The lead is not told by the code alone that such a run also
+    left its files: read the list.
+  - The model of Codex's argument reading in `tests/test_codex_run.py` was
+    written from `codex exec --help` and from three parse errors of the real
+    program (a repeated `--cd`, a repeated `--model`, `--c`). No test starts
+    the real `codex` with these arguments.
+  - That model differs from the real program in one place (the verifier, a
+    nit). It takes the word after an option that needs a value as the value,
+    also when the word starts with a dash (`-o -C/tmp`). codex 0.167.1
+    refuses such a list ("a value is required"). The model lets through only
+    lists that Codex does not run, and `codex-run` refuses them anyway.
+  - The model scan is as wide as the folder scan, and that has a cost (the
+    verifier, a nit). A word that starts with `-m` counts as the caller's
+    model wherever it is, also after a `--` in the codex args, where Codex
+    reads it as the prompt. With `--role`, such a prompt leaves the role's
+    model out, and Codex runs on the model of its own config. The folder is
+    not changed by this.
 
 ### Tested (2026-11-11, codex-cli 0.167.0)
 
