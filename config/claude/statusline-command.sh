@@ -128,8 +128,28 @@ add() { [ -z "$1" ] && return; [ -n "$line" ] && line="$line$SEP"; line="$line$1
 # a filter that was touched but not changed can show as changed.
 export GIT_NO_LAZY_FETCH=1
 
-# quiet_status DIR → `git status --porcelain=v2 --branch` of DIR, tracked files only
+# A config can hold thousands of filters, or names thousands of characters
+# long. One environment entry for each would take minutes in this shell, or
+# pass the size limit of the environment. Up to these sizes the filters are
+# switched off one by one. Past them the status call is left out, so nothing
+# can run, and the tree is marked "?" for "not read". An ordinary repo has a
+# few filter keys at most.
+MAX_FILTER_KEYS=64
+MAX_FILTER_BYTES=8192
+
+# quiet_status DIR → `git status --porcelain=v2 --branch` of DIR, tracked files
+# only. For a config past the sizes above it prints the two branch lines from
+# calls that read no file content, and then "# unread".
 quiet_status() (
+  keys=$(git -C "$1" config --name-only --get-regexp \
+    '^filter\..*\.(clean|process|required)$' 2>/dev/null)
+  count=$(printf '%s\n' "$keys" | grep -c '^filter\.')
+  if [ "$count" -gt "$MAX_FILTER_KEYS" ] || [ "${#keys}" -gt "$MAX_FILTER_BYTES" ]; then
+    oid=$(git -C "$1" rev-parse --verify --quiet HEAD 2>/dev/null) || oid="(initial)"
+    head=$(git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null)
+    printf '# branch.oid %s\n# branch.head %s\n# unread\n' "$oid" "${head:-(detached)}"
+    exit 0
+  fi
   export GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
   n=1
   while IFS= read -r key; do
@@ -141,12 +161,27 @@ quiet_status() (
     export "GIT_CONFIG_KEY_$n=$key" "GIT_CONFIG_VALUE_$n=$value"
     n=$((n + 1))
   done <<EOF
-$(git -C "$1" config --name-only --get-regexp '^filter\..*\.(clean|process|required)$' 2>/dev/null)
+$keys
 EOF
   export GIT_CONFIG_COUNT="$n"
   git -C "$1" --no-optional-locks status --porcelain=v2 --branch -uno \
     --ignore-submodules=dirty 2>/dev/null
 )
+
+# repo_state DIR → "branch ahead behind changed" on one line, or nothing when
+# status cannot run there (a bare repo). The branch is the short commit id for
+# a detached HEAD. changed: 0 no, 1 tracked files changed, 2 not read.
+repo_state() {
+  quiet_status "$1" | awk '
+    /^# branch.oid/  { oid = substr($3, 1, 7) }
+    /^# branch.head/ { head = $3 }
+    /^# branch.ab/   { a = substr($3, 2); b = substr($4, 2) }
+    /^[12u] /        { d = 1 }
+    /^# unread/      { d = 2 }
+    END { if (head == "") exit
+          if (head == "(detached)") head = oid
+          print head, a + 0, b + 0, d + 0 }'
+}
 
 # ── line 1: where ────────────────────────────────────────────────────────────
 [ -n "$SSH_CONNECTION" ] && add "${CYAN}${I_HOST} $(hostname -s)${RST}"
@@ -163,18 +198,16 @@ fi
 # git: one status call gives branch, ahead/behind, and dirty (tracked files only)
 if [ -n "$root" ]; then
   read -r branch ahead behind dirty <<EOF
-$(quiet_status "$cwd" | awk '
-  /^# branch.oid/  { oid = substr($3, 1, 7) }
-  /^# branch.head/ { head = $3 }
-  /^# branch.ab/   { a = substr($3, 2); b = substr($4, 2) }
-  /^[12u] /        { d = 1 }
-  END { if (head == "(detached)") head = oid; print head, a + 0, b + 0, d + 0 }')
+$(repo_state "$cwd")
 EOF
-  g="${MAGENTA}${I_BRANCH} ${branch}"
-  [ "$dirty" = 1 ] && g="$g${YELLOW}*"
-  [ "$ahead" -gt 0 ] 2>/dev/null && g="$g ${GREEN}${UP}${ahead}"
-  [ "$behind" -gt 0 ] 2>/dev/null && g="$g ${RED}${DOWN}${behind}"
-  add "$g$RST"
+  if [ -n "$branch" ]; then
+    g="${MAGENTA}${I_BRANCH} ${branch}"
+    [ "$dirty" = 1 ] && g="$g${YELLOW}*"
+    [ "$dirty" = 2 ] && g="$g${YELLOW}?"
+    [ "$ahead" -gt 0 ] 2>/dev/null && g="$g ${GREEN}${UP}${ahead}"
+    [ "$behind" -gt 0 ] 2>/dev/null && g="$g ${RED}${DOWN}${behind}"
+    add "$g$RST"
+  fi
 fi
 
 # model: icon + color by tier; effort: pie fills and warms with level
@@ -232,16 +265,13 @@ hver=$(git -C "$hdir" --no-optional-locks describe --tags --long \
 if [ -n "$hver" ]; then
   # v1.2.3-4-gabc1234 → tag v1.2.3, 4 commits past it
   hver=${hver%-g*}; hpast=${hver##*-}; hver=${hver%-*}
-  read -r hbranch hdirty <<EOF
-$(quiet_status "$hdir" | awk '
-  /^# branch.oid/  { oid = substr($3, 1, 7) }
-  /^# branch.head/ { head = $3 }
-  /^[12u] /        { d = 1 }
-  END { if (head == "(detached)") head = oid; print head, d + 0 }')
+  read -r hbranch hahead hbehind hdirty <<EOF
+$(repo_state "$hdir")
 EOF
   h="${FGD}${hver}"
   [ "$hpast" -gt 0 ] 2>/dev/null && h="$h${YELLOW}+${hpast}"
   [ "$hdirty" = 1 ] && h="$h${YELLOW}*"
+  [ "$hdirty" = 2 ] && h="$h${YELLOW}?"
   [ -n "$hbranch" ] && [ "$hbranch" != main ] && h="$h${ORANGE}@${hbranch}"
   add "$h$RST"
 fi

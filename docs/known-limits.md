@@ -986,6 +986,11 @@ changes it.
   trap for each program.
 - **The protection covers this script only.** Claude Code and the shell prompt
   run their own git commands in the same folder.
+- **A config with very many filters is not read.** Past 64 filter keys, or
+  8,192 bytes of their names, the script leaves the status call out and marks
+  the tree `?`. Switching each filter off takes one environment entry, and
+  thousands of them stalled the script for minutes. The branch name still
+  shows; the changed mark and the ahead and behind counts do not.
 
 ### Minor
 
@@ -1001,3 +1006,23 @@ changes it.
 - The time the script takes in a very large repo. In this repo, 20 draws took
   2.12 s with the protection and 1.95 s without it.
 - A session where `GIT_DIR` or `GIT_WORK_TREE` is set in the environment.
+- A config file, or a file it includes, that is a named pipe. Every git
+  command would wait on it, the ones before this change too.
+- A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`.
+
+## Installer (`install.sh`, 2026-11-13)
+
+### Minor
+
+- **A rendered file is written through a symlink.** When
+  `~/.dotfiles-rendered/claude/settings.json` is a symlink, the render writes
+  to the place it points at, which can be outside the home folder. A random
+  test of 550 home folders found it; it was there before 0.1.0.
+
+### Not tested
+
+- Two runs in the same second. They would share one backup folder.
+- A home folder whose path holds `|` or `&`. The render passes the path to
+  `sed`.
+- The real installer against a live home folder. `tests/test_install_manifest.py`
+  runs it in a temp dir only.

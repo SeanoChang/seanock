@@ -104,7 +104,8 @@ when you ask for a sweep. Each hook has tests in `config/claude/hooks/tests/`.
 1. Folder, git branch, model, effort, session title and harness version. The
    version is the newest release tag that the live tree has reached, with
    `+N` for commits past it, `*` for changed files, and `@branch` when the
-   tree is not on `main`.
+   tree is not on `main`. A `?` in place of `*` means the script did not read
+   the tree, because the repo's git config was too large to make safe.
 2. Usage: context used, then the 5-hour and 7-day rate-limit windows with
    reset times.
 3. Prompt-cache state: warm or cold, time left, what a cold rebuild would cost,

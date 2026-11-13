@@ -45,5 +45,6 @@ Fixed:
 - The status line no longer runs a program that a repo's own git config
   names: a file monitor, a clean or process filter, the same in a submodule,
   or the transport of a partial clone. It ran `git status` in the session's
-  working folder, which can be any repo. The cost is in
-  `docs/known-limits.md`.
+  working folder, which can be any repo. A config with more filters than the
+  script can switch off is not read, and the tree is marked `?`. The cost is
+  in `docs/known-limits.md`.

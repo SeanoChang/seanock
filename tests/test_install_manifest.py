@@ -220,3 +220,41 @@ def test_a_rendered_file_changed_in_place_stops_the_run(installed):
     kept = list((installed / ".dotfiles-backup").glob("*/.dotfiles-rendered/claude/settings.json"))
     assert len(kept) == 1, "the changed file must be kept in the backup"
     assert install(installed).returncode == 0
+
+
+def test_a_folder_that_was_linked_whole_is_moved_and_its_files_stay(home, tmp_path):
+    """An older install linked ~/.claude/agents as one folder. The link is
+    moved to the backup; what it pointed at is not touched."""
+    theirs = tmp_path / "their-agents"
+    theirs.mkdir()
+    (theirs / "mine.md").write_text("a worker kept elsewhere", encoding="utf-8")
+    (home / ".claude").mkdir()
+    (home / ".claude" / "agents").symlink_to(theirs)
+
+    result = install(home)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    agents = home / ".claude" / "agents"
+    assert agents.is_dir() and not agents.is_symlink()
+    assert (agents / "verifier.md").is_symlink()
+    moved = list((home / ".dotfiles-backup").glob("*/.claude/agents"))
+    assert len(moved) == 1 and moved[0].is_symlink()
+    assert Path(os.readlink(moved[0])) == theirs
+    assert sorted(p.name for p in theirs.iterdir()) == ["mine.md"]
+    assert (theirs / "mine.md").read_text(encoding="utf-8") == "a worker kept elsewhere"
+
+
+def test_a_real_folder_in_the_way_is_moved_with_everything_in_it(home):
+    own_skill = home / ".claude" / "skills" / "shape"
+    (own_skill / "notes").mkdir(parents=True)
+    (own_skill / "SKILL.md").write_text("my own version", encoding="utf-8")
+    (own_skill / "notes" / "a.txt").write_text("keep me", encoding="utf-8")
+
+    result = install(home)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    assert Path(os.readlink(own_skill)) == REPO / "config/claude/skills/shape"
+    kept = list((home / ".dotfiles-backup").glob("*/.claude/skills/shape"))
+    assert len(kept) == 1 and kept[0].is_dir() and not kept[0].is_symlink()
+    assert (kept[0] / "SKILL.md").read_text(encoding="utf-8") == "my own version"
+    assert (kept[0] / "notes" / "a.txt").read_text(encoding="utf-8") == "keep me"
