@@ -6,19 +6,42 @@ is on disk: committed, staged and unstaged changes to tracked files, plus
 untracked files that git does not ignore. Loosening is loud; tightening is
 silent. It reports six kinds:
 
-  deleted-test       a test file at the base whose content no test-path file
-                     now has (a pure move to another test path is fine)
-  test-moved-out     a test file whose content now lives only at a path that
-                     a test runner does not collect
+  deleted-test       a test file at the base that is gone, with no move that
+                     keeps it a test (see "Moves")
+  test-moved-out     a test file that is gone, and its content is now only at
+                     a new path that a test runner does not collect
   skip-added         more lines with a skip marker in a file than at the base
   suppression-added  more lines with a lint or type suppression than at the base
   assert-removed     fewer assertion lines in a test file than at the base
-  ci-weakened        more lines that let a workflow step fail silently
+  ci-weakened        more lines that let a workflow step fail silently, or a
+                     workflow file that is gone or moved to where it does not run
+
+Every rule looks at paths of one scope, and the scope comes from the path
+alone:
+
+  test      2 = the file name matches a test pattern (test_*.py, *.test.ts ...),
+            which a runner collects by name; 1 = only a folder named tests,
+            test, __tests__ or spec is on the path; 0 = neither
+  workflow  .github/workflows/<name>.yml or .yaml
+  code      every path that is not prose (.md, .mdx, .rst, .txt, .adoc); the
+            skip and suppression rules read code only
 
 Counts are per file and per kind, so a line moved inside a file is not a hit.
-A new file counts from zero. A file whose exact content was at a path that is
-now gone counts as moved, not new. Skip and suppression counts ignore prose
-files (.md, .mdx, .rst, .txt, .adoc).
+A path that is new counts from zero.
+
+Moves. A path that is gone and a path that is new are one move when both hold
+the same bytes (CRLF equals LF) and the new path keeps the rule's scope. Each
+path takes part in one move for a rule. Paths are taken in byte order.
+  - A gone test keeps its floor at a new path of test rank 2. A gone test of
+    rank 1 may also go to a new path of rank 1 with the same file extension.
+    A rank 1 test takes a rank 1 path before a rank 2 path, so that it
+    leaves the rank 2 paths to the tests that need one.
+  - A gone workflow keeps its floor at a new workflow path.
+  - For a marker rule, a new path in scope is a move, with nothing to count,
+    when a gone path in the same scope held its bytes. So a file moved into a
+    scope (a disabled workflow switched on, a text file renamed to code)
+    counts from zero.
+A copy is not a move: the path it came from is still there.
 
 It is a tripwire, not a judge: a reviewer decides on each hit. There is no
 in-repo exemption. It does not see a weakened assertion that keeps the count,
@@ -27,9 +50,10 @@ way the lists below do not name.
 
 Safety: it calls git plumbing only, with a fixed argument list, no shell, and
 config that could run a program switched off (core.fsmonitor). It never asks
-git for a diff, so no external diff or textconv runs. Base content comes from
-the object store; new content comes from disk. Symlinks are never followed.
-It writes nothing (GIT_OPTIONAL_LOCKS=0).
+git for a diff, so no external diff or textconv runs, and it never fetches: in
+a partial clone a missing object ends the run with exit 2 (GIT_NO_LAZY_FETCH).
+Base content comes from the object store; new content comes from disk.
+Symlinks are never followed. It writes nothing (GIT_OPTIONAL_LOCKS=0).
 
 Usage: floor-guard.py [--base <ref>] [--repo <dir>]
 Exit:  0 clean, 1 at least one hit, 2 could not run or finish (reason on stderr).
@@ -93,6 +117,9 @@ def git(root, *args, stdin=None):
     """Run one git command; return stdout bytes or raise GuardError."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env["GIT_OPTIONAL_LOCKS"] = "0"
+    # A partial clone fetches a missing object through the transport its config
+    # names, which is a program, and stores what it gets. Never fetch.
+    env["GIT_NO_LAZY_FETCH"] = "1"
     cmd = ["git", "-c", "core.fsmonitor=", "-c", "core.quotepath=off", "-C", root, *args]
     try:
         proc = subprocess.run(cmd, input=stdin, capture_output=True, env=env)
@@ -174,17 +201,35 @@ def work_tree(root):
     return files
 
 
-def is_test(path):
+def test_rank(path):
+    """2: a runner collects the file by its name. 1: only a test folder is on
+    the path. 0: not a test path."""
     parts = path.decode("utf-8", "surrogateescape").split("/")
-    if TEST_DIRS.intersection(parts):
+    if any(fnmatch.fnmatchcase(parts[-1], g) for g in TEST_GLOBS):
+        return 2
+    return 1 if TEST_DIRS.intersection(parts) else 0
+
+
+def extension(path):
+    name = path.rsplit(b"/", 1)[-1]
+    return name[name.rindex(b"."):] if b"." in name else b""
+
+
+def keeps_test(old, new):
+    """Is the new path as much a test as the old one was?"""
+    if test_rank(new) == 2:
         return True
-    return any(fnmatch.fnmatchcase(parts[-1], g) for g in TEST_GLOBS)
+    return test_rank(old) == 1 and test_rank(new) == 1 and extension(old) == extension(new)
 
 
 def is_workflow(path):
     parts = path.split(b"/")
     return (len(parts) == 3 and parts[:2] == [b".github", b"workflows"]
             and parts[2].endswith((b".yml", b".yaml")))
+
+
+def is_code(path):
+    return not path.lower().endswith(PROSE_EXTS)
 
 
 def norm(data):
@@ -232,42 +277,77 @@ def added_lines(old, new, regex):
     return hits
 
 
+def floor_files(base, gone, fresh_at, in_scope, keeps, prefer):
+    """Pair each gone floor file with a new path that keeps its scope.
+
+    Yield (path, where) for each one left with no such path. `where` is a new
+    path that holds its bytes but does not keep the scope, or None.
+    """
+    taken = set()
+    for p in (p for p in gone if in_scope(p)):
+        spots = [q for q in fresh_at.get(norm(base[p]), ()) if q not in taken]
+        fits = sorted((q for q in spots if keeps(p, q)), key=lambda q: (prefer(p, q), q))
+        if fits:
+            taken.add(fits[0])
+        else:
+            yield p, next((q for q in spots if not keeps(p, q)), None)
+
+
 def check(base, new):
     """Return hits as (kind, path, line or None, detail)."""
     hits = []
-    new_tests = {norm(c) for p, c in new.items() if is_test(p)}
-    new_where = {}
-    for p, c in sorted(new.items()):
-        new_where.setdefault(norm(c), p)
-    for p, c in base.items():
-        if not is_test(p):
-            continue
-        if p in new:
-            before, after = count(c, ASSERT_RE), count(new[p], ASSERT_RE)
+    gone = sorted(p for p in base if p not in new)
+    fresh = sorted(p for p in new if p not in base)
+    fresh_at = {}  # content -> the new paths that hold it, in byte order
+    for q in fresh:
+        fresh_at.setdefault(norm(new[q]), []).append(q)
+
+    # A test or a workflow that is gone must have moved to where it still counts.
+    lost_tests = floor_files(
+        base, gone, fresh_at, in_scope=test_rank,
+        keeps=keeps_test,
+        prefer=lambda p, q: 0 if test_rank(q) == test_rank(p) == 1 else 1)
+    for p, where in lost_tests:
+        if where is None:
+            hits.append(("deleted-test", p, None, "gone, and no new test path has its content"))
+        else:
+            hits.append(("test-moved-out", p, None,
+                         f"now only at {esc(where)}, which no test runner collects"))
+    lost_workflows = floor_files(
+        base, gone, fresh_at, in_scope=is_workflow,
+        keeps=lambda p, q: is_workflow(q), prefer=lambda p, q: 0)
+    for p, where in lost_workflows:
+        if where is None:
+            hits.append(("ci-weakened", p, None, "workflow removed"))
+        else:
+            hits.append(("ci-weakened", p, None,
+                         f"workflow moved to {esc(where)}, where it does not run"))
+
+    for p in sorted(base):
+        if test_rank(p) and p in new:
+            before, after = count(base[p], ASSERT_RE), count(new[p], ASSERT_RE)
             if after < before:
                 hits.append(("assert-removed", p, None, f"base={before} now={after}"))
-        elif norm(c) not in new_tests:
-            if norm(c) in new_where:
-                hits.append(("test-moved-out", p, None,
-                             f"now only at {esc(new_where[norm(c)])}, not a test path"))
+
+    for kind, regex, in_scope in (("skip-added", SKIP_RE, is_code),
+                                  ("suppression-added", SUPPRESSION_RE, is_code),
+                                  ("ci-weakened", CI_RE, is_workflow)):
+        moved_from = {}  # content -> how many gone paths in this scope held it
+        for q in gone:
+            if in_scope(q):
+                moved_from[norm(base[q])] = moved_from.get(norm(base[q]), 0) + 1
+        for p in sorted(new):
+            if not in_scope(p):
+                continue
+            if p in base:
+                old = base[p]
+            elif moved_from.get(norm(new[p])):
+                moved_from[norm(new[p])] -= 1
+                continue  # a move inside the scope: same bytes, new path
             else:
-                hits.append(("deleted-test", p, None, "no test file has this content"))
-    gone = {norm(c) for p, c in base.items() if p not in new}
-    for p, c in new.items():
-        if p in base:
-            old = base[p]
-        elif norm(c) in gone:
-            continue  # a pure move: same content, new path
-        else:
-            old = b""
-        rules = []
-        if not p.lower().endswith(PROSE_EXTS):
-            rules += [("skip-added", SKIP_RE), ("suppression-added", SUPPRESSION_RE)]
-        if is_workflow(p):
-            rules.append(("ci-weakened", CI_RE))
-        for kind, regex in rules:
-            if count(c, regex) > count(old, regex):
-                for n, text in added_lines(old, c, regex):
+                old = b""
+            if count(new[p], regex) > count(old, regex):
+                for n, text in added_lines(old, new[p], regex):
                     hits.append((kind, p, n, esc(text[:160])))
     return hits
 
@@ -322,9 +402,11 @@ def main(argv=None):
     else:
         lines.append("floor-guard: clean")
     try:
+        if sys.stdout is None:  # started with stdout closed (`>&-`)
+            raise OSError("stdout is closed")
         sys.stdout.buffer.write(("\n".join(lines) + "\n").encode("utf-8"))
         sys.stdout.flush()
-    except OSError as e:  # a closed pipe: the result was not delivered
+    except (OSError, ValueError) as e:  # a closed pipe: the result was not delivered
         print(f"floor-guard: error: cannot write the result: {e}", file=sys.stderr)
         os._exit(2)  # skip the flush at exit, which would fail again and change the code
     return 1 if hits else 0

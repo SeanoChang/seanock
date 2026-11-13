@@ -190,20 +190,38 @@ def ref_ci_line(line):
     return False
 
 
-def ref_is_test(path):
+def ref_rank(path):
+    """2: collected by file name. 1: only a test folder on the path. 0: neither."""
     parts = path.split("/")
-    if any(p in ("tests", "test", "__tests__", "spec") for p in parts):
-        return True
     n = parts[-1]
-    if n.startswith("test_") and n.endswith(".py"):
-        return True
-    if n.startswith("test-") and n.endswith(".sh"):
-        return True
     ends = ["_test.py", "_test.go", "_test.rs", "_test.sh", ".bats",
             "Test.java", "Tests.swift"]
     for ext in ("js", "jsx", "ts", "tsx"):
         ends += [".test." + ext, ".spec." + ext]
-    return any(n.endswith(e) for e in ends)
+    if n.startswith("test_") and n.endswith(".py"):
+        return 2
+    if n.startswith("test-") and n.endswith(".sh"):
+        return 2
+    if any(n.endswith(e) for e in ends):
+        return 2
+    if any(p in ("tests", "test", "__tests__", "spec") for p in parts):
+        return 1
+    return 0
+
+
+def ref_ext(path):
+    n = path.split("/")[-1]
+    return n[n.rfind("."):] if "." in n else ""
+
+
+def ref_ci_path(path):
+    parts = path.split("/")
+    return (len(parts) == 3 and parts[0] == ".github" and parts[1] == "workflows"
+            and (path.endswith(".yml") or path.endswith(".yaml")))
+
+
+def ref_code_path(path):
+    return not any(path.lower().endswith(e) for e in PROSE)
 
 
 def ref_count(data, pred):
@@ -212,41 +230,83 @@ def ref_count(data, pred):
 
 def ref_decide(base, new):
     """Return the set of (kind, path) the rules give for two {path: bytes} trees."""
-    norm = lambda b: b.replace(b"\r\n", b"\n")
+    def same(a, b):
+        return a.replace(b"\r\n", b"\n") == b.replace(b"\r\n", b"\n")
+
+    def in_bytes(p):
+        return p.encode("utf-8")
+
     out = set()
-    new_test = {norm(c) for p, c in new.items() if ref_is_test(p)}
-    new_any = {norm(c) for c in new.values()}
-    for p, c in base.items():
-        if not ref_is_test(p):
+    gone = sorted([p for p in base if p not in new], key=in_bytes)
+    fresh = sorted([p for p in new if p not in base], key=in_bytes)
+
+    # A gone test must have moved to a new path that is as much a test.
+    used = []
+    for p in gone:
+        if ref_rank(p) == 0:
             continue
-        if p in new:
-            if ref_count(new[p], ref_assert_line) < ref_count(c, ref_assert_line):
-                out.add(("assert-removed", p))
-        elif norm(c) in new_test:
-            pass
-        elif norm(c) in new_any:
+        twins = [q for q in fresh if q not in used and same(new[q], base[p])]
+        pick = None
+        if ref_rank(p) == 1:
+            for q in twins:
+                if ref_rank(q) == 1 and ref_ext(q) == ref_ext(p):
+                    pick = q
+                    break
+        if pick is None:
+            for q in twins:
+                if ref_rank(q) == 2:
+                    pick = q
+                    break
+        if pick is not None:
+            used.append(pick)
+        elif twins:
             out.add(("test-moved-out", p))
         else:
             out.add(("deleted-test", p))
-    gone = {norm(c) for p, c in base.items() if p not in new}
-    checks = [("skip-added", lambda l: any(ref_has(l, m) for m in SKIP), "code"),
-              ("suppression-added", lambda l: any(ref_has(l, m) for m in SUPP), "code"),
-              ("ci-weakened", ref_ci_line, "ci")]
-    for p, c in new.items():
-        if p in base:
-            old = base[p]
-        elif norm(c) in gone:
+
+    # A gone workflow must have moved to a new workflow path.
+    used = []
+    for p in gone:
+        if not ref_ci_path(p):
             continue
+        pick = None
+        for q in fresh:
+            if q not in used and same(new[q], base[p]) and ref_ci_path(q):
+                pick = q
+                break
+        if pick is not None:
+            used.append(pick)
         else:
-            old = b""
-        parts = p.split("/")
-        prose = any(p.lower().endswith(e) for e in PROSE)
-        ci = (len(parts) == 3 and parts[0] == ".github" and parts[1] == "workflows"
-              and (p.endswith(".yml") or p.endswith(".yaml")))
-        for kind, pred, scope in checks:
-            if (scope == "code" and prose) or (scope == "ci" and not ci):
+            out.add(("ci-weakened", p))
+
+    for p in base:
+        if p in new and ref_rank(p) > 0:
+            if ref_count(new[p], ref_assert_line) < ref_count(base[p], ref_assert_line):
+                out.add(("assert-removed", p))
+
+    # Marker counts, each rule inside its own scope. A new path is a move only
+    # when a gone path of the same scope held the same bytes; each one once.
+    checks = [("skip-added", lambda l: any(ref_has(l, m) for m in SKIP), ref_code_path),
+              ("suppression-added", lambda l: any(ref_has(l, m) for m in SUPP), ref_code_path),
+              ("ci-weakened", ref_ci_line, ref_ci_path)]
+    for kind, pred, scope in checks:
+        left = [q for q in gone if scope(q)]
+        for p in sorted(new, key=in_bytes):
+            if not scope(p):
                 continue
-            if ref_count(c, pred) > ref_count(old, pred):
+            if p in base:
+                old = base[p]
+            else:
+                twin = None
+                for q in left:
+                    if same(base[q], new[p]):
+                        twin = q
+                        break
+                if twin is not None:
+                    left.remove(twin)
+                    continue
+                old = b""
+            if ref_count(new[p], pred) > ref_count(old, pred):
                 out.add((kind, p))
     return out
 
@@ -792,7 +852,11 @@ NAMES = ["tests/test_a.py", "tests/test_b.py", "tests/unit/helper.py", "src/a_te
          ".github/ci.yml", "tests/we ird name.py", "-lead.py", "src/-dash_test.go",
          "src/nl\nx.py", "tests/ünï_test.py", "src/ünï.py", "tests/ta\tb.py",
          "src/FooTest.java", "App/BarTests.swift", "t/suite.bats", "src/__tests__/q.js",
-         "src/a.test.tsx"]
+         "src/a.test.tsx",
+         # paths one rename away from another scope
+         "tests/test_a.py.disabled", "tests/attic/notes.txt", "tests/attic/helper.py",
+         "spec/b.py", "test/c.js", ".github/workflows/ci.yml.off", "ci/ci.yml",
+         "docs/snip.txt", "src/snip.py"]
 PLAIN = ["x = 1", "def f():", "    return 2", "", "sys.exit(0)", "commit.skipper()",
          "reassert(x)", "myexpect(1)", "require.(x)", "bit.Fatal(x)", "continue-on-error: false",
          "jobs:", "  # comment"]
@@ -914,7 +978,28 @@ def test_reference_itself_on_known_cases():
     t = "tests/test_a.py"
     assert ref_decide({t: b"assert 1\n"}, {}) == {("deleted-test", t)}
     assert ref_decide({t: b"assert 1\n"}, {"src/a.py": b"assert 1\n"}) == {("test-moved-out", t)}
-    assert ref_decide({t: b"assert 1\n"}, {"spec/b.py": b"assert 1\n"}) == set()
+    assert ref_decide({t: b"assert 1\n"}, {"lib/b_test.py": b"assert 1\n"}) == set()
+    assert ref_decide({t: b"assert 1\n"}, {"spec/b.py": b"assert 1\n"}) == {("test-moved-out", t)}
+    assert ref_decide({t: b"assert 1\n"}, {t + ".off": b"assert 1\n"}) == {("test-moved-out", t)}
+    h = "tests/helper.py"
+    assert ref_decide({h: b"x\n"}, {"spec/h.py": b"x\n"}) == set()
+    assert ref_decide({h: b"x\n"}, {"spec/h.txt": b"x\n"}) == {("test-moved-out", h)}
+    assert ref_decide({h: b"x\n", t: b"x\n"}, {"lib/x_test.py": b"x\n", "spec/h.py": b"x\n"}) == set()
+    assert ref_decide({"tests/a.py": b"x\n", "tests/b.sh": b"x\n"},
+                      {"spec/a.py": b"x\n", "lib/z_test.py": b"x\n"}) == set()
+    assert ref_decide({h: b"x\n", t: b"x\n"}, {t: b"x\n"}) == {("deleted-test", h)}
+    assert ref_decide({t: b" \n"}, {}) == {("deleted-test", t)}
+    w, off = ".github/workflows/c.yml", ".github/workflows/c.yml.off"
+    assert ref_decide({w: b"jobs:\n"}, {}) == {("ci-weakened", w)}
+    assert ref_decide({w: b"jobs:\n"}, {"ci/c.yml": b"jobs:\n"}) == {("ci-weakened", w)}
+    assert ref_decide({w: b"jobs:\n"}, {".github/workflows/d.yaml": b"jobs:\n"}) == set()
+    assert ref_decide({off: CI_ON.encode()}, {w: CI_ON.encode()}) == {("ci-weakened", w)}
+    assert ref_decide({"a.txt": SKIP1.encode()}, {"a.py": SKIP1.encode()}) == {("skip-added", "a.py")}
+    assert ref_decide({"a.py": SKIP1.encode()}, {"b.py": SKIP1.encode()}) == set()
+    assert ref_decide({"a.py": SKIP1.encode()},
+                      {"b.py": SKIP1.encode(), "c.py": SKIP1.encode()}) == {("skip-added", "c.py")}
+    assert ref_decide({"a.py": SKIP1.encode()},
+                      {"a.py": SKIP1.encode(), "b.py": SKIP1.encode()}) == {("skip-added", "b.py")}
     assert ref_decide({t: b"assert 1\nassert 2\n"}, {t: b"assert 1\n"}) == {("assert-removed", t)}
     assert ref_decide({}, {"a.py": SKIP1.encode()}) == {("skip-added", "a.py")}
     assert ref_decide({}, {"a.md": SKIP1.encode()}) == set()
@@ -932,3 +1017,199 @@ def test_closed_stdout_fails_closed(tmp_path):
     proc.stdout.close()  # the guard writes only after all git calls, so this comes first
     err = proc.stderr.read().decode()
     assert proc.wait(timeout=60) == 2, err
+
+
+def test_stdout_closed_at_start_fails_closed(tmp_path):
+    repo = make(tmp_path, {"a.py": "x\n"})
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    proc = subprocess.run(["sh", "-c", 'exec "$0" -I "$1" --base HEAD >&-',
+                           sys.executable, str(GUARD)],
+                          cwd=repo, capture_output=True, env=env, timeout=60)
+    assert proc.returncode == 2, proc.stderr
+    assert b"cannot write the result" in proc.stderr
+
+
+# ---------------------------------------------------------------- a move does not carry a file across a scope
+
+TEST_BODY = "def test_x():\n    assert 1\n"
+WF = "jobs:\n  t:\n    steps:\n      - run: make test\n"
+
+
+def move(repo, old, new):
+    (repo / new).parent.mkdir(parents=True, exist_ok=True)
+    (repo / old).rename(repo / new)
+
+
+@pytest.mark.parametrize("src", ["ci/x.yml", ".github/workflows/x.yml.disabled",
+                                 ".github/workflows/sub/x.yml", "docs/x.txt"])
+def test_file_moved_into_workflows_counts_from_zero(tmp_path, src):
+    repo = make(tmp_path, {src: WF + f"    {CI_ON}\n      {CI_OR}\n", "README.md": "x\n"})
+    move(repo, src, ".github/workflows/x.yml")
+    res = guard(repo)
+    assert res.rc == 1, res.out
+    assert has_hit(res, "ci-weakened", ".github/workflows/x.yml", 5), res.out
+    assert has_hit(res, "ci-weakened", ".github/workflows/x.yml", 6), res.out
+    assert set(res.kinds()) == {"ci-weakened"}
+
+
+def test_workflow_renamed_among_workflows_does_not_fire(tmp_path):
+    repo = make(tmp_path, {".github/workflows/ci.yml": WF + f"    {CI_ON}\n"})
+    move(repo, ".github/workflows/ci.yml", ".github/workflows/checks.yaml")
+    assert_clean(guard(repo))
+
+
+def test_workflow_removed_fires(tmp_path):
+    repo = make(tmp_path, {".github/workflows/ci.yml": WF, "a.py": "x\n"})
+    (repo / ".github/workflows/ci.yml").unlink()
+    res = guard(repo)
+    assert_only(res, "ci-weakened", ".github/workflows/ci.yml")
+    assert "workflow removed" in res.hits[0]
+
+
+@pytest.mark.parametrize("dest", ["ci/ci.yml", ".github/workflows/ci.yml.off",
+                                  ".github/workflows/old/ci.yml", ".github/ci.yml"])
+def test_workflow_moved_to_where_it_does_not_run_fires(tmp_path, dest):
+    repo = make(tmp_path, {".github/workflows/ci.yml": WF})
+    move(repo, ".github/workflows/ci.yml", dest)
+    res = guard(repo)
+    assert_only(res, "ci-weakened", ".github/workflows/ci.yml")
+    assert f"moved to {dest}" in res.hits[0]
+
+
+def test_strict_workflow_swapped_for_a_lax_one_fires(tmp_path):
+    repo = make(tmp_path, {".github/workflows/ci.yml": WF,
+                           ".github/workflows/lax.yml.off": WF + f"    {CI_ON}\n"})
+    (repo / ".github/workflows/ci.yml").unlink()
+    move(repo, ".github/workflows/lax.yml.off", ".github/workflows/main.yml")
+    res = guard(repo)
+    assert res.rc == 1
+    assert has_hit(res, "ci-weakened", ".github/workflows/ci.yml"), res.out
+    assert has_hit(res, "ci-weakened", ".github/workflows/main.yml", 5), res.out
+
+
+def test_empty_workflow_removed_fires_too(tmp_path):
+    repo = make(tmp_path, {".github/workflows/ci.yml": "\n", "a.py": "x\n"})
+    (repo / ".github/workflows/ci.yml").unlink()
+    assert_only(guard(repo), "ci-weakened", ".github/workflows/ci.yml")
+
+
+@pytest.mark.parametrize("src", ["docs/snip.txt", "notes/snip.md", "snip.rst"])
+def test_prose_renamed_to_code_counts_from_zero(tmp_path, src):
+    repo = make(tmp_path, {src: f"{SKIP1}\n{SUPP1}\n", "a.py": "x\n"})
+    move(repo, src, "src/snip.py")
+    res = guard(repo)
+    assert res.rc == 1, res.out
+    assert has_hit(res, "skip-added", "src/snip.py", 1), res.out
+    assert has_hit(res, "suppression-added", "src/snip.py", 2), res.out
+
+
+def test_code_renamed_to_prose_and_back_is_not_a_free_pass(tmp_path):
+    repo = make(tmp_path, {"src/a.py": "x\n", "docs/a.txt": f"{SKIP1}\n"})
+    (repo / "src/a.py").unlink()
+    put(repo, "src/b.py", f"{SKIP1}\n")     # the bytes of the prose file, at a code path
+    res = guard(repo)
+    assert_only(res, "skip-added", "src/b.py", 1)
+
+
+def test_move_plus_copy_counts_the_copy(tmp_path):
+    repo = make(tmp_path, {"src/a.py": f"{SKIP1}\n"})
+    move(repo, "src/a.py", "src/b.py")
+    put(repo, "src/c.py", f"{SKIP1}\n")
+    assert_only(guard(repo), "skip-added", "src/c.py", 1)
+
+
+def test_copy_of_a_file_that_stays_counts_from_zero(tmp_path):
+    repo = make(tmp_path, {"src/a.py": f"{SUPP1}\n"})
+    put(repo, "src/b.py", f"{SUPP1}\n")
+    assert_only(guard(repo), "suppression-added", "src/b.py", 1)
+
+
+@pytest.mark.parametrize("dest", ["tests/test_a.py.disabled", "tests/attic/notes.txt",
+                                  "tests/test_a.txt", "spec/a.py", "tests/a.py"])
+def test_test_renamed_so_that_no_runner_collects_it_fires(tmp_path, dest):
+    repo = make(tmp_path, {"tests/test_a.py": TEST_BODY, "tests/test_b.py": "assert 2\n"})
+    move(repo, "tests/test_a.py", dest)
+    res = guard(repo)
+    assert_only(res, "test-moved-out", "tests/test_a.py")
+    assert dest in res.hits[0]
+
+
+@pytest.mark.parametrize("old,new,clean", [
+    ("tests/helper.py", "tests/unit/helper.py", True),
+    ("tests/helper.py", "spec/support.py", True),
+    ("tests/helper.py", "lib/helper_test.py", True),
+    ("tests/helper.py", "tests/helper.py.bak", False),
+    ("tests/run.sh", "tests/run.txt", False),
+    ("tests/helper.py", "src/helper.py", False),
+    ("src/__tests__/q.js", "src/__tests__/q.js.off", False),
+    ("tests/Makefile", "tests/unit/Makefile", True),
+])
+def test_file_in_a_test_folder_keeps_its_extension(tmp_path, old, new, clean):
+    repo = make(tmp_path, {old: "x = 1\n", "a.py": "x\n"})
+    move(repo, old, new)
+    res = guard(repo)
+    if clean:
+        assert_clean(res)
+    else:
+        assert_only(res, "test-moved-out", old)
+
+
+def test_duplicate_test_deleted_fires_though_a_copy_stays(tmp_path):
+    repo = make(tmp_path, {"pkg_a/tests/test_x.py": TEST_BODY, "pkg_b/tests/test_x.py": TEST_BODY})
+    (repo / "pkg_b/tests/test_x.py").unlink()
+    assert_only(guard(repo), "deleted-test", "pkg_b/tests/test_x.py")
+
+
+def test_two_tests_with_the_same_content_need_two_new_paths(tmp_path):
+    repo = make(tmp_path, {"tests/test_a.py": TEST_BODY, "tests/test_b.py": TEST_BODY})
+    move(repo, "tests/test_a.py", "tests/unit/test_a.py")
+    (repo / "tests/test_b.py").unlink()
+    assert_only(guard(repo), "deleted-test", "tests/test_b.py")
+    put(repo, "tests/unit/test_b.py", TEST_BODY)
+    assert_clean(guard(repo))
+
+
+def test_a_helper_leaves_the_named_path_to_the_file_that_needs_it(tmp_path):
+    # a.py may go to spec/a.py or to lib/z_test.py; b.sh fits only lib/z_test.py.
+    # Byte order alone would give lib/z_test.py to a.py and report b.sh.
+    repo = make(tmp_path, {"tests/a.py": "x = 1\n", "tests/b.sh": "x = 1\n"})
+    move(repo, "tests/a.py", "spec/a.py")
+    move(repo, "tests/b.sh", "lib/z_test.py")
+    assert_clean(guard(repo))
+    repo2 = make(tmp_path, {"tests/helper.py": "x = 1\n", "tests/test_x.py": "x = 1\n"},
+                 name="repo2")
+    move(repo2, "tests/helper.py", "spec/h.py")
+    move(repo2, "tests/test_x.py", "lib/x_test.py")
+    assert_clean(guard(repo2))
+
+
+@pytest.mark.parametrize("body", ["", "\n", "  \n\t\n"])
+def test_empty_test_file_deleted_fires_though_other_empty_files_stay(tmp_path, body):
+    repo = make(tmp_path, {"tests/__init__.py": body, "tests/unit/__init__.py": body,
+                           "a.py": "x\n"})
+    (repo / "tests/__init__.py").unlink()
+    assert_only(guard(repo), "deleted-test", "tests/__init__.py")
+
+
+# ---------------------------------------------------------------- a partial clone does not fetch
+
+def test_partial_clone_does_not_fetch_and_fails_closed(tmp_path):
+    src = make(tmp_path, {"tests/test_a.py": TEST_BODY, "a.py": "x\n"}, name="src")
+    git(src, "config", "uploadpack.allowFilter", "true")
+    clone = tmp_path / "clone"
+    subprocess.run(GIT + ["-c", "protocol.file.allow=always", "clone", "-q", "--filter=blob:none",
+                          "--no-checkout", src.as_uri(), str(clone)],
+                   check=True, capture_output=True)
+    marker = tmp_path / "fetched"
+    prog = tmp_path / "upload.sh"
+    prog.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 1\n")
+    prog.chmod(0o755)
+    git(clone, "config", "remote.origin.uploadpack", str(prog))
+    before = snapshot(clone)
+    res = guard(clone)
+    assert res.rc == 2 and res.err, (res.out, res.err)
+    assert not marker.exists(), "the guard fetched through a program from repo config"
+    assert snapshot(clone) == before, "the guard wrote into the repo"
+    # The trap is live: reading a missing blob the plain way does fetch.
+    git(clone, "cat-file", "-p", "HEAD:a.py", check=False)
+    assert marker.exists()
