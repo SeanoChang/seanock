@@ -42,3 +42,8 @@ Fixed:
 
 - `install.sh` now installs the six workers into `~/.claude/agents`. The
   manifest had no row for them, so a new machine got none.
+- The status line no longer runs a program that a repo's own git config
+  names: a file monitor, a clean or process filter, the same in a submodule,
+  or the transport of a partial clone. It ran `git status` in the session's
+  working folder, which can be any repo. The cost is in
+  `docs/known-limits.md`.

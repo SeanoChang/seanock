@@ -972,3 +972,32 @@ changes it.
 - **Which model is better on hard work.** No graded task failed in either arm.
 - **The install step.** `./install.sh --dry-run --only codex` lists the three
   agent links; the real run waits for the merge.
+
+## Status line (`config/claude/statusline-command.sh`, 2026-11-13)
+
+### By design
+
+- **The script's git calls run none of a repo's own programs, at a cost.**
+  The file monitor is off for the status call, so a very large repo gets no
+  speed-up from it. Every clean and process filter is set to empty for that
+  call, so a file under a filter that was touched but not changed can show
+  `*`. A submodule's working tree is not looked at; only a new commit in a
+  submodule counts as a change. `tests/test_statusline_git_safety.py` holds a
+  trap for each program.
+- **The protection covers this script only.** Claude Code and the shell prompt
+  run their own git commands in the same folder.
+
+### Minor
+
+- **A tag with a suffix counts as a release tag.** The pattern
+  `v[0-9]*.[0-9]*.[0-9]*` also matches `v1.3.0-rc1`, so line 1 shows it when
+  it is the nearest tag. The harness makes no such tags.
+- **Two release tags on one commit.** `git describe` takes the nearest tag.
+  Among lightweight tags on the same commit it takes the first by name, so
+  `v1.2.3` wins over `v1.2.4`. Annotated tags are taken by date.
+
+### Not tested
+
+- The time the script takes in a very large repo. In this repo, 20 draws took
+  2.12 s with the protection and 1.95 s without it.
+- A session where `GIT_DIR` or `GIT_WORK_TREE` is set in the environment.

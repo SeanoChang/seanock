@@ -110,6 +110,44 @@ bar() {
 line=""
 add() { [ -z "$1" ] && return; [ -n "$line" ] && line="$line$SEP"; line="$line$1"; }
 
+# This script runs git in folders it does not control: the session's working
+# folder can be any repo, and a repo that came as an archive brings its own
+# config. `git status` can start programs that this config names. Each one is
+# switched off for the calls below, and tests/test_statusline_git_safety.py
+# holds a trap for each:
+#   - a partial clone that lacks objects would fetch them through the transport
+#     its config names: no git call here may fetch;
+#   - the file monitor (core.fsmonitor);
+#   - the clean and process filters, whatever their names are. The names are
+#     read from the config, which runs nothing, and each filter is set to
+#     empty through the environment, because `-c name=value` would split a
+#     name that holds "=";
+#   - the same programs in a submodule: its working tree is not looked at. A
+#     new commit in a submodule still counts as a change.
+# Costs: no speed-up from a file monitor in a very large repo, and a file under
+# a filter that was touched but not changed can show as changed.
+export GIT_NO_LAZY_FETCH=1
+
+# quiet_status DIR → `git status --porcelain=v2 --branch` of DIR, tracked files only
+quiet_status() (
+  export GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
+  n=1
+  while IFS= read -r key; do
+    case "$key" in
+      filter.*.required) value=false ;;
+      filter.*)          value= ;;
+      *)                 continue ;;
+    esac
+    export "GIT_CONFIG_KEY_$n=$key" "GIT_CONFIG_VALUE_$n=$value"
+    n=$((n + 1))
+  done <<EOF
+$(git -C "$1" config --name-only --get-regexp '^filter\..*\.(clean|process|required)$' 2>/dev/null)
+EOF
+  export GIT_CONFIG_COUNT="$n"
+  git -C "$1" --no-optional-locks status --porcelain=v2 --branch -uno \
+    --ignore-submodules=dirty 2>/dev/null
+)
+
 # ── line 1: where ────────────────────────────────────────────────────────────
 [ -n "$SSH_CONNECTION" ] && add "${CYAN}${I_HOST} $(hostname -s)${RST}"
 
@@ -125,7 +163,7 @@ fi
 # git: one status call gives branch, ahead/behind, and dirty (tracked files only)
 if [ -n "$root" ]; then
   read -r branch ahead behind dirty <<EOF
-$(git -C "$cwd" --no-optional-locks status --porcelain=v2 --branch -uno 2>/dev/null | awk '
+$(quiet_status "$cwd" | awk '
   /^# branch.oid/  { oid = substr($3, 1, 7) }
   /^# branch.head/ { head = $3 }
   /^# branch.ab/   { a = substr($3, 2); b = substr($4, 2) }
@@ -195,7 +233,7 @@ if [ -n "$hver" ]; then
   # v1.2.3-4-gabc1234 → tag v1.2.3, 4 commits past it
   hver=${hver%-g*}; hpast=${hver##*-}; hver=${hver%-*}
   read -r hbranch hdirty <<EOF
-$(git -C "$hdir" --no-optional-locks status --porcelain=v2 --branch -uno 2>/dev/null | awk '
+$(quiet_status "$hdir" | awk '
   /^# branch.oid/  { oid = substr($3, 1, 7) }
   /^# branch.head/ { head = $3 }
   /^[12u] /        { d = 1 }

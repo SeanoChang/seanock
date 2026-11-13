@@ -64,8 +64,10 @@ hook. Every other step is a rule that the agent must follow.
 | CI          | `.github/workflows/ci.yml`            | The merge-gate hook reads it      |
 | Install     | `install.sh`, `manifest.txt`          | `tests/test_install_manifest.py`  |
 
-The [README](../README.md) says what each part does. The status line test
-covers only the version segment of line 1.
+The [README](../README.md) says what each part does. The status line has two
+test files: `tests/test_harness_version.py` covers the version segment of line
+1, and `tests/test_statusline_git_safety.py` checks that its git calls run no
+program named by a repo's config. Lines 2 and 3 are not tested.
 
 Three hooks are wired in the settings template: `merge-gate.py` on
 `gh pr merge`, `visual-artifacts-route.sh` on the Artifact tool, and
