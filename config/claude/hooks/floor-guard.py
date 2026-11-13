@@ -9,7 +9,7 @@ silent. It reports six kinds:
   deleted-test       a test file at the base that is gone, with no move that
                      keeps it a test (see "Moves")
   test-moved-out     a test file that is gone, and its content is now only at
-                     a new path that does not have a test name
+                     a new path that does not keep it a test (see "Moves")
   skip-added         more lines with a skip marker in a file than at the base
   suppression-added  more lines with a lint or type suppression than at the base
   assert-removed     fewer assertion lines in a test file than at the base
@@ -35,11 +35,13 @@ Moves. A path that is gone and a path that is new are one move when both hold
 the same bytes (CRLF equals LF) and the new path keeps the rule's scope. Each
 path takes part in one move for a rule. Paths are taken in byte order.
   - A gone test, of rank 1 or 2, keeps its floor only at a new path of rank
-    2 that no runner skips by default: no folder on it starts with a dot or
-    is node_modules. So a helper moved from one test folder to another is
-    reported as test-moved-out: the guard cannot tell whether a runner still
-    collects it. The guard reads names only. It does not know a runner's
-    settings (testpaths, ignore patterns).
+    2 with no folder on it that starts with a dot or is node_modules. So a
+    helper moved from one test folder to another is reported as
+    test-moved-out: the guard cannot tell whether a runner still collects it.
+    The guard reads names only. It knows neither a runner's settings
+    (testpaths, ignore patterns) nor the other folders a runner skips by
+    default (build, venv, dist, testdata), nor a layout rule such as RSpec
+    reading only spec/.
   - A gone workflow keeps its floor at a new workflow path.
   - For a marker rule, a new path in scope is a move, with nothing to count,
     when a gone path in the same scope held its bytes. So a file moved into a

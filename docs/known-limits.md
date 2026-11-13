@@ -981,6 +981,13 @@ changes it.
   collected, unless a folder on it starts with a dot or is `node_modules`. The
   guard does not read `testpaths`, ignore patterns, or `collect_ignore`, so a
   change to those settings is not seen.
+- **Some default rules of runners are not known to it.** Each of these moves
+  stops the test running and gives no finding: `tests/test_a.py` to
+  `build/test_a.py` or `venv/test_a.py` (pytest skips those folders);
+  `pkg/x_test.go` to `pkg/_old/x_test.go` or `pkg/testdata/x_test.go` (the go
+  tool); `spec/models/user_spec.rb` to `lib/user_spec.rb` (RSpec reads only
+  `spec/`); `src/test/java/FooTest.java` to `src/main/java/FooTest.java`
+  (Maven); `src/a.test.ts` to `dist/a.test.ts` (Vitest).
 - **A file that is a test only by its folder cannot move quietly.** A helper
   or a fixture moved from one test folder to another is reported as
   `test-moved-out`. The guard cannot tell whether a runner still collects it.
