@@ -1383,3 +1383,105 @@ def test_hard_link_under_another_name_is_a_copy_not_a_twin(tmp_path):
     repo = make(tmp_path, {"src/a.py": f"{SKIP1}\n"})
     os.link(repo / "src/a.py", repo / "src/b.py")
     assert_only(guard(repo), "skip-added", "src/b.py", 1)
+
+
+def branch_that_deleted_a_test(tmp_path):
+    """origin/main has no test; the branch adds one and deletes it again. So
+    against origin/main the run is clean, and a guard that wrongly goes on to
+    origin/main shows itself by saying so."""
+    repo = make(tmp_path, {"a.py": "x\n"})
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    put(repo, "tests/test_a.py", TEST_BODY)
+    commit_all(repo, "t")
+    git(repo, "checkout", "-q", "-b", "feat")
+    (repo / "tests/test_a.py").unlink()
+    commit_all(repo, "del")
+    assert_clean(run(cwd=repo))
+    return repo
+
+
+BROKEN_REFS = {
+    "an id of no object": "1234567890123456789012345678901234567890\n",
+    "text that is no id": "not an id\n",
+    "nothing": "",
+    "a ref that is not there": "ref: refs/remotes/origin/nowhere\n",
+    "a tree": None,
+}
+
+
+@pytest.mark.parametrize("what", sorted(BROKEN_REFS))
+def test_broken_default_base_ref_fails_closed(tmp_path, what):
+    # origin/dev is there but names no commit. The guard must not go on to
+    # origin/main as if origin/dev were not there.
+    repo = branch_that_deleted_a_test(tmp_path)
+    text = BROKEN_REFS[what]
+    if text is None:
+        text = git(repo, "rev-parse", "HEAD^{tree}").stdout.decode()
+    ref = repo / ".git/refs/remotes/origin/dev"
+    ref.parent.mkdir(parents=True, exist_ok=True)
+    ref.write_text(text)
+    res = run(cwd=repo)
+    assert res.rc == 2 and "origin/dev" in res.err, (res.out, res.err)
+    assert res.out == ""
+
+
+def test_broken_named_base_fails_closed(tmp_path):
+    repo = branch_that_deleted_a_test(tmp_path)
+    ref = repo / ".git/refs/remotes/origin/dev"
+    ref.write_text("1234567890123456789012345678901234567890\n")
+    res = run("--base", "origin/dev", cwd=repo)
+    assert res.rc == 2 and "does not resolve" in res.err, (res.out, res.err)
+    assert res.out == ""
+
+
+FAILED_LOOKUPS = {
+    "killed": 'kill -9 $$',
+    "exit 1, silent": 'exit 1',
+    "exit 3, silent": 'exit 3',
+    "exit 0 with a warning": 'echo "warning: odd" >&2; exit 0',
+    "a git with no such option": 'echo "error: unknown option" >&2; exit 129',
+}
+
+
+@pytest.mark.parametrize("how", sorted(FAILED_LOOKUPS))
+def test_default_base_lookup_that_fails_is_not_read_as_no_such_ref(tmp_path, how):
+    # origin/dev is a good ref, and the lookup of it fails. That is neither
+    # "not there" (go on to origin/main: clean) nor "there" (one hit).
+    repo = branch_that_deleted_a_test(tmp_path)
+    git(repo, "update-ref", "refs/remotes/origin/dev", "HEAD~1")
+    assert_only(run(cwd=repo), "deleted-test", "tests/test_a.py")
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    real = shutil.which("git")
+    (fake / "git").write_text(
+        "#!/bin/sh\n"
+        'last=; for a in "$@"; do last=$a; done\n'
+        f'[ "$last" = refs/remotes/origin/dev ] && {{ {FAILED_LOOKUPS[how]}; }}\n'
+        f'exec "{real}" "$@"\n')
+    (fake / "git").chmod(0o755)
+    res = run(cwd=repo, path=f"{fake}{os.pathsep}{os.environ['PATH']}")
+    assert res.rc == 2 and "origin/dev" in res.err, (res.out, res.err)
+    assert res.out == ""
+
+
+def test_default_base_skips_a_ref_that_is_not_there(tmp_path):
+    repo = make(tmp_path, {"tests/test_a.py": TEST_BODY})
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(repo, "update-ref", "refs/remotes/origin/dev/topic", "HEAD")   # a longer name only
+    (repo / "tests/test_a.py").unlink()
+    assert_only(run(cwd=repo), "deleted-test", "tests/test_a.py")
+
+
+def letter_case_makes_two_files(folder):
+    (folder / "probe-a").write_text("x")
+    two = not (folder / "probe-A").exists()
+    (folder / "probe-a").unlink()
+    return two
+
+
+def test_untracked_file_whose_name_differs_only_in_case_is_its_own_file(tmp_path):
+    if not letter_case_makes_two_files(tmp_path):
+        getattr(pytest, "sk" "ip")("this disk takes a.py and A.py as one file")
+    repo = make(tmp_path, {"src/a.py": "x\n"})
+    put(repo, "src/A.py", f"{SKIP1}\n")
+    assert_only(guard(repo), "skip-added", "src/A.py", 1)

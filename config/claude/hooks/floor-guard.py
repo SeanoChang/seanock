@@ -4,8 +4,8 @@
 It compares the tree at merge-base(<base>, HEAD) with the working tree as it
 is on disk: committed, staged and unstaged changes to tracked files, plus
 untracked files that git does not ignore. When the history has more than one
-best common ancestor (a criss-cross merge), it checks each and joins the hits. Loosening is loud; tightening is
-silent. It reports six kinds:
+best common ancestor (a criss-cross merge), it checks each and joins the hits.
+Loosening is loud; tightening is silent. It reports six kinds:
 
   deleted-test       a test file at the base that is gone, with no move that
                      keeps it a test (see "Moves")
@@ -49,6 +49,19 @@ path takes part in one move for a rule. Paths are taken in byte order.
     scope (a disabled workflow switched on, a text file renamed to code)
     counts from zero.
 A copy is not a move: the path it came from is still there.
+
+Base. With no --base, the base is the first of origin/dev, develop,
+development, integration, main, master that is there (git 2.43 or later).
+A ref that is there but names no commit ends the run with exit 2: the guard
+does not go on to the next name.
+
+Twins. On a disk that takes two spellings of a name as one file (macOS:
+letter case, and the two Unicode forms of an accented letter), git can list a
+tracked file a second time as untracked, under the other spelling. The guard
+leaves that second entry out when it is the same file on disk (same device
+and inode) and the two names differ only in case or Unicode form. An
+untracked hard link under any other name is a copy, and is read like any
+new file.
 
 It is a tripwire, not a judge: a reviewer decides on each hit. There is no
 in-repo exemption. It does not see a weakened assertion that keeps the count,
@@ -127,12 +140,8 @@ class GuardError(Exception):
 GIT_TIMEOUT = 120  # seconds for one git call; --git-timeout sets it
 
 
-def git(root, *args, stdin=None, quiet_failure=False):
-    """Run one git command; return stdout bytes or raise GuardError.
-
-    Anything on stderr is an error, also with exit 0. With quiet_failure, a
-    failure that says nothing returns None (rev-parse --quiet on a missing ref).
-    """
+def call_git(root, *args, stdin=None):
+    """Run one git command to its end; return (exit code, stdout, stderr text)."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env["GIT_OPTIONAL_LOCKS"] = "0"
     # A partial clone fetches a missing object through the transport its config
@@ -146,24 +155,45 @@ def git(root, *args, stdin=None, quiet_failure=False):
         raise GuardError(f"git {args[0]} did not finish in {GIT_TIMEOUT} s")
     except OSError as e:
         raise GuardError(f"cannot run git: {e}")
-    msg = proc.stderr.decode("utf-8", "replace").strip()
-    if proc.returncode != 0:
-        if quiet_failure and not msg:
-            return None
-        raise GuardError(f"git {args[0]} failed: {msg}")
+    return proc.returncode, proc.stdout, proc.stderr.decode("utf-8", "replace").strip()
+
+
+def git(root, *args, stdin=None):
+    """Run one git command; return stdout bytes or raise GuardError.
+
+    Every failure is an error, and so is anything on stderr with exit 0.
+    """
+    code, out, msg = call_git(root, *args, stdin=stdin)
+    if code != 0:
+        raise GuardError(f"git {args[0]} failed: {msg or f'exit {code}'}")
     if msg:
         # git warns and exits 0 when it cannot open a folder, or when a name
         # is ambiguous. What it then printed is not the whole truth.
         raise GuardError(f"git {args[0]} warned: {msg}")
-    return proc.stdout
+    return out
+
+
+def ref_exists(root, ref):
+    """Is there a ref of exactly this full name? A ref that is there but
+    broken (it names no object, or it points at no ref) is there.
+
+    show-ref --exists has one exit code for each answer: 0 there, 2 not
+    there, 1 could not look. No other git call keeps "not there" apart from
+    "there, and broken", and a broken default base must not read as absent.
+    """
+    code, _, msg = call_git(root, "show-ref", "--exists", ref)
+    if code == 0 and not msg:
+        return True
+    if code == 2:
+        return False
+    first = msg.splitlines()[0] if msg else f"exit {code}"
+    raise GuardError(f"cannot tell whether {ref} is there: {first} "
+                     "(this needs git 2.43 or later; or pass --base)")
 
 
 def resolve(root, ref):
-    """The commit a ref names, or None when there is no such ref."""
-    if git(root, "rev-parse", "--verify", "--quiet", ref + "^{commit}", quiet_failure=True) is None:
-        return None
-    # Asked again without --quiet, git warns when the name is ambiguous (a tag
-    # and a branch of one name), and a warning ends the run.
+    """The commit a ref names. A ref that names none is an error, and so is a
+    name that git warns about (a tag and a branch of one name)."""
     return git(root, "rev-parse", "--verify", ref + "^{commit}").decode().strip()
 
 
@@ -402,14 +432,21 @@ def run(repo, base_ref):
     if base_ref is not None:
         if base_ref.startswith("-"):
             raise GuardError(f"bad base ref: {base_ref}")
-        base = resolve(root, base_ref)
-        if base is None:
-            raise GuardError(f"base ref does not resolve: {base_ref}")
+        try:
+            base = resolve(root, base_ref)
+        except GuardError as e:
+            raise GuardError(f"base ref does not resolve: {base_ref} ({e})")
     else:
         refs = ["refs/remotes/origin/" + b for b in DEFAULT_BASES]
-        base = next((oid for oid in (resolve(root, r) for r in refs) if oid), None)
-        if base is None:
-            raise GuardError("no base ref resolves; tried " + ", ".join(refs) + "; pass --base")
+        # The first ref that is there is the base. When it names no commit the
+        # run ends: going on to the next name would compare with the wrong base.
+        found = next((r for r in refs if ref_exists(root, r)), None)
+        if found is None:
+            raise GuardError("no base ref is there; tried " + ", ".join(refs) + "; pass --base")
+        try:
+            base = resolve(root, found)
+        except GuardError as e:
+            raise GuardError(f"the default base {found} is there but names no commit ({e})")
     try:
         merge_bases = git(root, "merge-base", "--all", base, "HEAD").decode().split()
     except GuardError as e:

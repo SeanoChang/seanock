@@ -1000,6 +1000,18 @@ changes it.
 - **A weakened assertion that keeps the count is not seen.** Neither is an
   assertion that is commented out, or a test renamed and edited in one step:
   that one reports as `deleted-test`.
+- **A default base that is there but broken ends the run.** With no `--base`,
+  the base is the first of `origin/dev`, `develop`, `development`,
+  `integration`, `main`, `master` that is there. When that ref names no commit
+  (a lost object, a damaged ref file, a symbolic ref that points nowhere), the
+  guard exits 2. It does not go on to the next name, because that would
+  compare with the wrong base. Finding the default base needs git 2.43 or
+  later (`show-ref --exists`); with an older git, pass `--base`.
+- **An untracked twin of a tracked file is left out.** On a disk that takes
+  two spellings of a name as one file, git can list a tracked file twice. The
+  guard drops the second entry only when it is the same file on disk (device
+  and inode) and the names differ only in letter case or Unicode form. An
+  untracked hard link under any other name is a copy, and is read.
 
 ### Minor
 
@@ -1018,15 +1030,23 @@ changes it.
   name,** so deleting `scripts/test` is reported.
 - **Any warning from git ends the run with exit 2.** A machine whose git
   always warns (a config file it cannot read) gets no result until that is
-  fixed.
+  fixed. A repo can do the same to itself: a committed `.gitignore` that is a
+  symlink makes git warn on every run.
 - **Time and memory grow with the tree.** A tree of 20,000 files with one
   200 MB source file took 60 s and 1.2 GB.
 
 ### Not tested
 
-- Linux. The tests ran on macOS only.
-- A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`.
+- Linux. The tests ran on macOS only. One test runs only on a disk that keeps
+  letter case apart, so it has not run yet: an untracked `A.py` beside a
+  tracked `a.py` is its own file. It is the only test of the inode half of
+  the twin rule.
+- A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`, and a real
+  git older than 2.43 (the test uses a stand-in that rejects the option).
+- Refs kept in the reftable format. The broken-ref tests write loose ref
+  files.
 - Sparse checkouts and Git LFS pointers. These show as deletions or changes.
 - That `GIT_OPTIONAL_LOCKS=0` is needed. The test that nothing is written
   passes without it.
-- Replace refs, a full disk, and a signal sent to git while it runs.
+- Replace refs, a full disk, and a signal sent to git while it runs, except
+  during the lookup of the default base, which is tested.
