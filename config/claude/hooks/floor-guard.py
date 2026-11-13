@@ -138,6 +138,7 @@ class GuardError(Exception):
 
 
 GIT_TIMEOUT = 120  # seconds for one git call; --git-timeout sets it
+NO_SUCH_REF = "error: reference does not exist"  # all that show-ref --exists says with exit 2
 
 
 def call_git(root, *args, stdin=None):
@@ -147,6 +148,7 @@ def call_git(root, *args, stdin=None):
     # A partial clone fetches a missing object through the transport its config
     # names, which is a program, and stores what it gets. Never fetch.
     env["GIT_NO_LAZY_FETCH"] = "1"
+    env["LC_ALL"] = "C"  # one wording for each message, whatever the user's language
     cmd = ["git", "-c", "core.fsmonitor=", "-c", "core.quotepath=off", "-C", root, *args]
     try:
         proc = subprocess.run(cmd, input=stdin, capture_output=True, env=env,
@@ -180,11 +182,14 @@ def ref_exists(root, ref):
     show-ref --exists has one exit code for each answer: 0 there, 2 not
     there, 1 could not look. No other git call keeps "not there" apart from
     "there, and broken", and a broken default base must not read as absent.
+    Each answer needs both of its signs: the exit code, and stderr that holds
+    what git prints for that answer and nothing more. A "not there" that comes
+    with a warning, or with no message, is not git's answer.
     """
     code, _, msg = call_git(root, "show-ref", "--exists", ref)
     if code == 0 and not msg:
         return True
-    if code == 2:
+    if code == 2 and msg == NO_SUCH_REF:
         return False
     first = msg.splitlines()[0] if msg else f"exit {code}"
     raise GuardError(f"cannot tell whether {ref} is there: {first} "

@@ -1440,6 +1440,10 @@ FAILED_LOOKUPS = {
     "exit 3, silent": 'exit 3',
     "exit 0 with a warning": 'echo "warning: odd" >&2; exit 0',
     "a git with no such option": 'echo "error: unknown option" >&2; exit 129',
+    "not there, with a warning":
+        'echo "warning: ignoring broken ref" >&2; echo "error: reference does not exist" >&2; exit 2',
+    "not there, with no message": 'exit 2',
+    "not there, in other words": 'echo "error: no such ref" >&2; exit 2',
 }
 
 

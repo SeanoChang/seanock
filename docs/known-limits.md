@@ -1097,6 +1097,11 @@ changes it.
   always warns (a config file it cannot read) gets no result until that is
   fixed. A repo can do the same to itself: a committed `.gitignore` that is a
   symlink makes git warn on every run.
+- **The answer "no such ref" is read by its exact words.** The guard takes a
+  default ref as not there only when git exits 2 and prints
+  `error: reference does not exist` and nothing more. A git release that
+  words this in another way makes every run with no `--base` exit 2 until the
+  guard is updated.
 - **A default ref whose file is a symlink to nothing reads as not there.**
   Git itself reports that ref as missing, so the guard goes on to the next
   name. Only a damaged `.git` folder holds such a file.
