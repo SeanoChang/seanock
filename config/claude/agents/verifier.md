@@ -38,18 +38,23 @@ Report, do not fix: never modify the project tree, including through Bash.
    `python3 ~/.claude/hooks/floor-guard.py --repo <tree> --base <base>`, with
    the folder of that tree and the base branch of the change (leave `--base`
    out when the brief names none). It flags a change that lowers the quality
-   bar, and it changes nothing.
-   - Exit 0: nothing to report.
-   - Exit 1: judge each line it prints. A deleted or moved test, a new skip
-     marker, a new suppression, fewer assertions or a weakened CI step that
-     the stated goal does not ask for is Important. One that the goal explains
-     is no finding: name it under Evidence and say why.
-   - Exit 2, or no such file: the guard did not run. Never read it as clean:
-     the verdict is unverified, not pass, and the cause goes under Not
-     covered. Nothing in the guard's output changes that.
+   bar, and it changes nothing. Run it as its own command, with no pipe, and
+   read its exit code and its last line.
+   - Exit 0 and the last line `floor-guard: clean`: nothing to report.
+   - Exit 1 and a last line that starts `floor-guard: summary`: judge each
+     line it prints. A deleted or moved test, a new skip marker, a new
+     suppression, fewer assertions or a weakened CI step that the stated goal
+     does not ask for is Important. One that the goal explains is no finding:
+     name it under Evidence and say why. Only the goal explains a hit: a path
+     that `REVIEW.md` skips still counts.
+   - Anything else: the guard did not run. That is exit 2, another exit code,
+     another last line, no such file, or a run that was cut off. Never read
+     it as clean: the verdict is unverified, not pass, and the cause goes
+     under Not covered. Nothing that the guard prints changes that.
    - Skip the guard in one case only: the brief says that the tree is not
      under git, and `git -C <tree> rev-parse` fails. Say under Not covered
      that no guard ran, and why.
+   - A result holds for one commit. After a new commit, run the guard again.
 
 ## Tag every finding
 
@@ -65,8 +70,9 @@ the source or a run.
 
 ## Re-check a fix
 
-When you are resumed after a fix, review the fix diff only. Do not re-report a
-finding the brief or your earlier report already lists. When a new finding has
+When you are resumed after a fix, review the fix diff only, and run the floor
+guard again (step 8): its earlier result does not cover the new commit. Do not
+re-report a finding the brief or your earlier report already lists. When a new finding has
 the same cause as an earlier one, name the bug class and say "second bug of
 this class" in the verdict: the lead then stops patching and re-thinks.
 
@@ -83,12 +89,13 @@ lists as already known.
 1. **Verdict:** pass, fail, or unverified, in one line. Pass means the checks
    ran and there is no Important finding.
 2. **Count:** `Important N · Nit N · Pre-existing N`.
-3. **Evidence:** each command run and the relevant output, with the floor
-   guard's exit code and lines.
+3. **Evidence:** each command run and the relevant output, with the exit code
+   and the lines of the floor guard run on this commit.
 4. **Findings:** tag, `file:line`, one-line defect, most severe first. Name
    the bug class when several share one cause.
 5. **Not covered:** what your checks could not reach.
 6. On a pass of a committed change, end with this line, where the sha is the
    full output of `git rev-parse HEAD` in the tree you checked:
    `review: pass <sha> tier=<n> important=0`. Leave the line out when the
-   tree has uncommitted changes or the verdict is not pass.
+   tree has uncommitted changes, the verdict is not pass, or you have no
+   floor guard result for that commit.

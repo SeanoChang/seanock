@@ -1116,8 +1116,12 @@ changes it.
   step 8, since 2026-11-14). The Codex verifier does not, and neither does
   CI. The verifier calls it at `~/.claude/hooks/floor-guard.py`, where the
   installer links it, and names the tree with `--repo`.
-- **A guard that did not run makes the verdict "unverified".** That holds for
-  exit 2 and for a missing guard file, whatever the guard printed, and an
+- **A guard that did not run makes the verdict "unverified".** A run counts
+  only with exit 0 and the last line `floor-guard: clean`, or exit 1 and a
+  last line that starts `floor-guard: summary`. Every other outcome is "did
+  not run": exit 2, another exit code, another last line, a missing guard
+  file, a run that was cut off. So a pipe that hides the guard's exit code,
+  or a broken `python3` that exits 1 by itself, does not read as a result. An
   unverified change does not get the line that opens the merge gate. So on a
   machine that did not install this repo, or whose git prints a warning on
   every call, no change passes until that is fixed. The same holds for a repo
@@ -1127,8 +1131,17 @@ changes it.
   when the brief says so** and its own `git -C <tree> rev-parse` fails. The
   lead that writes the brief is trusted with that statement, as it is with
   the tier.
+- **A guard result holds for one commit.** The verifier runs the guard again
+  after each new commit, also when it is resumed to re-check a fix, and it
+  writes the review line only with a guard result for the commit in that
+  line. A skipped guard therefore gives no review line.
+- **Only the stated goal explains a hit.** A path that `REVIEW.md` tells the
+  verifier to skip still counts for the guard, so a change cannot exempt
+  itself by an edit to `REVIEW.md`.
 - **That the verifier follows step 8 is a rule in its text.** It was shown by
-  hand on stand-in repos, and has no test in CI.
+  hand on stand-in repos, and has no test in CI. The rules for a re-check, a
+  pipe and a foreign exit code come from an adversary's reading of the text
+  (2026-11-14) and were not run with a live verifier.
 
 - **It reads names, not runner settings.** A path with a test name counts as
   collected, unless a folder on it starts with a dot or is `node_modules`. The
@@ -1195,6 +1208,29 @@ changes it.
   name. Only a damaged `.git` folder holds such a file.
 - **Time and memory grow with the tree.** A tree of 20,000 files with one
   200 MB source file took 60 s and 1.2 GB.
+- **A folder with no `.git` of its own, inside another repo, is read as that
+  outer repo.** `--repo outer/proj` gives the outer repo's result, also when
+  the outer repo ignores `proj/`: `floor-guard: clean` for a tree the guard
+  did not read. The verifier's skip does not apply there, because
+  `git -C outer/proj rev-parse` succeeds. The sha of the outer repo cannot
+  match the head of a pull request for `proj`.
+- **With no `--base`, a change that is already in the default base reads as
+  clean.** For a release pull request from `dev` to `main`, the default base
+  is `origin/dev`, so the diff is empty: a test that `dev` deleted is
+  reported only with `--base origin/main`. The verifier leaves `--base` out
+  when its brief names no base. A release pull request does not go through
+  the merge gate.
+- **`--repo ""` reads the folder the shell is in.** That happens when a shell
+  variable for the tree is empty.
+- **A file that git is told not to look at hides a difference.** The guard
+  reads the disk. With `git update-index --assume-unchanged` or
+  `--skip-worktree` on a file, the disk can hold a test with no skip marker
+  while `HEAD` adds one: the guard prints clean, and `git status` prints
+  nothing, so the verifier's rule about uncommitted changes does not apply.
+  It needs someone who hides the edit on purpose.
+- **A change inside a submodule is not read** (found 2026-11-14, there since
+  the first version). The guard reads regular files only, so a submodule
+  moved to a commit that deletes a test gives `floor-guard: clean`.
 
 ### Not tested
 
