@@ -1197,3 +1197,96 @@ changes it.
   passes without it.
 - Replace refs, a full disk, and a signal sent to git while it runs, except
   during the lookup of the default base, which is tested.
+
+## Attribution key (`config/claude/settings.json.tmpl`, 2026-11-14)
+
+Reviewed on 2026-11-14: verifier pass and adversary held at commit `334ea74`.
+The first commit passed too; its five small findings were one class (the live
+test reached further than its temp repo) and were fixed in one change.
+
+### By design
+
+- **The key reaches Claude Code only.** Codex and other agents learn "No AI
+  attribution" from the rules file.
+- **A machine gets the key at the next render of the template.** Until
+  `install.sh` renders it again, the live settings file has no such key. That
+  render stops when the live file drifted from the template.
+
+### Minor
+
+- **The live test reads the first description block only**
+  (`tests/test_attribution.py`, `described`). Attribution that a session
+  prints after the end marker, or in a second block, is not seen by the test
+  of the template. The control test fails loudly on the same output.
+- **A marker with Markdown around it is not found** (`**PR-BODY-START**`, a
+  marker with a colon). The live test then fails with "no description between
+  the markers". It fails safe.
+- **The hostile git config in `test_the_setup_commit_stays_in_the_test_repo`
+  proves less than its text says.** The test hands the config over through
+  `GIT_CONFIG_GLOBAL`, and `git()` drops every `GIT_*` variable of the caller
+  anyway. That the test's git reads no user config is pinned by the shape
+  test, and was shown by hand with a temp HOME.
+- **The caller's HOME goes along.** With `GIT_CONFIG_GLOBAL=/dev/null`, git
+  still reads `$HOME/.config/git/ignore`. An ignore file that lists
+  `README.md` or `hello.txt` makes the setup fail, loudly.
+- **`git commit -F <file>` is inside the rule `Bash(git commit:*)`.** A
+  session could read a file outside the temp repo into its commit message. It
+  writes nothing outside the repo. Shell redirects, pipes and command
+  substitution were refused in a probe.
+
+### Not tested
+
+- A Claude Code older than 2.1.281 with the object form, and whether a
+  version between 2.0.62 and 2.1.281 knows the `sessionUrl` sub-key. The docs
+  say the object form is the one for older versions.
+- The whole rendered template passed to the CLI. The live runs pass only the
+  `attribution` object.
+- A session in the cloud or under Remote Control, where the session link
+  applies.
+- Any model but Haiku, and more than one run per case.
+
+## Checkpoints and the design gate (`config/claude/CLAUDE.md`, 2026-11-14)
+
+Reviewed on 2026-11-14: verifier pass at commit `4a8170d`, tier 1. The
+verifier failed the first two commits. The gate reached Claude subagents,
+whose brief forbids a question; the first fix then used the words "lead" and
+"worker", which the Codex file does not define. Both were one class: a
+sentence that does not fit every agent that loads it. The sentences now say
+who they are for by one thing both files define: an agent has a brief, or it
+has none.
+
+### By design
+
+- **The checkpoint rule has no live test.** In a short task a session with no
+  rule also decides small things by itself, so a short run cannot tell the
+  rule from its absence. Its measure is the share of lead turns that end on a
+  question, counted over real sessions.
+- **The size cap of the rules file was raised**, from 15,100 to 15,650
+  characters and from 220 to 230 lines. The file is at 15,615 and 230.
+
+### Minor
+
+- **A subagent with no brief gets the gate.** A fork carries the lead's
+  conversation and no brief. By the text it shows a page and waits when it
+  starts something new. Not tested.
+- **A request that looks like an eight-line brief** may make the session Sean
+  talks to skip the gate. Not tested.
+- **The live gate test can pass with code in the answer.** It fails when the
+  session writes any file that is not Markdown, and it asks for one signature
+  with an empty body. A full implementation pasted into the answer beside
+  such a signature still passes.
+- **The live gate test can fail a correct session.** A signature whose body
+  is only a docstring is not counted as empty, and an answer that asks for a
+  go in other words than go, approve, confirm or proceed is not counted.
+- **Two parts of the live test have no fast test:** the word list of the
+  go-check, and the presence of the third live session.
+- **The brief sentence was not seen to change behaviour.** In one run, a
+  session with the builder's text and a brief wrote the code with the
+  sentence cut from the rules too. The sentence removes a contradiction in
+  the text.
+- **A pin finds a deleted phrase,** not a rule that was negated around it.
+
+### Not tested
+
+- Either Codex mode. The Codex file was read, not run.
+- Any model but Sonnet, and more than three runs of the gate.
