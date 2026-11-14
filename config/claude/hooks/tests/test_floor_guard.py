@@ -1489,3 +1489,41 @@ def test_untracked_file_whose_name_differs_only_in_case_is_its_own_file(tmp_path
     repo = make(tmp_path, {"src/a.py": "x\n"})
     put(repo, "src/A.py", f"{SKIP1}\n")
     assert_only(guard(repo), "skip-added", "src/A.py", 1)
+
+
+def test_git_is_asked_in_one_language_whatever_the_callers_locale(tmp_path, monkeypatch):
+    """The guard reads one git message by its exact words ("reference does not
+    exist"), and git words its messages in the caller's language. So every git
+    call must run with LC_ALL=C. The stand-in notes the locale of each call,
+    then runs the real git."""
+    repo = branch_that_deleted_a_test(tmp_path)
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD~1")
+    log = tmp_path / "locales.txt"
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    real = shutil.which("git")
+    (fake / "git").write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"${{LC_ALL-unset}}\" >> '{log}'\n"
+        f'exec "{real}" "$@"\n')
+    (fake / "git").chmod(0o755)
+    for name in ("LC_ALL", "LANG", "LANGUAGE", "LC_MESSAGES"):
+        monkeypatch.setenv(name, "de_DE.UTF-8")
+    res = run(cwd=repo, path=f"{fake}{os.pathsep}{os.environ['PATH']}")
+    assert_only(res, "deleted-test", "tests/test_a.py")
+    seen = log.read_text().split()
+    assert len(seen) >= 3, seen
+    assert set(seen) == {"C"}, f"git ran in the caller's locale: {sorted(set(seen))}"
+
+
+
+def test_repo_option_checks_the_named_tree_from_any_folder(tmp_path):
+    """The verifier names the tree with --repo, because its shell may stand in
+    another folder, also one that is no git repo at all."""
+    repo = make(tmp_path, {"tests/test_a.py": TEST_BODY})
+    (repo / "tests/test_a.py").unlink()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    assert_only(run("--repo", str(repo), "--base", "HEAD", cwd=elsewhere), "deleted-test", "tests/test_a.py")
+    res = run("--base", "HEAD", cwd=elsewhere)
+    assert res.rc == 2 and res.out == "", (res.out, res.err)
