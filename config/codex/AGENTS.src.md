@@ -48,9 +48,9 @@
 ### Working
 
 {{rule: working.expectation}}
-- For a hard design call, or a bug whose cause stays unclear after two failed
-  fixes, say so and stop for my call. Don't hand work to another AI tool or
-  CLI unless I ask.
+{{rule: working.checkpoints}}
+{{rule: working.design-gate}}
+- Don't hand work to another AI tool or CLI unless I ask.
 {{rule: second-brain}}
 <!-- adapts: verify.recurs@ae4c79d178 -->
 - When the same issue recurs, fix it at the source: a lint rule, a hook, a
