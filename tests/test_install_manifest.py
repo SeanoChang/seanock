@@ -15,7 +15,9 @@ and the backup folder are under $HOME.
 Run: python3 -m pytest tests/test_install_manifest.py -q -p no:cacheprovider
 """
 import os
+import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -89,6 +91,66 @@ def test_every_part_under_config_has_a_row_or_a_reason():
         f"{missing} would not be installed: add a row to manifest.txt, or a "
         "reason to NOT_INSTALLED in this file"
     )
+
+
+def readme_test_folders():
+    """The folder of each pytest command in the README's list of tests."""
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    return re.findall(r"^python3 -m pytest (\S+) -q -p no:cacheprovider$", text, flags=re.MULTILINE)
+
+
+def test_no_test_run_writes_bytecode_into_the_repo(tmp_path):
+    """Some test files load a source file of config/ as a module. With
+    bytecode on, Python writes a __pycache__ folder beside that file: a part
+    with no manifest row under config/codex (the test above fails on it), and
+    a folder the installer links under config/claude/hooks and the skills.
+    conftest.py at the repo root turns bytecode off for every run, and
+    pytest.ini makes pytest read it.
+
+    This takes each folder the README gives a pytest command for and collects
+    its tests in a copy of the repo, with the caller's own switch taken away.
+    Collecting reads every test file, so a load at the top of a file is seen.
+    One folder is also collected by a run that starts inside it. The merge
+    gate is loaded inside a test, so that one test is run by name."""
+    folders = readme_test_folders()
+    assert len(folders) >= 5 and "tests" in folders and "config/claude/hooks/tests" in folders, (
+        f"the README no longer lists its pytest commands in the form this test reads: {folders}"
+    )
+    copy = tmp_path / "repo"
+    listed = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                            cwd=REPO, capture_output=True, check=True).stdout
+    for name in filter(None, listed.decode().split("\0")):
+        source = REPO / name
+        if source.is_file():                 # a tracked file that is deleted in the work tree is not copied
+            target = copy / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"}
+
+    def pytest_in_the_copy(*args, start_in="."):
+        return subprocess.run([sys.executable, "-m", "pytest", *args, "-q", "-p", "no:cacheprovider"],
+                              cwd=copy / start_in, env=env, capture_output=True, text=True)
+
+    for folder in folders:
+        done = pytest_in_the_copy(folder, "--collect-only")
+        assert done.returncode == 0 and re.search(r"^\d+ tests? collected", done.stdout, flags=re.MULTILINE), (
+            f"could not collect the tests of {folder}:\n" + done.stdout + done.stderr
+        )
+    # A run that starts inside a folder of the repo. Without pytest.ini, pytest
+    # takes that folder as its root and does not read the conftest.py above it.
+    inside = "config/claude/skills/brief-artifact"
+    done = pytest_in_the_copy("tests", "--collect-only", start_in=inside)
+    assert done.returncode == 0 and re.search(r"^\d+ tests? collected", done.stdout, flags=re.MULTILINE), (
+        f"could not collect the tests from inside {inside}:\n" + done.stdout + done.stderr
+    )
+    one_test = "test_an_internal_error_after_the_merge_is_seen_is_a_deny"
+    done = pytest_in_the_copy("config/claude/hooks/tests/test_merge_gate.py", "-k", one_test)
+    assert done.returncode == 0 and re.search(r"^1 passed\b", done.stdout, flags=re.MULTILINE), (
+        f"the run of {one_test} did not pass with exactly one test:\n" + done.stdout + done.stderr
+    )
+    # pytest writes one __pycache__ at the root, for conftest.py itself, before that file can turn bytecode off.
+    written = sorted(p.relative_to(copy).as_posix() for p in copy.rglob("__pycache__") if p.parent != copy)
+    assert not written, f"a test run wrote bytecode into the repo: {written}"
 
 
 def test_every_row_and_every_reason_names_a_real_path():

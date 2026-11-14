@@ -4,6 +4,58 @@ One entry per release of the harness. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says what MAJOR, MINOR and PATCH
 mean. The newest entry is first.
 
+## 0.2.0 (2026-11-14)
+
+Added:
+
+- `floor-guard.py`, a command that flags a change that lowers the quality
+  bar. It compares the working tree with the merge base of the base branch
+  and reports six kinds of change: a deleted test, a test moved to where no
+  runner collects it, a new skip marker, a new lint or type suppression,
+  fewer assertion lines in a test file, and a workflow step that may now fail
+  silently. It exits 0 when clean, 1 with findings, and 2 when it could not
+  finish, so a run that failed never reads as clean. The verifier runs it on
+  each change it checks: a hit that the stated goal does not ask for fails the
+  change. What it does not see is in `docs/known-limits.md`.
+
+Changed:
+
+- Claude Code adds no attribution to commits and pull request descriptions.
+  The settings template sets `attribution` with an empty `commit` and `pr`
+  and no session link. Before, only the rule "No AI attribution" in
+  `CLAUDE.md` stood against the trailer that Claude Code adds by default, and
+  a session could miss it. The rule stays, for Codex and other agents. A
+  machine gets the key when `install.sh` renders the template again.
+- The skills `tui-design` and `ccdash-analysis` are removed. The harness
+  keeps the skills of the development cycle, and these two were for one kind
+  of product and one tool. The installer does not remove a link whose source
+  is gone, so on a machine that installed them, delete
+  `~/.claude/skills/tui-design` and `~/.claude/skills/ccdash-analysis` by
+  hand.
+- Two working rules in `CLAUDE.md`. Checkpoints: you say where you review, and
+  between those points the agent does not stop to ask about reversible work;
+  it decides, reports the decision and goes on. The standing checkpoints are
+  the design gate, a release PR and everything under Safety. The design gate:
+  before the code of something new, the agent shows one page with the data
+  shapes, the interfaces as signatures with empty bodies, and what the
+  concurrent actors share, and waits. A fix that failed three times now ends
+  in a question; two failures still mean "question the diagnosis". A question
+  or a thought said out loud still gets an assessment, not a build. The size
+  cap of the rules file went from 15,100 to 15,650 characters for this.
+
+Fixed:
+
+- `codex-run --worktree` refuses a folder argument in the codex args in every
+  spelling. Before, only `-C <dir>`, `--cd <dir>` and `--cd=<dir>` were seen,
+  and `-C<dir>` went on to Codex. The rule is wide on purpose: a word that
+  starts with one dash and holds a capital `C` is refused.
+- `codex-run --role` leaves the role's model out when the caller's model is
+  written as `-m<model>` or `-m=<model>`. Before, both models were sent and
+  Codex refused the run.
+- A run that the watchdog killed has its files compared with `--allow`, like
+  any other run. Before, `codex-run` ended with 124 and printed no list. The
+  code is still 124.
+
 ## 0.1.0 (2026-11-13)
 
 The first release of the harness as its own repo. Before this it was part of

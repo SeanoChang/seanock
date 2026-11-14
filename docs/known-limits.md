@@ -786,6 +786,15 @@ the run may change.
   tested; if it does, this kill reaches few of them. The kill comes after
   bash has collected Codex's exit, so it trusts that the group's number was
   not given to another group in between.
+  Two additions from 2026-11-13 (the adversary, confirmed by the verifier).
+  The programs of codex-cli 0.167.1 import `setpgid`, `setsid`, `killpg` and
+  `posix_spawnattr_setpgroup` (`nm -u`), which points to tool commands in
+  groups of their own; no real run was made to show it. And the same limit
+  now holds for a run that the watchdog killed, because that run gets a count
+  too: a stand-in whose child made a group of its own gave "0 file(s)
+  changed" with exit 124, and the child wrote a file four seconds later. A
+  hung tool command is the usual cause of a kill, so read that count as "at
+  the moment of the kill".
 - **The check reads the disk, not git.** `codex-run` records each file's kind,
   size and content hash before Codex starts, keeps the record in its own
   memory, and compares after the run. Two earlier versions asked git, and git
@@ -888,9 +897,10 @@ the run may change.
     lost by this; a session reads a few more words.
 - **Small faults in `codex-run` that the adversary found at `95252c9`, not
   changed:**
-  - `-Cx`, `-mfoo` and `-m=foo` in the codex args are not seen as a folder or
-    a model, so `--worktree` or the role adds its own; codex 0.167 then
-    refuses the repeated flag. A worktree is left behind.
+  - `-Cx`, `-mfoo` and `-m=foo` in the codex args were not seen as a folder
+    or a model, so `--worktree` or the role added its own; codex 0.167 then
+    refused the repeated flag, and a worktree was left behind. Closed on
+    2026-11-13: see "The folder and the model in the codex args" below.
   - A model given as `-c model=...` or by `-p profile` loses to the role's
     `-m`.
   - An agent file with `model = ""` starts Codex, which refuses it. A DEL
@@ -922,6 +932,66 @@ the run may change.
   - A `--idle` or `--max` value that is not a number (`5m`) turns that limit
     off, with only a shell warning.
   - Killing `codex-run` itself leaves Codex running with no watchdog.
+- **The folder and the model in the codex args (2026-11-13, codex-cli
+  0.167.1).** With `--worktree`, `codex-run` refuses a folder argument in the
+  codex args, and a role leaves its model out when the caller gave one. Both
+  scans now see a value in the same word as its option.
+  - The folder rule is wider than Codex's own reading: every word that starts
+    with one dash and holds a capital `C` is refused, wherever it is in the
+    list, also after a `--`. So `-oC.md`, `-cKEY=C` and a prompt that starts
+    with a dash and holds a `C` are refused with `--worktree` (exit 2, nothing
+    is made). Write the value as a word of its own.
+  - The rule reads the spelling of the arguments, not what Codex does with
+    them. A later Codex with a new name for the option (not `-C` or `--cd`),
+    or one that takes shortened long options, would get past it. Version
+    0.167.1 refuses `--c` ("unexpected argument").
+  - The folder is not the only way out of the worktree. `--add-dir <DIR>`,
+    the sandbox mode (`-s danger-full-access`), the two `--dangerously-*`
+    switches, a profile (`-p`) and a `-c` config value are passed to Codex as
+    they are. The skill forbids the dangerous switches in words only.
+  - Codex 0.167.1 has an option of its own named `--worktree`. `codex-run`
+    does not look for it in the codex args, and no test or live run used the
+    two together.
+  - A run that the watchdog killed has its files compared now, and the code
+    stays 124. The lead is not told by the code alone that such a run also
+    left its files: read the list.
+  - The model of Codex's argument reading in `tests/test_codex_run.py` was
+    written from `codex exec --help` and from three parse errors of the real
+    program (a repeated `--cd`, a repeated `--model`, `--c`). No test starts
+    the real `codex` with these arguments.
+  - That model differs from the real program in one place that lets a list
+    through (the verifier, a nit). It takes the word after an option that
+    needs a value as the value, also when the word starts with a dash
+    (`-o -C/tmp`). codex 0.167.1 refuses such a list ("a value is
+    required"). The model lets through only lists that Codex does not run,
+    and `codex-run` refuses them anyway. Its other differences make it
+    stricter than the real program: it reads a folder in `-hC/tmp` and
+    `-VC`, where Codex prints its help or version and stops, and in
+    `-xC/tmp`, where Codex stops on the unknown letter.
+  - The model scan is as wide as the folder scan, and that has a cost (the
+    verifier, a nit). A word that starts with `-m` counts as the caller's
+    model wherever it is, also after a `--` in the codex args, where Codex
+    reads it as the prompt. With `--role`, such a prompt leaves the role's
+    model out, and Codex runs on the model of its own config. The folder is
+    not changed by this.
+  - The folder rule misses some words in four locales (the adversary, a nit,
+    confirmed by the verifier). The scan runs in the caller's locale. Under
+    zh_TW.Big5, zh_CN.GB18030, ja_JP.SJIS and ja_JP.eucJP, bash 3.2 reads the
+    byte `C` as the second half of a two-byte character when the byte before
+    it is 0x81 or higher. So a word such as `-中C/tmp`, typed as UTF-8, is
+    not refused there (exit 0, Codex is started); under a UTF-8 locale or the
+    C locale it is refused. No folder reaches a run this way: codex 0.167.1
+    stops on such a word ("unexpected argument '-中'"), and a `C` that comes
+    after ASCII letters only, or first in the word, is seen in every locale.
+    To close it, run the scan with `LC_ALL=C`. Only bash 3.2 was tried.
+  - A last log line with no line end joins the next line of the report (the
+    adversary, a nit, there before this change). On a kill, `codex-run`
+    prints the last events with `tail` and `cut`, which add no line end. The
+    line "codex-run: the worktree is still at ..." then follows the run's own
+    text on the same line. The count line comes on a line of its own.
+  - Not tried: whether `codex exec resume` runs in the folder that was
+    stored with the session and not in the `-C` folder that `codex-run`
+    adds. Only a real run can show it.
 
 ### Tested (2026-11-11, codex-cli 0.167.0)
 
@@ -1037,3 +1107,259 @@ changes it.
   `sed`.
 - The real installer against a live home folder. `tests/test_install_manifest.py`
   runs it in a temp dir only.
+
+## Floor guard (`config/claude/hooks/floor-guard.py`, 2026-11-13)
+
+### By design
+
+- **Only the Claude verifier runs it** (`config/claude/agents/verifier.md`,
+  step 8, since 2026-11-14). The Codex verifier does not, and neither does
+  CI. The verifier calls it at `~/.claude/hooks/floor-guard.py`, where the
+  installer links it, and names the tree with `--repo`.
+- **A guard that did not run makes the verdict "unverified".** A run counts
+  only with exit 0 and the last line `floor-guard: clean`, or exit 1 and a
+  last line that starts `floor-guard: summary`. Every other outcome is "did
+  not run": exit 2, another exit code, another last line, a missing guard
+  file, a run that was cut off. So a pipe that hides the guard's exit code,
+  or a broken `python3` that exits 1 by itself, does not read as a result. An
+  unverified change does not get the line that opens the merge gate. So on a
+  machine that did not install this repo, or whose git prints a warning on
+  every call, no change passes until that is fixed. The same holds for a repo
+  that the guard cannot read but git can: one that works through `GIT_DIR`,
+  or one whose `core.worktree` points elsewhere.
+- **The verifier skips the guard for a tree that is not under git, and only
+  when the brief says so** and its own `git -C <tree> rev-parse` fails. The
+  lead that writes the brief is trusted with that statement, as it is with
+  the tier.
+- **A guard result holds for one commit.** The verifier runs the guard again
+  after each new commit, also when it is resumed to re-check a fix, and it
+  writes the review line only with a guard result for the commit in that
+  line. A skipped guard therefore gives no review line.
+- **Only the stated goal explains a hit.** A path that `REVIEW.md` tells the
+  verifier to skip still counts for the guard, so a change cannot exempt
+  itself by an edit to `REVIEW.md`.
+- **That the verifier follows step 8 is a rule in its text.** It was shown by
+  hand on stand-in repos, and has no test in CI. The rules for a re-check, a
+  pipe and a foreign exit code come from an adversary's reading of the text
+  (2026-11-14) and were not run with a live verifier.
+
+- **It reads names, not runner settings.** A path with a test name counts as
+  collected, unless a folder on it starts with a dot or is `node_modules`. The
+  guard does not read `testpaths`, ignore patterns, or `collect_ignore`, so a
+  change to those settings is not seen.
+- **Some default rules of runners are not known to it.** Each of these moves
+  stops the test running and gives no finding: `tests/test_a.py` to
+  `build/test_a.py` or `venv/test_a.py` (pytest skips those folders);
+  `pkg/x_test.go` to `pkg/_old/x_test.go` or `pkg/testdata/x_test.go` (the go
+  tool); `spec/models/user_spec.rb` to `lib/user_spec.rb` (RSpec reads only
+  `spec/`); `src/test/java/FooTest.java` to `src/main/java/FooTest.java`
+  (Maven); `src/a.test.ts` to `dist/a.test.ts` (Vitest).
+- **A file that is a test only by its folder cannot move quietly.** A helper
+  or a fixture moved from one test folder to another is reported as
+  `test-moved-out`. The guard cannot tell whether a runner still collects it.
+- **An empty test file that is deleted is reported.** So is one of two test
+  files with the same bytes.
+- **A code file with a skip marker that moves to a test path is not
+  reported.** Both paths are code, and no test stops running.
+- **It checks the working tree, not `HEAD`.** A test removed from the commit
+  but left on disk as an untracked file reads as present.
+- **A weakened assertion that keeps the count is not seen.** Neither is an
+  assertion that is commented out, or a test renamed and edited in one step:
+  that one reports as `deleted-test`.
+- **A default base that is there but broken ends the run.** With no `--base`,
+  the base is the first of `origin/dev`, `develop`, `development`,
+  `integration`, `main`, `master` that is there. When that ref names no commit
+  (a lost object, a damaged ref file, a symbolic ref that points nowhere), the
+  guard exits 2. It does not go on to the next name, because that would
+  compare with the wrong base. Finding the default base needs git 2.43 or
+  later (`show-ref --exists`); with an older git, pass `--base`.
+- **An untracked twin of a tracked file is left out.** On a disk that takes
+  two spellings of a name as one file, git can list a tracked file twice. The
+  guard drops the second entry only when it is the same file on disk (device
+  and inode) and the names differ only in letter case or Unicode form. An
+  untracked hard link under any other name is a copy, and is read.
+
+### Minor
+
+- **Some spellings of a weakened workflow step are not matched:**
+  `continue-on-error: ${{ true }}`, `continue-on-error: "true"`, `|| exit 0`,
+  and `||` with `true` on the next line.
+- **A workflow file whose extension is `.YML` is not treated as a workflow.**
+  Whether GitHub runs such a file was not checked.
+- **Markers match with exact letter case,** so `# NOQA` is missed.
+- **A file with CR-only line ends is read as one line.** A second marker line
+  added to it is missed.
+- **A case-only rename made with plain `mv` reads as clean** on a disk that
+  ignores letter case. The index still holds the old name, and git commits
+  nothing for it.
+- **A file named `test`, `tests` or `spec` counts as a test by its own
+  name,** so deleting `scripts/test` is reported.
+- **Any warning from git ends the run with exit 2.** A machine whose git
+  always warns (a config file it cannot read) gets no result until that is
+  fixed. A repo can do the same to itself: a committed `.gitignore` that is a
+  symlink makes git warn on every run.
+- **The answer "no such ref" is read by its exact words.** The guard takes a
+  default ref as not there only when git exits 2 and prints
+  `error: reference does not exist` and nothing more. A git release that
+  words this in another way makes every run with no `--base` exit 2 until the
+  guard is updated.
+- **A default ref whose file is a symlink to nothing reads as not there.**
+  Git itself reports that ref as missing, so the guard goes on to the next
+  name. Only a damaged `.git` folder holds such a file.
+- **Time and memory grow with the tree.** A tree of 20,000 files with one
+  200 MB source file took 60 s and 1.2 GB.
+- **A folder with no `.git` of its own, inside another repo, is read as that
+  outer repo.** `--repo outer/proj` gives the outer repo's result, also when
+  the outer repo ignores `proj/`: `floor-guard: clean` for a tree the guard
+  did not read. The verifier's skip does not apply there, because
+  `git -C outer/proj rev-parse` succeeds. The sha of the outer repo cannot
+  match the head of a pull request for `proj`.
+- **With no `--base`, a change that is already in the default base reads as
+  clean.** For a release pull request from `dev` to `main`, the default base
+  is `origin/dev`, so the diff is empty: a test that `dev` deleted is
+  reported only with `--base origin/main`. The verifier leaves `--base` out
+  when its brief names no base. A release pull request does not go through
+  the merge gate.
+- **`--repo ""` reads the folder the shell is in.** That happens when a shell
+  variable for the tree is empty.
+- **A file that git is told not to look at hides a difference.** The guard
+  reads the disk. With `git update-index --assume-unchanged` or
+  `--skip-worktree` on a file, the disk can hold a test with no skip marker
+  while `HEAD` adds one: the guard prints clean, and `git status` prints
+  nothing, so the verifier's rule about uncommitted changes does not apply.
+  It needs someone who hides the edit on purpose.
+- **A change inside a submodule is not read** (found 2026-11-14, there since
+  the first version). The guard reads regular files only, so a submodule
+  moved to a commit that deletes a test gives `floor-guard: clean`.
+- **A long list of hits ends as "unverified".** The verifier runs the guard
+  with no pipe and reads its last line. Above about 20 KB the shell tool of
+  Claude Code cuts the output, so the `floor-guard: summary` line is not
+  shown (seen with 561 hits, 33,409 bytes). This fails safe. The verifier can
+  send the output to a file and read the file, which is not a pipe; its text
+  does not say so.
+- **Nothing ties a guard result to the sha in the review line.** The guard
+  does not print the commit it read, and the verifier reads
+  `git rev-parse HEAD` at the end. When `HEAD` moves in the tree during a
+  review (a commit or a branch switch by another session), the line can name
+  a commit that the guard did not read. The same holds for every check the
+  verifier runs, and was so before the guard.
+- **On a re-check, a hit that still stands meets "do not re-report".** A
+  first review fails on an Important hit, the fix does not touch it, and the
+  re-check sees the same hit again. The verifier text says not to report a
+  known finding a second time, and no sentence says that an earlier Important
+  finding that still stands keeps the verdict at fail. This holds for every
+  finding, not only for guard hits. It was read from the text (2026-11-14)
+  and not run with a live verifier.
+
+### Not tested
+
+- Linux. The tests ran on macOS only, and CI runs on macOS only.
+- **The inode half of the twin rule has no test in CI.** Its one test needs a
+  disk that keeps letter case apart: an untracked `A.py` beside a tracked
+  `a.py` is its own file. On the CI disk the test is skipped. It ran once by
+  hand on a case-sensitive APFS image (2026-11-13): all 183 tests passed
+  there, and the test failed when the inode check was removed. On a disk that
+  ignores letter case the inode check cannot change a result.
+- A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`, and a real
+  git older than 2.43 (the test uses a stand-in that rejects the option).
+- Refs kept in the reftable format, and a broken entry in `packed-refs`. The
+  broken-ref tests write loose ref files. Both ended with exit 2 in a review
+  by hand, and have no test.
+- Sparse checkouts and Git LFS pointers. These show as deletions or changes.
+- That `GIT_OPTIONAL_LOCKS=0` is needed. The test that nothing is written
+  passes without it.
+- Replace refs, a full disk, and a signal sent to git while it runs, except
+  during the lookup of the default base, which is tested.
+
+## Attribution key (`config/claude/settings.json.tmpl`, 2026-11-14)
+
+Reviewed on 2026-11-14: verifier pass and adversary held at commit `334ea74`.
+The first commit passed too; its five small findings were one class (the live
+test reached further than its temp repo) and were fixed in one change.
+
+### By design
+
+- **The key reaches Claude Code only.** Codex and other agents learn "No AI
+  attribution" from the rules file.
+- **A machine gets the key at the next render of the template.** Until
+  `install.sh` renders it again, the live settings file has no such key. That
+  render stops when the live file drifted from the template.
+
+### Minor
+
+- **The live test reads the first description block only**
+  (`tests/test_attribution.py`, `described`). Attribution that a session
+  prints after the end marker, or in a second block, is not seen by the test
+  of the template. The control test fails loudly on the same output.
+- **A marker with Markdown around it is not found** (`**PR-BODY-START**`, a
+  marker with a colon). The live test then fails with "no description between
+  the markers". It fails safe.
+- **The hostile git config in `test_the_setup_commit_stays_in_the_test_repo`
+  proves less than its text says.** The test hands the config over through
+  `GIT_CONFIG_GLOBAL`, and `git()` drops every `GIT_*` variable of the caller
+  anyway. That the test's git reads no user config is pinned by the shape
+  test, and was shown by hand with a temp HOME.
+- **The caller's HOME goes along.** With `GIT_CONFIG_GLOBAL=/dev/null`, git
+  still reads `$HOME/.config/git/ignore`. An ignore file that lists
+  `README.md` or `hello.txt` makes the setup fail, loudly.
+- **`git commit -F <file>` is inside the rule `Bash(git commit:*)`.** A
+  session could read a file outside the temp repo into its commit message. It
+  writes nothing outside the repo. Shell redirects, pipes and command
+  substitution were refused in a probe.
+
+### Not tested
+
+- A Claude Code older than 2.1.281 with the object form, and whether a
+  version between 2.0.62 and 2.1.281 knows the `sessionUrl` sub-key. The docs
+  say the object form is the one for older versions.
+- The whole rendered template passed to the CLI. The live runs pass only the
+  `attribution` object.
+- A session in the cloud or under Remote Control, where the session link
+  applies.
+- Any model but Haiku, and more than one run per case.
+
+## Checkpoints and the design gate (`config/claude/CLAUDE.md`, 2026-11-14)
+
+Reviewed on 2026-11-14: verifier pass at commit `4a8170d`, tier 1. The
+verifier failed the first two commits. The gate reached Claude subagents,
+whose brief forbids a question; the first fix then used the words "lead" and
+"worker", which the Codex file does not define. Both were one class: a
+sentence that does not fit every agent that loads it. The sentences now say
+who they are for by one thing both files define: an agent has a brief, or it
+has none.
+
+### By design
+
+- **The checkpoint rule has no live test.** In a short task a session with no
+  rule also decides small things by itself, so a short run cannot tell the
+  rule from its absence. Its measure is the share of lead turns that end on a
+  question, counted over real sessions.
+- **The size cap of the rules file was raised**, from 15,100 to 15,650
+  characters and from 220 to 230 lines. The file is at 15,615 and 230.
+
+### Minor
+
+- **A subagent with no brief gets the gate.** A fork carries the lead's
+  conversation and no brief. By the text it shows a page and waits when it
+  starts something new. Not tested.
+- **A request that looks like an eight-line brief** may make the session Sean
+  talks to skip the gate. Not tested.
+- **The live gate test can pass with code in the answer.** It fails when the
+  session writes any file that is not Markdown, and it asks for one signature
+  with an empty body. A full implementation pasted into the answer beside
+  such a signature still passes.
+- **The live gate test can fail a correct session.** A signature whose body
+  is only a docstring is not counted as empty, and an answer that asks for a
+  go in other words than go, approve, confirm or proceed is not counted.
+- **Two parts of the live test have no fast test:** the word list of the
+  go-check, and the presence of the third live session.
+- **The brief sentence was not seen to change behaviour.** In one run, a
+  session with the builder's text and a brief wrote the code with the
+  sentence cut from the rules too. The sentence removes a contradiction in
+  the text.
+- **A pin finds a deleted phrase,** not a rule that was negated around it.
+
+### Not tested
+
+- Either Codex mode. The Codex file was read, not run.
+- Any model but Sonnet, and more than three runs of the gate.

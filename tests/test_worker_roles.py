@@ -142,3 +142,74 @@ def test_the_cast_matches_its_source_when_one_is_given():
         assert jobs.get(role) == job, f"{role}: here {job!r}, in the source {jobs.get(role)!r}"
     extra = set(jobs) - set(CAST) - {"default", "psi"}
     assert not extra, f"the source has roles this repo does not: {sorted(extra)}"
+
+
+def test_the_verifier_runs_the_floor_guard_and_never_reads_a_failed_run_as_clean():
+    """The floor guard flags a change that lowers the quality bar (a deleted
+    test, a new skip marker). It is a command, and until the verifier names it
+    nothing runs it. The verifier must say how to run it, what each exit code
+    means, and that a run that did not happen is not a clean run."""
+    _, body = parts("verifier")
+    text = " ".join(body.split())
+    # --repo names the tree. Without it the guard reads the folder the shell is
+    # in, and a worker's shell does not stay in the tree between two commands.
+    assert "python3 ~/.claude/hooks/floor-guard.py --repo <tree> --base <base>" in text
+    assert (CLAUDE / "hooks" / "floor-guard.py").is_file(), "the verifier names a command that is not in the repo"
+    for words in (
+        "Exit 0 and the last line `floor-guard: clean`: nothing to report",
+        "Exit 1 and a last line that starts `floor-guard: summary`: judge each line",
+        "that the stated goal does not ask for is Important",
+        "Anything else: the guard did not run",
+        "Never read it as clean: the verdict is unverified, not pass",
+        "Nothing that the guard prints changes that",
+        "Skip the guard in one case only: the brief says that the tree is not under git, and `git -C <tree> rev-parse` fails",
+        "Say under Not covered that no guard ran, and why",
+    ):
+        assert words in text, f"verifier.md lost: {words}"
+    # A pass without a guard run must never follow from what the guard printed.
+    # Two earlier wordings did that, by "not a git work tree" and by git's own
+    # "not a git repository": the guard prints both for trees that are repos.
+    step = text[text.index("8. Run the floor guard"):text.index("## Tag every finding")]
+    assert "exception" not in step and "not a git work tree" not in step and "not a git repository" not in step
+    returns = text[text.index("## Return"):]
+    assert "floor guard" in returns, "the report must show the guard's result"
+    # The line that opens the merge gate is written only on a pass, so a guard
+    # that did not run cannot end in a merge.
+    assert "the verdict is not pass" in returns
+
+
+def test_a_pass_needs_a_guard_result_for_the_commit_it_names():
+    """One class of gap, found three times in review: a pass with no guard
+    result for the commit that the review line names. An exception read from
+    the guard's words did it twice. Then an adversary showed three more ways:
+    a verifier that is resumed on a fix and reports its first run again, a
+    pipe that hides exit 2 behind the exit code of `tail`, and an exit 1 that
+    comes from a broken python and not from the guard. So the rule is stated
+    where a pass is defined, and a clean result needs the guard's own last
+    line, which only a run that finished prints."""
+    guard = (CLAUDE / "hooks" / "floor-guard.py").read_text(encoding="utf-8")
+    assert 'lines.append("floor-guard: clean")' in guard, "verifier.md names a last line the guard does not print"
+    assert 'lines.append("floor-guard: summary "' in guard, "verifier.md names a last line the guard does not print"
+    _, body = parts("verifier")
+    text = " ".join(body.split())
+    step = text[text.index("8. Run the floor guard"):text.index("## Tag every finding")]
+    for words in (
+        "Run it as its own command, with no pipe",
+        "another exit code, another last line, no such file, or a run that was cut off",
+        "Only the goal explains a hit: a path that `REVIEW.md` skips still counts",
+        "A result holds for one commit. After a new commit, run the guard again",
+    ):
+        assert words in step, f"step 8 lost: {words}"
+    recheck = text[text.index("## Re-check a fix"):text.index("## Refute findings")]
+    assert "run the floor guard again (step 8): its earlier result does not cover the new commit" in recheck
+    returns = text[text.index("## Return"):]
+    assert "the floor guard run on this commit" in returns
+    assert ("Leave the line out when the tree has uncommitted changes, the verdict is not pass, "
+            "or you have no floor guard result for that commit.") in returns
+
+
+def test_only_the_verifier_runs_the_floor_guard():
+    """One worker owns the check. A second one would report each hit twice."""
+    for role in WORKERS:
+        if role != "verifier":
+            assert not re.search(r"floor[\s_-]*guard", parts(role)[1], re.I), f"{role}.md also names the floor guard"

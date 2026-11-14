@@ -94,7 +94,13 @@ native: the harness tracks them, so they need no watchdog.)
   made when it is not on PATH); 2 for bad usage. Raise `--idle` when the
   brief runs a slow test suite that prints nothing for minutes.
 - On exit 124: read the last events, then retry once with a narrower brief or
-  take the task back to Claude. A stall counts as a failed attempt.
+  take the task back to Claude. A stall counts as a failed attempt. With
+  `--worktree`, a killed run has its files compared too: the count and the
+  list of changes outside `--allow` are printed, and the code stays 124.
+- With `--worktree`, leave the folder out of the codex args: `-C` and `--cd`
+  are refused in every spelling (exit 2). The rule is wide on purpose: a word
+  that starts with one dash and holds a capital `C` is refused. Write the
+  value of an option as a word of its own (`-o C.md`, not `-oC.md`).
 - Run it with `run_in_background` when it runs beside other work; the harness
   notifies you when it exits. Never poll it with a sleep loop.
 - Outside a git repository there is no worktree: pass `-C <dir>` and

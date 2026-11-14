@@ -55,7 +55,7 @@ hook. Every other step is a rule that the agent must follow.
 | Rules       | `config/claude/CLAUDE.md`             | `tests/test_global_rules.py`      |
 | Codex rules | `config/codex/AGENTS.md`              | `tests/test_codex_rules.py`       |
 | Workers     | `config/claude/agents/` (6 files)     | `tests/test_worker_roles.py`      |
-| Skills      | `config/claude/skills/` (12 folders)  | `tests/test_skill_frontmatter.py` |
+| Skills      | `config/claude/skills/` (10 folders)  | `tests/test_skill_frontmatter.py` |
 | Hooks       | `config/claude/hooks/`                | `config/claude/hooks/tests/`      |
 | Permissions | `config/claude/settings.json.tmpl`    | Not tested                        |
 | Commands    | `config/claude/commands/` (2 files)   | Not tested                        |
@@ -71,8 +71,10 @@ program named by a repo's config. Lines 2 and 3 are not tested.
 
 Three hooks are wired in the settings template: `merge-gate.py` on
 `gh pr merge`, `visual-artifacts-route.sh` on the Artifact tool, and
-`second-brain-log-prompt.sh` on each prompt. `second-brain-sweep.sh` runs on
-demand.
+`second-brain-log-prompt.sh` on each prompt. `second-brain-sweep.sh` and
+`floor-guard.py` run on demand. The floor guard reads a repo it does not
+trust, so it calls git plumbing only and treats every git warning as a
+failure.
 
 The reasons for the main choices are in [decisions/](decisions/), one short
 record each. Minor findings that were logged and not fixed are in

@@ -14,7 +14,11 @@ What this holds:
   - --allow reports every file that fits no pattern (exit 3). "Changed" means
     the bytes on disk differ from the bytes before the run: a cache folder, an
     ignore rule, a commit by the run or a changed .git entry hides nothing;
-  - a silent run and a run past its time limit are killed, with their children.
+  - a silent run and a run past its time limit are killed, with their children,
+    and with --worktree their files are compared like those of any other run;
+  - with --worktree, a folder argument in the codex args is refused in every
+    spelling, also against a model of how Codex reads its arguments on random
+    lists; a role adds no model beside the caller's, in any spelling.
 
 What it does not hold: that the real Codex accepts these arguments (the skill
 records live runs for that), and that Codex stays inside the worktree. The
@@ -240,6 +244,25 @@ def test_the_callers_model_and_effort_win_over_the_roles(box):
     assert args.count("-m") == 1 and args[args.index("-m") + 1] == "mine"
     assert sum("model_reasoning_effort" in arg for arg in args) == 1, "the effort was sent twice"
     assert config_values(args) == {"model_reasoning_effort": "high", "developer_instructions": TRICKY}
+
+
+@pytest.mark.parametrize("model_args", [["-m", "mine"], ["-mmine"], ["-m=mine"], ["--model", "mine"], ["--model=mine"]],
+                         ids=" ".join)
+def test_the_callers_model_wins_in_any_spelling(box, model_args):
+    """Codex refuses an option that is given twice, so a model the role adds
+    beside the caller's own would end the run before it starts."""
+    box("--log", box.log, "--role", "builder", "--", *model_args, "prompt", agents=agent_dir(box.tmp))
+    args = box.args()
+    assert "role-model" not in args, "the role's model was sent beside the caller's"
+    assert args[-len(model_args) - 1:] == [*model_args, "prompt"]
+
+
+@pytest.mark.parametrize("codex_args", [["-s", "workspace-write", "-o", "/tmp/model.md", "a prompt -m x"],
+                                        ["--model-x", "y", "prompt"]], ids=" ".join)
+def test_a_word_that_is_no_model_option_leaves_the_roles_model_in(box, codex_args):
+    box("--log", box.log, "--role", "builder", "--", *codex_args, agents=agent_dir(box.tmp))
+    args = box.args()
+    assert args[args.index("-m") + 1] == "role-model"
 
 
 @pytest.mark.parametrize("role", ["nobody", "../builder", "Builder", "a b"])
@@ -574,6 +597,115 @@ def test_a_worktree_needs_a_new_path_a_repository_and_no_folder_argument(box, le
     assert done.returncode == 2 and box.args() is None and not (box.tmp / "wt").exists()
 
 
+# The ways the codex args can name a folder of their own. Codex reads a value
+# in the same word as its option (-C/dir, -C=/dir, --cd=/dir), and a word of
+# one-letter options is read letter by letter, so a C can come after another
+# letter (-hC/dir). The last two lists name no folder for codex 0.167.1: it
+# refuses the first ("a value is required") and reads the second as the
+# prompt. They are here because the rule of codex-run is wider than Codex's
+# reading and must refuse them too.
+FOLDER_ARGS = [
+    ["-C", "/tmp", "p"],
+    ["-C/tmp", "p"],
+    ["-C=/tmp", "p"],
+    ["--cd", "/tmp", "p"],
+    ["--cd=/tmp", "p"],
+    ["p", "-C/tmp"],
+    ["-s", "workspace-write", "-C/tmp", "p"],
+    ["-hC/tmp", "p"],
+    ["-VC", "/tmp", "p"],
+    ["-xC/tmp", "p"],
+    ["-o", "--", "-C/tmp", "p"],
+    ["--", "-C/tmp"],
+]
+
+
+@pytest.mark.parametrize("codex_args", FOLDER_ARGS, ids=" ".join)
+def test_a_folder_argument_in_any_spelling_is_refused_with_a_worktree(box, lead, codex_args):
+    wt = box.tmp / "wt"
+    done = box("--log", box.log, "--worktree", str(wt), "--repo", str(lead), "--", *codex_args)
+    assert done.returncode == 2, done.stderr
+    assert "--worktree sets the folder" in done.stderr
+    assert box.args() is None, "codex was started"
+    assert not wt.exists(), "a worktree was made for a run that was refused"
+
+
+@pytest.mark.parametrize("codex_args", [
+    ["-s", "workspace-write", "--ephemeral", "-o", "/tmp/Codex-Last.md", "Change the C code"],
+    ["-c", 'model_reasoning_effort="high"', "-m", "GPT-C", "Check -C /tmp in the docs"],
+    ["--color", "never", "--skip-git-repo-check", "--cdrom", "C"],
+], ids=" ".join)
+def test_a_capital_c_that_is_no_folder_argument_is_let_through(box, lead, codex_args):
+    """A value or a prompt is a word of its own: it starts with no dash. A long
+    option is refused by its whole name only."""
+    done = box("--log", box.log, "--worktree", str(box.tmp / "wt"), "--repo", str(lead), "--", *codex_args)
+    assert done.returncode == 0, done.stderr
+    assert box.args()[-len(codex_args):] == codex_args
+
+
+def test_without_a_worktree_the_folder_argument_passes_to_codex(box):
+    """The skill tells the lead to pass -C outside a git repository."""
+    done = box("--log", box.log, "--", "-C/tmp", "--skip-git-repo-check", "p")
+    assert done.returncode == 0 and box.args()[-3:] == ["-C/tmp", "--skip-git-repo-check", "p"]
+
+
+# A model of how Codex reads its arguments (codex-cli 0.167.1, `codex exec
+# --help`): which one-letter options take a value, and which long ones do.
+# A one-letter option this table does not know is taken as a switch with no
+# value, which is the reading that lets the most words reach -C.
+# One difference from the real program: the model takes the word after an
+# option that needs a value as that value, also when the word starts with a
+# dash (-o -C/tmp). codex 0.167.1 refuses such a list ("a value is
+# required"). So the model lets through only lists that Codex does not run.
+SHORT_WITH_VALUE = set("cimpsCo")
+LONG_WITH_VALUE = {"config", "enable", "disable", "image", "model", "local-provider", "profile", "sandbox", "cd",
+                   "add-dir", "thread-source", "cyber-access-program", "output-schema", "color", "output-last-message"}
+
+
+def codex_would_take_a_folder(args):
+    i = 0
+    while i < len(args):
+        word = args[i]
+        if word == "--":
+            return False                         # the rest are plain words
+        if word.startswith("--"):
+            name, equals, _ = word[2:].partition("=")
+            if name == "cd":
+                return True
+            if name in LONG_WITH_VALUE and not equals:
+                i += 1                           # the next word is its value
+        elif word.startswith("-") and len(word) > 1:
+            for at, letter in enumerate(word[1:], start=1):
+                if letter == "C":
+                    return True
+                if letter in SHORT_WITH_VALUE:
+                    if at == len(word) - 1:
+                        i += 1                   # the next word is its value
+                    break                        # the rest of this word is its value
+        i += 1
+    return False
+
+
+WORDS = ["-C", "-C/tmp", "-C=/tmp", "--cd", "--cd=/tmp", "-hC/tmp", "-VC", "-xC", "-h", "-V", "-x", "-s", "-o", "-c",
+         "-m", "-sC", "-oC.md", "-cC=1", "--", "--json", "--color", "--model", "--cdrom", "/tmp", "C", "p", "never",
+         "workspace-write", "a=b", "-", ""]
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_no_argument_list_that_codex_reads_as_a_folder_gets_through(box, lead, seed):
+    """Random argument lists, each one a list the model says Codex would read
+    as naming a folder. codex-run must refuse every one. (It may also refuse a
+    list the model lets through: the rule is wider than the model on purpose.)"""
+    rng = random.Random(seed)
+    while True:
+        codex_args = [rng.choice(WORDS) for _ in range(rng.randint(1, 6))]
+        if codex_would_take_a_folder(codex_args):
+            break
+    wt = box.tmp / "wt"
+    done = box("--log", box.log, "--worktree", str(wt), "--repo", str(lead), "--", *codex_args)
+    assert done.returncode == 2 and box.args() is None and not wt.exists(), (codex_args, done.stderr)
+
+
 @pytest.mark.parametrize("seed", range(20))
 def test_random_changes_and_patterns_against_a_reference_matcher(box, lead, seed):
     """The files a run changed and the patterns it may change are random. The
@@ -689,3 +821,44 @@ def test_a_run_that_keeps_printing_is_not_killed_for_silence(box):
 def test_a_run_past_its_time_limit_is_killed_even_while_it_prints(box):
     done = box("--log", box.log, "--idle", "30", "--max", "2", "--", "prompt", do="chatter:30")
     assert done.returncode == 124 and "ran past 2s" in done.stderr
+
+
+@pytest.mark.parametrize("limit, do, why", [
+    (("--idle", "1"), "write:README.md;write:src/a.py;hang", "no output for 1s"),
+    (("--idle", "30", "--max", "2"), "write:README.md;write:src/a.py;chatter:30", "ran past 2s"),
+])
+def test_a_killed_run_still_has_its_files_checked(box, lead, limit, do, why):
+    """A run the watchdog killed has written files too. The list of what it
+    changed outside the allowed files is printed, and the code stays 124."""
+    done, wt = worktree_run(box, lead, do, "src/*", extra=limit)
+    assert done.returncode == 124, done.stderr
+    assert why in done.stderr
+    assert f"worktree {wt.resolve()}, 2 file(s) changed" in done.stderr
+    listed = done.stderr.split("changed outside the allowed files:\n")[1].splitlines()
+    assert [line.strip() for line in listed] == ["README.md"]
+
+
+def test_a_killed_run_that_stayed_in_its_files_says_so(box, lead):
+    done, wt = worktree_run(box, lead, "write:src/a.py;hang", "src/*", extra=("--idle", "1"))
+    assert done.returncode == 124, done.stderr
+    assert f"worktree {wt.resolve()}, 1 file(s) changed" in done.stderr
+    assert "changed outside the allowed files" not in done.stderr
+
+
+def test_a_killed_run_that_broke_the_git_entry_is_named_and_stays_124(box, lead):
+    done, _ = worktree_run(box, lead, "sh:echo x >> .git;hang", "*", extra=("--idle", "1"))
+    assert done.returncode == 124, done.stderr
+    assert "changed the worktree's .git entry" in done.stderr
+
+
+def test_the_child_of_a_killed_run_is_dead_before_the_files_are_compared(box, lead):
+    """The check comes after the kill: the child of the stand-in is gone when
+    codex-run ends, so nothing can write after the files were read."""
+    done, _ = worktree_run(box, lead, "write:src/a.py;hang", "src/*", extra=("--idle", "1"))
+    assert done.returncode == 124 and "1 file(s) changed" in done.stderr
+    assert not alive(box.child()), "the child of the stand-in codex is still running"
+
+
+def test_a_killed_run_with_no_worktree_compares_nothing(box):
+    done = box("--log", box.log, "--idle", "1", "--", "prompt", do="hang")
+    assert done.returncode == 124 and "file(s) changed" not in done.stderr
