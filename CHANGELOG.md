@@ -19,6 +19,12 @@ Added:
 
 Changed:
 
+- Claude Code adds no attribution to commits and pull request descriptions.
+  The settings template sets `attribution` with an empty `commit` and `pr`
+  and no session link. Before, only the rule "No AI attribution" in
+  `CLAUDE.md` stood against the trailer that Claude Code adds by default, and
+  a session could miss it. The rule stays, for Codex and other agents. A
+  machine gets the key when `install.sh` renders the template again.
 - The skills `tui-design` and `ccdash-analysis` are removed. The harness
   keeps the skills of the development cycle, and these two were for one kind
   of product and one tool. The installer does not remove a link whose source
