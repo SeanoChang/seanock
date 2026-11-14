@@ -4,6 +4,21 @@ One entry per release of the harness. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says what MAJOR, MINOR and PATCH
 mean. The newest entry is first.
 
+## 0.3.0 (unreleased)
+
+Added:
+
+- `create-verify-skill`, a skill that only you start. It writes a verify
+  skill into a project: a feature map (`features.json`), a runner (`verify`)
+  that builds the app and runs the steps of each feature in a fresh temp
+  folder, and a short skill file that tells an agent how to run it and how to
+  read the result. The runner keeps the output of every step in
+  `.verify/runs/` and names the commit that it ran on. It exits 0 on a pass,
+  1 when a step failed or could not start, and 2 when the run could not
+  finish, and a result counts only with the runner's own last line. This
+  version runs command-line steps only. What it does not do is in
+  `docs/known-limits.md`.
+
 ## 0.2.0 (2026-11-14)
 
 Added:
