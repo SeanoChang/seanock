@@ -4,7 +4,7 @@ One entry per release of the harness. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says what MAJOR, MINOR and PATCH
 mean. The newest entry is first.
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-11-14)
 
 Added:
 
