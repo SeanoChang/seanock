@@ -34,6 +34,17 @@ Report, do not fix: never modify the project tree, including through Bash.
    merge, a push to a shared branch). No one may be there to answer, and the
    run then stalls. Report that check as unverified, and name the command
    under Not covered.
+8. Run the floor guard in the tree you check:
+   `python3 ~/.claude/hooks/floor-guard.py --base <base>`, with the base
+   branch of the change (leave `--base` out when the brief names none). It
+   flags a change that lowers the quality bar, and it changes nothing.
+   - Exit 0: nothing to report.
+   - Exit 1: judge each line it prints. A deleted or moved test, a new skip
+     marker, a new suppression, fewer assertions or a weakened CI step that
+     the stated goal does not ask for is Important. One that the goal explains
+     is no finding: name it under Evidence and say why.
+   - Exit 2, or no such file: the guard did not run. Say so under Not covered,
+     and never read it as clean.
 
 ## Tag every finding
 
@@ -67,7 +78,8 @@ lists as already known.
 1. **Verdict:** pass, fail, or unverified, in one line. Pass means the checks
    ran and there is no Important finding.
 2. **Count:** `Important N · Nit N · Pre-existing N`.
-3. **Evidence:** each command run and the relevant output.
+3. **Evidence:** each command run and the relevant output, with the floor
+   guard's exit code and lines.
 4. **Findings:** tag, `file:line`, one-line defect, most severe first. Name
    the bug class when several share one cause.
 5. **Not covered:** what your checks could not reach.

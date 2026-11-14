@@ -14,8 +14,9 @@ Added:
   runner collects it, a new skip marker, a new lint or type suppression,
   fewer assertion lines in a test file, and a workflow step that may now fail
   silently. It exits 0 when clean, 1 with findings, and 2 when it could not
-  finish, so a run that failed never reads as clean. What it does not see is
-  in `docs/known-limits.md`.
+  finish, so a run that failed never reads as clean. The verifier runs it on
+  each change it checks: a hit that the stated goal does not ask for fails the
+  change. What it does not see is in `docs/known-limits.md`.
 
 Changed:
 

@@ -1112,6 +1112,14 @@ changes it.
 
 ### By design
 
+- **Only the Claude verifier runs it** (`config/claude/agents/verifier.md`,
+  step 8, since 2026-11-14). The Codex verifier does not, and neither does
+  CI. The verifier calls it at `~/.claude/hooks/floor-guard.py`, where the
+  installer links it. On a machine that did not install this repo the file is
+  not there: the verifier then says under "Not covered" that the guard did
+  not run. That the verifier follows step 8 is a rule in its text. It was
+  shown once by hand, on a stand-in repo, and has no test in CI.
+
 - **It reads names, not runner settings.** A path with a test name counts as
   collected, unless a folder on it starts with a dot or is `node_modules`. The
   guard does not read `testpaths`, ignore patterns, or `collect_ignore`, so a

@@ -142,3 +142,31 @@ def test_the_cast_matches_its_source_when_one_is_given():
         assert jobs.get(role) == job, f"{role}: here {job!r}, in the source {jobs.get(role)!r}"
     extra = set(jobs) - set(CAST) - {"default", "psi"}
     assert not extra, f"the source has roles this repo does not: {sorted(extra)}"
+
+
+def test_the_verifier_runs_the_floor_guard_and_never_reads_a_failed_run_as_clean():
+    """The floor guard flags a change that lowers the quality bar (a deleted
+    test, a new skip marker). It is a command, and until the verifier names it
+    nothing runs it. The verifier must say how to run it, what each exit code
+    means, and that a run that did not happen is not a clean run."""
+    _, body = parts("verifier")
+    text = " ".join(body.split())
+    assert "python3 ~/.claude/hooks/floor-guard.py --base" in text
+    assert (CLAUDE / "hooks" / "floor-guard.py").is_file(), "the verifier names a command that is not in the repo"
+    for words in (
+        "Exit 0: nothing to report",
+        "Exit 1: judge each line",
+        "that the stated goal does not ask for is Important",
+        "Exit 2, or no such file: the guard did not run",
+        "never read it as clean",
+    ):
+        assert words in text, f"verifier.md lost: {words}"
+    returns = text[text.index("## Return"):]
+    assert "floor guard" in returns, "the report must show the guard's result"
+
+
+def test_only_the_verifier_runs_the_floor_guard():
+    """One worker owns the check. A second one would report each hit twice."""
+    for role in WORKERS:
+        if role != "verifier":
+            assert "floor-guard" not in parts(role)[1], f"{role}.md also names the floor guard"
