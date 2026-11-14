@@ -31,7 +31,7 @@ RULES = Path(__file__).resolve().parent.parent / "config" / "claude" / "CLAUDE.m
 # planned move of the merge and delegation procedure into files that load on
 # demand is to bring both numbers down again.
 MAX_CHARS = 15_650
-MAX_LINES = 229
+MAX_LINES = 230
 
 # phrase -> what is lost when it goes missing
 PINNED = {

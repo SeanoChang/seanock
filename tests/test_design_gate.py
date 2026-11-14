@@ -77,6 +77,10 @@ def test_the_checkpoint_rule_says_where_to_stop_and_where_not():
     for standing in ("the design gate", "a release PR", "Safety"):
         assert standing in text, f"the standing checkpoint is gone: {standing}"
     assert "put the decision in your report" in text, "a decision made alone must still be visible"
+    # The interview about an undefined outcome comes before the work, and the
+    # stops that other rules name are not "asking about reversible work".
+    assert "Once work has started, between checkpoints" in text
+    assert "A rule that names a stop still holds: three failed fixes, a reviewer's third failure." in text
 
 
 def test_the_design_gate_names_its_three_parts_and_waits():
@@ -85,6 +89,18 @@ def test_the_design_gate_names_its_three_parts_and_waits():
         assert part in text, f"the design page lost a part: {part}"
     assert "wait for my go" in text
     assert "before the code of something new" in text
+
+
+def test_the_design_gate_is_the_leads_step_and_a_worker_does_not_wait():
+    """A Claude subagent loads this rules file too. Its brief says "Do not ask
+    questions", and nobody can answer it. Without this sentence a builder that
+    gets a new component has two opposite orders, and one that obeys the gate
+    ends its run with a design page and no code."""
+    text = flat(rule("working.design-gate"))
+    assert "This is the lead's step: a worker builds from its brief and does not wait." in text
+    builder = flat((ROOT / "config" / "claude" / "agents" / "builder.md").read_text(encoding="utf-8"))
+    assert "Do not ask questions" in builder and "CLAUDE.md rules apply in full" in builder
+    assert "ask questions" in flat(rule("delegation.brief")), "the brief no longer tells a worker not to ask"
 
 
 def test_three_failed_fixes_end_in_a_question():
@@ -164,7 +180,24 @@ CACHE = Path("cache")
 def load_feeds(path="feeds.json"):
     return json.loads(Path(path).read_text())
 '''
-SOURCE = (".py", ".pyi", ".js", ".ts", ".go", ".rs", ".c", ".h", ".java", ".sh")
+# The only kind of file the design page may be. Every other file the session
+# writes or changes counts as source, whatever its name or letter case.
+PAGE = (".md",)
+EMPTY_BODY = re.compile(r"\bdef \w+\([^)]*\)[^:\n]*:\s*(\.\.\.|pass)\s*(#.*)?$", re.M | re.S)
+
+
+def scrub(text):
+    """The text without the value of a credential that the session was given."""
+    for name in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+        if os.environ.get(name):
+            text = text.replace(os.environ[name], "<hidden>")
+    return text
+
+
+def split_touched(touched):
+    """(source files, page files) among the paths a session wrote or changed."""
+    pages = [name for name in touched if name.lower().endswith(PAGE)]
+    return [name for name in touched if name not in pages], pages
 
 
 def project(folder):
@@ -203,12 +236,11 @@ def run_session(folder, rules):
         cwd=repo, env={name: os.environ[name] for name in ENV_KEPT if name in os.environ},
         capture_output=True, text=True, timeout=1200,
     )
-    assert done.returncode == 0, f"the session failed:\n{done.stderr[-2000:]}"
+    assert done.returncode == 0, f"the session failed:\n{scrub(done.stderr)[-2000:]}"
     after = snapshot(repo)
     touched = sorted(name for name in after if before.get(name) != after[name])
-    source = [name for name in touched if name.endswith(SOURCE)]
-    pages = "\n".join(after[name].decode("utf-8", "replace") for name in touched if name.endswith(".md"))
-    return done.stdout, source, pages
+    source, pages = split_touched(touched)
+    return done.stdout, source, "\n".join(after[name].decode("utf-8", "replace") for name in pages)
 
 
 @LIVE
@@ -228,7 +260,8 @@ def test_live_with_the_gate_the_session_shows_the_design_and_waits(tmp_path):
     shown = answer + "\n" + pages
     report = f"\n--- touched source ---\n{source}\n--- the session's answer ---\n{answer[-3000:]}"
     assert not source, "the session wrote source before the design was agreed" + report
-    assert re.search(r"\bdef \w+\(|\bclass \w+", shown), "the page shows no interface as a signature" + report
+    assert EMPTY_BODY.search(shown), "the page shows no signature with an empty body" + report
+    assert re.search(r"\b(go|go-ahead|approve|confirm)\b", answer[-600:], re.I), "the answer does not ask for a go" + report
     assert re.search(r"\bshar(e|ed|es|ing)\b", shown, re.I), "the page does not say what the actors share" + report
     assert re.search(r"\b(queue|lock|mutex)\b", shown, re.I), "the page names no shared structure" + report
 
@@ -252,3 +285,26 @@ def test_the_snapshot_sees_a_new_and_a_changed_file(tmp_path):
     after = snapshot(repo)
     touched = sorted(name for name in after if before.get(name) != after[name])
     assert touched == ["app.py", "docs/design.md", "downloads.py"]
+
+
+def test_everything_but_a_markdown_page_counts_as_source():
+    touched = ["downloads.py", "DOWNLOADS.PY", "notes.txt", "Makefile", "lib/x.mjs", "docs/design.md", "DESIGN.MD"]
+    source, pages = split_touched(touched)
+    assert pages == ["docs/design.md", "DESIGN.MD"]
+    assert source == ["downloads.py", "DOWNLOADS.PY", "notes.txt", "Makefile", "lib/x.mjs"]
+
+
+@pytest.mark.parametrize("text, empty", [
+    ("    def add(self, url: str) -> None: ...          # enqueue", True),
+    ("def wait(self) -> dict[str, Progress]:\n    pass", True),
+    ("    def __init__(self, cache: Path = CACHE, workers: int = 4,\n                 out: TextIO = sys.stdout): ...", True),
+    ("def add(self, url):\n    self.queue.put(url)\n", False),
+    ("class DownloadManager:\n    queue: Queue", False),
+])
+def test_an_empty_body_is_told_from_an_implementation(text, empty):
+    assert bool(EMPTY_BODY.search(text)) is empty
+
+
+def test_a_credential_is_cut_from_an_error_text(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-123456")
+    assert scrub("auth failed for tok-123456 again") == "auth failed for <hidden> again"

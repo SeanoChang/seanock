@@ -79,13 +79,15 @@
   me briefly, then build to it. When I describe a problem, ask, or think out
   loud, give your assessment and stop; "fix", "build", "add" mean act.
 - Checkpoints: I say where I review, and a plan lists those points. The
-  standing ones are the design gate, a release PR, and Safety. Between
-  checkpoints, do not stop to ask about reversible work: decide, put the
-  decision in your report, and go on.
+  standing ones are the design gate, a release PR, and Safety. Once work has
+  started, between checkpoints, do not stop to ask about reversible work:
+  decide, put the decision in your report, and go on. A rule that names a
+  stop still holds: three failed fixes, a reviewer's third failure.
 - Design gate: before the code of something new (a component, a data model, a
   protocol, concurrent actors), show me one page: the data shapes, the
   interfaces as signatures with empty bodies, and what the concurrent actors
-  share. Then wait for my go.
+  share. Then wait for my go. This is the lead's step: a worker builds from
+  its brief and does not wait.
 - Don't hand work to another AI tool or CLI unless I ask.
 - For anything that could be in my vault (courses, papers, lectures, syllabi,
   concepts I study), invoke `second-brain-obsidian` and run `sb find` before any
