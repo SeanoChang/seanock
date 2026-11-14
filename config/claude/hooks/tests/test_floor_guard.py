@@ -1516,34 +1516,14 @@ def test_git_is_asked_in_one_language_whatever_the_callers_locale(tmp_path, monk
     assert set(seen) == {"C"}, f"git ran in the caller's locale: {sorted(set(seen))}"
 
 
-NOT_A_REPO = "fatal: not a git repository"
 
-
-def test_only_a_folder_that_is_no_repo_gives_gits_own_not_a_repository_words(tmp_path):
-    """The verifier may pass a change without a guard run in one case only: the
-    tree is not a git repo. It knows that case by git's own words in the
-    guard's message. The guard starts its message with "not a git work tree"
-    for every failure of its first git call, so those words are no sign."""
-    plain = tmp_path / "plain"
-    plain.mkdir()
-    res = run(cwd=plain)
-    assert res.rc == 2 and res.out == ""
-    assert "not a git work tree" in res.err and NOT_A_REPO in res.err, res.err
-
-    repo = make(tmp_path, {"a.py": "x\n"})
-    real = shutil.which("git")
-    stand_ins = {
-        "warns": f'echo "warning: something is odd" >&2\nexec "{real}" "$@"\n',
-        "never-answers": "exec sleep 30\n",
-    }
-    for name, body in stand_ins.items():
-        fake = tmp_path / f"fakebin-{name}"
-        fake.mkdir()
-        (fake / "git").write_text("#!/bin/sh\n" + body)
-        (fake / "git").chmod(0o755)
-        res = run("--git-timeout", "2", cwd=repo, path=f"{fake}{os.pathsep}{os.environ['PATH']}")
-        assert res.rc == 2 and res.out == "", (name, res.out, res.err)
-        assert "not a git work tree" in res.err, (name, res.err)
-        assert NOT_A_REPO not in res.err, (name, res.err)
-    res = run(cwd=repo, path=str(tmp_path / "no-such-bin"))
-    assert res.rc == 2 and "not a git work tree" in res.err and NOT_A_REPO not in res.err, res.err
+def test_repo_option_checks_the_named_tree_from_any_folder(tmp_path):
+    """The verifier names the tree with --repo, because its shell may stand in
+    another folder, also one that is no git repo at all."""
+    repo = make(tmp_path, {"tests/test_a.py": TEST_BODY})
+    (repo / "tests/test_a.py").unlink()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    assert_only(run("--repo", str(repo), "--base", "HEAD", cwd=elsewhere), "deleted-test", "tests/test_a.py")
+    res = run("--base", "HEAD", cwd=elsewhere)
+    assert res.rc == 2 and res.out == "", (res.out, res.err)

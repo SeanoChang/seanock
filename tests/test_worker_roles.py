@@ -151,7 +151,9 @@ def test_the_verifier_runs_the_floor_guard_and_never_reads_a_failed_run_as_clean
     means, and that a run that did not happen is not a clean run."""
     _, body = parts("verifier")
     text = " ".join(body.split())
-    assert "python3 ~/.claude/hooks/floor-guard.py --base" in text
+    # --repo names the tree. Without it the guard reads the folder the shell is
+    # in, and a worker's shell does not stay in the tree between two commands.
+    assert "python3 ~/.claude/hooks/floor-guard.py --repo <tree> --base <base>" in text
     assert (CLAUDE / "hooks" / "floor-guard.py").is_file(), "the verifier names a command that is not in the repo"
     for words in (
         "Exit 0: nothing to report",
@@ -159,11 +161,16 @@ def test_the_verifier_runs_the_floor_guard_and_never_reads_a_failed_run_as_clean
         "that the stated goal does not ask for is Important",
         "Exit 2, or no such file: the guard did not run",
         "Never read it as clean: the verdict is unverified, not pass",
-        "The one exception is a tree that is not a git repo",
-        "Its message then holds git's own words `fatal: not a git repository`",
-        "The words `not a git work tree` are no sign of it",
+        "Nothing in the guard's output changes that",
+        "Skip the guard in one case only: the brief says that the tree is not under git, and `git -C <tree> rev-parse` fails",
+        "Say under Not covered that no guard ran, and why",
     ):
         assert words in text, f"verifier.md lost: {words}"
+    # A pass without a guard run must never follow from what the guard printed.
+    # Two earlier wordings did that, by "not a git work tree" and by git's own
+    # "not a git repository": the guard prints both for trees that are repos.
+    step = text[text.index("8. Run the floor guard"):text.index("## Tag every finding")]
+    assert "exception" not in step and "not a git work tree" not in step and "not a git repository" not in step
     returns = text[text.index("## Return"):]
     assert "floor guard" in returns, "the report must show the guard's result"
     # The line that opens the merge gate is written only on a pass, so a guard

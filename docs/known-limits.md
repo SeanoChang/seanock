@@ -1115,13 +1115,20 @@ changes it.
 - **Only the Claude verifier runs it** (`config/claude/agents/verifier.md`,
   step 8, since 2026-11-14). The Codex verifier does not, and neither does
   CI. The verifier calls it at `~/.claude/hooks/floor-guard.py`, where the
-  installer links it. On a machine that did not install this repo the file is
-  not there: the verdict is then "unverified", as it is when the guard ends
-  with exit 2, and an unverified change does not get the line that opens the
-  merge gate. A machine whose git always prints a warning gets exit 2 on
-  every run, so no change passes there until that is fixed. That the
-  verifier follows step 8 is a rule in its text. It was
-  shown by hand on two stand-in repos, and has no test in CI.
+  installer links it, and names the tree with `--repo`.
+- **A guard that did not run makes the verdict "unverified".** That holds for
+  exit 2 and for a missing guard file, whatever the guard printed, and an
+  unverified change does not get the line that opens the merge gate. So on a
+  machine that did not install this repo, or whose git prints a warning on
+  every call, no change passes until that is fixed. The same holds for a repo
+  that the guard cannot read but git can: one that works through `GIT_DIR`,
+  or one whose `core.worktree` points elsewhere.
+- **The verifier skips the guard for a tree that is not under git, and only
+  when the brief says so** and its own `git -C <tree> rev-parse` fails. The
+  lead that writes the brief is trusted with that statement, as it is with
+  the tier.
+- **That the verifier follows step 8 is a rule in its text.** It was shown by
+  hand on stand-in repos, and has no test in CI.
 
 - **It reads names, not runner settings.** A path with a test name counts as
   collected, unless a folder on it starts with a dot or is `node_modules`. The

@@ -34,10 +34,11 @@ Report, do not fix: never modify the project tree, including through Bash.
    merge, a push to a shared branch). No one may be there to answer, and the
    run then stalls. Report that check as unverified, and name the command
    under Not covered.
-8. Run the floor guard in the tree you check:
-   `python3 ~/.claude/hooks/floor-guard.py --base <base>`, with the base
-   branch of the change (leave `--base` out when the brief names none). It
-   flags a change that lowers the quality bar, and it changes nothing.
+8. Run the floor guard on the tree you check:
+   `python3 ~/.claude/hooks/floor-guard.py --repo <tree> --base <base>`, with
+   the folder of that tree and the base branch of the change (leave `--base`
+   out when the brief names none). It flags a change that lowers the quality
+   bar, and it changes nothing.
    - Exit 0: nothing to report.
    - Exit 1: judge each line it prints. A deleted or moved test, a new skip
      marker, a new suppression, fewer assertions or a weakened CI step that
@@ -45,11 +46,10 @@ Report, do not fix: never modify the project tree, including through Bash.
      is no finding: name it under Evidence and say why.
    - Exit 2, or no such file: the guard did not run. Never read it as clean:
      the verdict is unverified, not pass, and the cause goes under Not
-     covered. The one exception is a tree that is not a git repo, where the
-     guard has nothing to compare. Its message then holds git's own words
-     `fatal: not a git repository`. The words `not a git work tree` are no
-     sign of it: the guard prints them for every failure of its first git
-     call, also for a git that warns, is missing or does not answer.
+     covered. Nothing in the guard's output changes that.
+   - Skip the guard in one case only: the brief says that the tree is not
+     under git, and `git -C <tree> rev-parse` fails. Say under Not covered
+     that no guard ran, and why.
 
 ## Tag every finding
 
