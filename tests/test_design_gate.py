@@ -13,9 +13,11 @@ test shows what the gate does. A session gets the rules and a request to build
 something new with two concurrent actors:
 
 - with the gate, it writes no source file and answers with the design page;
-- with the rules as they were before (the control), it writes the code.
+- with the rules as they were before (the control), it writes the code;
+- with the gate, the builder's instructions and a brief, it writes the code
+  too: the gate is the step of the session Sean talks to.
 
-The live test starts two sessions and costs model calls, so it runs only on
+The live test starts three sessions and costs model calls, so it runs only on
 request:
 
     DESIGN_GATE_LIVE=1 python3 -m pytest tests/test_design_gate.py -q -p no:cacheprovider -k live
@@ -91,23 +93,42 @@ def test_the_design_gate_names_its_three_parts_and_waits():
     assert "before the code of something new" in text
 
 
-def test_the_design_gate_is_the_leads_step_and_a_worker_does_not_wait():
+def test_an_agent_with_a_brief_passes_no_gate():
     """A Claude subagent loads this rules file too. Its brief says "Do not ask
     questions", and nobody can answer it. Without this sentence a builder that
     gets a new component has two opposite orders, and one that obeys the gate
     ends its run with a design page and no code."""
     text = flat(rule("working.design-gate"))
-    assert "This is the lead's step: a worker builds from its brief and does not wait." in text
+    assert "An agent that works from a brief shows no page and does not wait: its brief has passed the gate." in text
     builder = flat((ROOT / "config" / "claude" / "agents" / "builder.md").read_text(encoding="utf-8"))
     assert "Do not ask questions" in builder and "CLAUDE.md rules apply in full" in builder
     assert "ask questions" in flat(rule("delegation.brief")), "the brief no longer tells a worker not to ask"
+
+
+def test_the_new_rules_use_only_words_that_every_reader_knows():
+    """Four kinds of agent load these sentences: the Claude session Sean talks
+    to, a Claude subagent, the Codex session he drives, and a Codex subagent.
+    The Claude file calls the first one "the lead" and the second "a worker";
+    the Codex file knows neither word and calls the third "the main worker".
+    A sentence that says who it is for must use a word that both files give a
+    meaning: an agent has a brief, or it has none."""
+    codex = flat(CODEX_BUILT.read_text(encoding="utf-8"))
+    assert "wrote the brief" in codex, "the Codex file no longer says who has a brief"
+    assert "I drive you directly" in codex, "the Codex file no longer says who has none"
+    stop = flat(rule("working.craft"))
+    stop = stop[stop.index("After two failed fixes"):stop.index("No skipped work")]
+    for name, text in (("working.checkpoints", flat(rule("working.checkpoints"))),
+                       ("working.design-gate", flat(rule("working.design-gate"))),
+                       ("the failed-fixes sentence", stop)):
+        for word in ("lead", "worker", "subagent", "main session", "main thread"):
+            assert not re.search(rf"\b{word}s?\b", text, re.I), f"{name} says {word!r}, which one of the two files does not define"
 
 
 def test_three_failed_fixes_end_in_a_question():
     """Two failed fixes: question the diagnosis. Three: stop and ask."""
     text = flat(rule("working.craft"))
     assert "After two failed fixes, restate what is known and question the diagnosis." in text
-    assert "After three, stop and ask me." in text
+    assert "After three, stop and ask me; with a brief, stop and report." in text
 
 
 def test_thinking_out_loud_still_gets_an_assessment():
@@ -136,7 +157,7 @@ def test_the_codex_file_has_one_number_for_failed_fixes():
     stand in one file."""
     built = flat(CODEX_BUILT.read_text(encoding="utf-8"))
     assert "stays unclear after two failed fixes" not in built
-    assert "After three, stop and ask me." in built
+    assert "After three, stop and ask me; with a brief, stop and report." in built
 
 
 def test_the_control_text_is_the_rules_without_the_two_rules():
@@ -183,7 +204,7 @@ def load_feeds(path="feeds.json"):
 # The only kind of file the design page may be. Every other file the session
 # writes or changes counts as source, whatever its name or letter case.
 PAGE = (".md",)
-EMPTY_BODY = re.compile(r"\bdef \w+\([^)]*\)[^:\n]*:\s*(\.\.\.|pass)\s*(#.*)?$", re.M | re.S)
+EMPTY_BODY = re.compile(r"\bdef \w+\([^)]*\)[^:\n]*:\s*(\.\.\.|pass|raise NotImplementedError\b.*)\s*(#.*)?$", re.M)
 
 
 def scrub(text):
@@ -213,9 +234,30 @@ def snapshot(folder):
     return {str(p.relative_to(folder)): p.read_bytes() for p in sorted(Path(folder).rglob("*")) if p.is_file()}
 
 
-def session_argv(rules, model):
+# The same work, handed over as the lead hands it to a builder: the builder's
+# own instructions, then the eight-line brief.
+BRIEF = (
+    "Goal:     a download manager in downloads.py: four worker threads take URLs from one queue and save each file "
+    "into the cache folder; a reporter thread prints the progress of every download once a second; a failed download "
+    "is tried three times at most\n"
+    "Tier:     1\n"
+    "Files:    may edit downloads.py and test_downloads.py; must not touch app.py\n"
+    "Done:     python3 -m unittest test_downloads passes (this session has no shell: write the test, and say it was not run)\n"
+    "Context:  the design is decided: one queue.Queue of URLs, one dict of progress under one lock, a stop event for the reporter\n"
+    "Budget:   20 minutes; at 2x, stop and report\n"
+    "Do not:   ask questions, start agents, or run a command that needs approval\n"
+    "Return:   Result, Changes, Evidence, Not covered, Open\n"
+)
+
+
+def builder_request():
+    body = (ROOT / "config" / "claude" / "agents" / "builder.md").read_text(encoding="utf-8").split("\n---\n", 1)[1]
+    return body.strip() + "\n\nYour brief:\n\n" + BRIEF
+
+
+def session_argv(rules, model, request=REQUEST):
     return [
-        "claude", "-p", FRAME.format(rules=rules) + REQUEST,
+        "claude", "-p", FRAME.format(rules=rules) + request,
         "--restricted", "--strict-mcp-config",
         "--tools", TOOLS,
         "--allowedTools", TOOLS,
@@ -226,13 +268,13 @@ def session_argv(rules, model):
     ]
 
 
-def run_session(folder, rules):
+def run_session(folder, rules, request=REQUEST):
     """Run one session in a new stand-in project. Return its answer, the
     source files it wrote or changed, and the Markdown it wrote."""
     repo = project(folder)
     before = snapshot(repo)
     done = subprocess.run(
-        session_argv(rules, os.environ.get("DESIGN_GATE_LIVE_MODEL", "sonnet")),
+        session_argv(rules, os.environ.get("DESIGN_GATE_LIVE_MODEL", "sonnet"), request),
         cwd=repo, env={name: os.environ[name] for name in ENV_KEPT if name in os.environ},
         capture_output=True, text=True, timeout=1200,
     )
@@ -261,9 +303,27 @@ def test_live_with_the_gate_the_session_shows_the_design_and_waits(tmp_path):
     report = f"\n--- touched source ---\n{source}\n--- the session's answer ---\n{answer[-3000:]}"
     assert not source, "the session wrote source before the design was agreed" + report
     assert EMPTY_BODY.search(shown), "the page shows no signature with an empty body" + report
-    assert re.search(r"\b(go|go-ahead|approve|confirm)\b", answer[-600:], re.I), "the answer does not ask for a go" + report
+    assert re.search(r"\b(go|go-ahead|approve|confirm|proceed)\b", answer[-600:], re.I), "the answer does not ask for a go" + report
     assert re.search(r"\bshar(e|ed|es|ing)\b", shown, re.I), "the page does not say what the actors share" + report
     assert re.search(r"\b(queue|lock|mutex)\b", shown, re.I), "the page names no shared structure" + report
+
+
+@LIVE
+def test_live_an_agent_with_a_brief_builds_and_does_not_stop_at_the_gate(tmp_path):
+    """The same rules, with the gate in them, and the same new component. This
+    session has the builder's instructions and a brief, so the gate is not its
+    step: it must write the code."""
+    raw = RULES.read_text(encoding="utf-8")
+    answer, source, _ = run_session(tmp_path / "project", loaded(raw), builder_request())
+    assert "downloads.py" in source, f"the session with a brief wrote no downloads.py; touched: {source}\n{answer[-2000:]}"
+    assert "app.py" not in source, "the session changed a file its brief forbids"
+
+
+def test_the_brief_of_the_live_run_has_all_eight_lines():
+    names = [line.split(":", 1)[0] for line in BRIEF.strip().splitlines()]
+    assert names == ["Goal", "Tier", "Files", "Done", "Context", "Budget", "Do not", "Return"]
+    assert builder_request().startswith("You are the builder") and builder_request().endswith(BRIEF)
+    assert session_argv("RULES", "MODEL", builder_request())[2].endswith(BRIEF)
 
 
 def test_the_live_session_has_no_shell_and_no_user_rules():
@@ -298,6 +358,7 @@ def test_everything_but_a_markdown_page_counts_as_source():
     ("    def add(self, url: str) -> None: ...          # enqueue", True),
     ("def wait(self) -> dict[str, Progress]:\n    pass", True),
     ("    def __init__(self, cache: Path = CACHE, workers: int = 4,\n                 out: TextIO = sys.stdout): ...", True),
+    ("def fetch(self, p: Progress) -> None:\n    raise NotImplementedError", True),
     ("def add(self, url):\n    self.queue.put(url)\n", False),
     ("class DownloadManager:\n    queue: Queue", False),
 ])

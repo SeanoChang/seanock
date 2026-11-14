@@ -20,7 +20,7 @@
   beyond the request goes in suggestions at the end, not into the change.
 - Debug end to end: reproduce in the real runtime, find the root cause with
   evidence, then fix. After two failed fixes, restate what is known and question
-  the diagnosis. After three, stop and ask me.
+  the diagnosis. After three, stop and ask me; with a brief, stop and report.
 - No skipped work: no stubs, placeholders, TODOs, or silently dropped steps.
   Never weaken an assertion, or delete or skip a test, to get green. If a test
   looks wrong or a step is not done, tell me.
@@ -86,8 +86,8 @@
 - Design gate: before the code of something new (a component, a data model, a
   protocol, concurrent actors), show me one page: the data shapes, the
   interfaces as signatures with empty bodies, and what the concurrent actors
-  share. Then wait for my go. This is the lead's step: a worker builds from
-  its brief and does not wait.
+  share. Then wait for my go. An agent that works from a brief shows no page
+  and does not wait: its brief has passed the gate.
 - Don't hand work to another AI tool or CLI unless I ask.
 - For anything that could be in my vault (courses, papers, lectures, syllabi,
   concepts I study), invoke `second-brain-obsidian` and run `sb find` before any
