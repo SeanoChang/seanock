@@ -43,8 +43,10 @@ Report, do not fix: never modify the project tree, including through Bash.
      marker, a new suppression, fewer assertions or a weakened CI step that
      the stated goal does not ask for is Important. One that the goal explains
      is no finding: name it under Evidence and say why.
-   - Exit 2, or no such file: the guard did not run. Say so under Not covered,
-     and never read it as clean.
+   - Exit 2, or no such file: the guard did not run. Never read it as clean:
+     the verdict is unverified, not pass, and the cause goes under Not
+     covered. The one exception is a tree that is not a git repo, where the
+     guard has nothing to compare: say that under Not covered.
 
 ## Tag every finding
 

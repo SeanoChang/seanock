@@ -158,11 +158,15 @@ def test_the_verifier_runs_the_floor_guard_and_never_reads_a_failed_run_as_clean
         "Exit 1: judge each line",
         "that the stated goal does not ask for is Important",
         "Exit 2, or no such file: the guard did not run",
-        "never read it as clean",
+        "Never read it as clean: the verdict is unverified, not pass",
+        "The one exception is a tree that is not a git repo",
     ):
         assert words in text, f"verifier.md lost: {words}"
     returns = text[text.index("## Return"):]
     assert "floor guard" in returns, "the report must show the guard's result"
+    # The line that opens the merge gate is written only on a pass, so a guard
+    # that did not run cannot end in a merge.
+    assert "Leave the line out when the tree has uncommitted changes or the verdict is not pass." in returns
 
 
 def test_only_the_verifier_runs_the_floor_guard():

@@ -1116,8 +1116,11 @@ changes it.
   step 8, since 2026-11-14). The Codex verifier does not, and neither does
   CI. The verifier calls it at `~/.claude/hooks/floor-guard.py`, where the
   installer links it. On a machine that did not install this repo the file is
-  not there: the verifier then says under "Not covered" that the guard did
-  not run. That the verifier follows step 8 is a rule in its text. It was
+  not there: the verdict is then "unverified", as it is when the guard ends
+  with exit 2, and an unverified change does not get the line that opens the
+  merge gate. A machine whose git always prints a warning gets exit 2 on
+  every run, so no change passes there until that is fixed. That the
+  verifier follows step 8 is a rule in its text. It was
   shown once by hand, on a stand-in repo, and has no test in CI.
 
 - **It reads names, not runner settings.** A path with a test name counts as
