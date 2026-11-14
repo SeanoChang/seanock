@@ -1363,3 +1363,51 @@ has none.
 
 - Either Codex mode. The Codex file was read, not run.
 - Any model but Sonnet, and more than three runs of the gate.
+
+## Verify runner (`config/claude/skills/create-verify-skill`, 2026-11-14)
+
+### By design
+
+- **Command-line steps only.** The step kind is `run`. A server that must
+  stay up and a screen need a later runner version; the runner refuses a
+  kind that it does not know.
+- **The runner is a copy in each project.** A project can run it in CI and
+  on a machine without this repo. A fix to the runner does not reach a
+  project until its copy is replaced. The map and the copy both name the
+  runner version.
+- **The map decides what a pass means.** A step that expects only exit 0
+  passes for most broken features. The skill text asks for a step that can
+  fail, and for a run that shows it; no code checks that.
+- **A result is tied to a commit by the pass line,** which names the commit
+  and says `dirty` or `partial`. The reader must compare that commit with
+  `HEAD`. No code does that for the reader.
+- **The doctor refuses an `env` value that starts with `/` or `~`.** It does
+  not see a real path that the app builds itself, or one inside a longer
+  value. The app also gets the caller's whole environment, so a variable that
+  the map does not set still points where it points in the shell.
+- **Two runs share the build folder of the project.** Evidence and temp
+  folders are separate per run; the build is not.
+- **A map is code.** `verify run` runs the commands that the map names, as
+  the tests of a project run its code. Running it on a branch trusts that
+  branch as much as running its tests does. `clean` reads `.verify/runs/`,
+  which git ignores; it does not write through a link there, it does not
+  signal group 0 or 1, and it stops a process only when pid and start time
+  match. It was not hardened further against a hostile `.verify/` folder.
+- **Each feature gets a fresh folder and a fresh copy of the fixture.** A
+  large fixture is copied once per feature, and a costly set-up step runs
+  once per feature that needs it.
+
+### Minor
+
+- **What a step left running is stopped by its process group.** A process
+  that moved to another session or group is not found. After a command ends,
+  the runner signals its group once more; in theory the system could have
+  given that group number to a new process in the microseconds between.
+- **`clean` cannot stop the leftovers of a cut-off run when the command
+  itself has ended.** It stops a process only when the pid and the start time
+  that the run recorded both match, and only the command's own pid is
+  recorded.
+- **A runner that is killed between the start of a command and the write of
+  its pid** leaves that command running, and `clean` does not know it.
+- **`ps` gives start times to the second.** A recorded pid that the system
+  gave to a new process within the same second would match.

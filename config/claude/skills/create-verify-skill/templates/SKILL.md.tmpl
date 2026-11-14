@@ -1,0 +1,80 @@
+---
+name: verify-__APP__
+description: Drive the real __APP__ app through its feature map and keep the evidence of the run. Use before you call a change to __APP__ done, when you review such a change, and when someone asks to verify, check, prove or show that __APP__ works. Not a substitute for the unit tests.
+---
+
+# verify-__APP__
+
+This skill runs the built app, feature by feature, and keeps what the app
+printed. The unit tests show that the parts work; this shows that the app does.
+
+## Run it
+
+Run each command from the project root, as its own command, with no pipe.
+
+```bash
+python3 .claude/skills/verify-__APP__/verify doctor
+python3 .claude/skills/verify-__APP__/verify run
+```
+
+`run` builds the app, runs the steps of each feature in a fresh temp folder,
+and removes that folder at the end. `run --only <id>` runs one feature.
+
+## Read the result
+
+Read the exit code and the last line together. One without the other is not a
+result.
+
+| Exit | Last line starts with | Meaning |
+| --- | --- | --- |
+| 0 | `verify-__APP__: pass` | Every step held. |
+| 1 | `verify-__APP__: summary` | A step failed or could not start. The lines above say which. |
+| 2 | `verify-__APP__: error` | The run could not finish. It says nothing about the app. |
+
+Anything else is not a result either: another exit code, another last line, a
+run that was cut off. Report that as unverified, never as a pass.
+
+A pass covers a commit only when all of these hold:
+
+- the commit on the pass line is the output of `git rev-parse HEAD`;
+- the pass line does not end in `dirty` (uncommitted changes) or `partial`
+  (`--only` left features out).
+
+Run it again after each new commit. An earlier result does not cover it.
+
+## Evidence
+
+The line `evidence .verify/runs/<run>` names the run folder. It holds
+`run.json` and the output of the build and of every step, and it stays after
+the run. Name that folder in your report, and quote from its files, not from
+memory. `.verify/` is ignored by git.
+
+## After a run that was cut off
+
+```bash
+python3 .claude/skills/verify-__APP__/verify runs
+python3 .claude/skills/verify-__APP__/verify clean
+```
+
+`clean` stops what a cut-off run left behind and removes its temp folder. It
+leaves a run that is still live alone, and it keeps every run folder.
+
+## The feature map
+
+`features.json`, beside this file, lists the features and the steps that prove
+each one. When you add or change a feature of the app, change its entry in the
+same pull request.
+
+- A step is one command and what must be true after it: the exit code, and
+  text that the output must hold or must not hold.
+- Expect something that is false when the feature is broken. An exit code
+  alone seldom is.
+- The app must not touch real data. Point it at `{tmp}` through `env`, and put
+  the files it needs in a `fixture` folder beside the map.
+- `{root}` is the project and `{bin}` is the folder of the built program.
+  `{tmp}` is a fresh folder for each feature, with its own copy of the
+  fixture, so a feature gives the same result alone and in a full run.
+- The runner refuses a key that it does not know, so a typing error cannot
+  turn a check off.
+- The map is code: the runner runs every command that it names, with your
+  environment. Review a change to it as you review a change to the tests.
