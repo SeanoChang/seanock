@@ -160,6 +160,8 @@ def test_the_verifier_runs_the_floor_guard_and_never_reads_a_failed_run_as_clean
         "Exit 2, or no such file: the guard did not run",
         "Never read it as clean: the verdict is unverified, not pass",
         "The one exception is a tree that is not a git repo",
+        "Its message then holds git's own words `fatal: not a git repository`",
+        "The words `not a git work tree` are no sign of it",
     ):
         assert words in text, f"verifier.md lost: {words}"
     returns = text[text.index("## Return"):]
@@ -173,4 +175,4 @@ def test_only_the_verifier_runs_the_floor_guard():
     """One worker owns the check. A second one would report each hit twice."""
     for role in WORKERS:
         if role != "verifier":
-            assert "floor-guard" not in parts(role)[1], f"{role}.md also names the floor guard"
+            assert not re.search(r"floor[\s_-]*guard", parts(role)[1], re.I), f"{role}.md also names the floor guard"

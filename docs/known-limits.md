@@ -1121,7 +1121,7 @@ changes it.
   merge gate. A machine whose git always prints a warning gets exit 2 on
   every run, so no change passes there until that is fixed. That the
   verifier follows step 8 is a rule in its text. It was
-  shown once by hand, on a stand-in repo, and has no test in CI.
+  shown by hand on two stand-in repos, and has no test in CI.
 
 - **It reads names, not runner settings.** A path with a test name counts as
   collected, unless a folder on it starts with a dot or is `node_modules`. The

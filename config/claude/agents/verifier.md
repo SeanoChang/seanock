@@ -46,7 +46,10 @@ Report, do not fix: never modify the project tree, including through Bash.
    - Exit 2, or no such file: the guard did not run. Never read it as clean:
      the verdict is unverified, not pass, and the cause goes under Not
      covered. The one exception is a tree that is not a git repo, where the
-     guard has nothing to compare: say that under Not covered.
+     guard has nothing to compare. Its message then holds git's own words
+     `fatal: not a git repository`. The words `not a git work tree` are no
+     sign of it: the guard prints them for every failure of its first git
+     call, also for a git that warns, is missing or does not answer.
 
 ## Tag every finding
 
