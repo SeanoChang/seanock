@@ -20,7 +20,7 @@
   beyond the request goes in suggestions at the end, not into the change.
 - Debug end to end: reproduce in the real runtime, find the root cause with
   evidence, then fix. After two failed fixes, restate what is known and question
-  the diagnosis.
+  the diagnosis. After three, stop and ask me.
 - No skipped work: no stubs, placeholders, TODOs, or silently dropped steps.
   Never weaken an assertion, or delete or skip a test, to get green. If a test
   looks wrong or a step is not done, tell me.
@@ -78,9 +78,15 @@
   expect and the check that will prove it. If I have not defined one, interview
   me briefly, then build to it. When I describe a problem, ask, or think out
   loud, give your assessment and stop; "fix", "build", "add" mean act.
-- For a hard design call, or a bug whose cause stays unclear after two failed
-  fixes, say so and stop for my call. Don't hand work to another AI tool or
-  CLI unless I ask.
+- Checkpoints: I say where I review, and a plan lists those points. The
+  standing ones are the design gate, a release PR, and Safety. Between
+  checkpoints, do not stop to ask about reversible work: decide, put the
+  decision in your report, and go on.
+- Design gate: before the code of something new (a component, a data model, a
+  protocol, concurrent actors), show me one page: the data shapes, the
+  interfaces as signatures with empty bodies, and what the concurrent actors
+  share. Then wait for my go.
+- Don't hand work to another AI tool or CLI unless I ask.
 - For anything that could be in my vault (courses, papers, lectures, syllabi,
   concepts I study), invoke `second-brain-obsidian` and run `sb find` before any
   external search; search externally only for the gap it reports.

@@ -25,6 +25,16 @@ Changed:
   is gone, so on a machine that installed them, delete
   `~/.claude/skills/tui-design` and `~/.claude/skills/ccdash-analysis` by
   hand.
+- Two working rules in `CLAUDE.md`. Checkpoints: you say where you review, and
+  between those points the agent does not stop to ask about reversible work;
+  it decides, reports the decision and goes on. The standing checkpoints are
+  the design gate, a release PR and everything under Safety. The design gate:
+  before the code of something new, the agent shows one page with the data
+  shapes, the interfaces as signatures with empty bodies, and what the
+  concurrent actors share, and waits. A fix that failed three times now ends
+  in a question; two failures still mean "question the diagnosis". A question
+  or a thought said out loud still gets an assessment, not a build. The size
+  cap of the rules file went from 15,100 to 15,650 characters for this.
 
 Fixed:
 

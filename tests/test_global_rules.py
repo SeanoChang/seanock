@@ -26,8 +26,12 @@ import pytest
 
 RULES = Path(__file__).resolve().parent.parent / "config" / "claude" / "CLAUDE.md"
 
-MAX_CHARS = 15_100
-MAX_LINES = 220
+# Raised on purpose on 2026-11-14, from 15,100 characters and 220 lines, for
+# two rules that Sean decided that day: checkpoints and the design gate. The
+# planned move of the merge and delegation procedure into files that load on
+# demand is to bring both numbers down again.
+MAX_CHARS = 15_650
+MAX_LINES = 229
 
 # phrase -> what is lost when it goes missing
 PINNED = {
@@ -38,6 +42,9 @@ PINNED = {
     "its own task": "a tier 2 change does not hold up lower-tier work",
     "Time box": "a time budget fixes the time and varies the scope",
     "cut list": "a time box names what to cut, in order, before work starts",
+    "do not stop to ask about reversible work": "between checkpoints the agent decides and goes on",
+    "signatures with empty bodies": "the design gate shows the interfaces before any code",
+    "After three, stop and ask me": "a fix that fails three times goes back to Sean",
 }
 
 BRIEF_LINES = ["Goal:", "Tier:", "Files:", "Done:", "Context:", "Budget:", "Do not:", "Return:"]
