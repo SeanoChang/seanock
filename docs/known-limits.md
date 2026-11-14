@@ -1231,6 +1231,25 @@ changes it.
 - **A change inside a submodule is not read** (found 2026-11-14, there since
   the first version). The guard reads regular files only, so a submodule
   moved to a commit that deletes a test gives `floor-guard: clean`.
+- **A long list of hits ends as "unverified".** The verifier runs the guard
+  with no pipe and reads its last line. Above about 20 KB the shell tool of
+  Claude Code cuts the output, so the `floor-guard: summary` line is not
+  shown (seen with 561 hits, 33,409 bytes). This fails safe. The verifier can
+  send the output to a file and read the file, which is not a pipe; its text
+  does not say so.
+- **Nothing ties a guard result to the sha in the review line.** The guard
+  does not print the commit it read, and the verifier reads
+  `git rev-parse HEAD` at the end. When `HEAD` moves in the tree during a
+  review (a commit or a branch switch by another session), the line can name
+  a commit that the guard did not read. The same holds for every check the
+  verifier runs, and was so before the guard.
+- **On a re-check, a hit that still stands meets "do not re-report".** A
+  first review fails on an Important hit, the fix does not touch it, and the
+  re-check sees the same hit again. The verifier text says not to report a
+  known finding a second time, and no sentence says that an earlier Important
+  finding that still stands keeps the verdict at fail. This holds for every
+  finding, not only for guard hits. It was read from the text (2026-11-14)
+  and not run with a live verifier.
 
 ### Not tested
 
