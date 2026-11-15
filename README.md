@@ -1,7 +1,7 @@
 # seanock
 
 An agent harness for Claude Code and Codex: global working rules, six workers,
-ten skills, hooks that check risky steps with code, and the tests that keep
+fourteen skills, hooks that check risky steps with code, and the tests that keep
 all of it in step.
 
 It was part of the terminal setup in
@@ -24,10 +24,11 @@ here.
 | Status line | `config/claude/statusline-command.sh` | Three lines under the prompt                    |
 | Tests       | `tests/`, and beside each hook and skill | Run by `.github/workflows/ci.yml`            |
 
-The harness has one version, in [`VERSION`](VERSION). A release is a tag
-`vX.Y.Z` on `main`, and [CHANGELOG.md](CHANGELOG.md) has one entry for each.
-[docs/architecture.md](docs/architecture.md) says how the parts meet and what
-the three numbers mean. [docs/decisions/](docs/decisions/) holds one short
+The harness has one version, in [`VERSION`](VERSION). Each pull request into
+`dev` raises its middle number by one (or, when you name it a major step, the
+first number) and adds an entry to [CHANGELOG.md](CHANGELOG.md). A release is a tag `vX.Y.Z` on `main`.
+[docs/architecture.md](docs/architecture.md) says how the parts meet and how
+the number moves. [docs/decisions/](docs/decisions/) holds one short
 record for each choice that is hard to reverse. Minor findings that were
 logged and not fixed are in [docs/known-limits.md](docs/known-limits.md).
 
@@ -102,8 +103,11 @@ runs it on each change it checks, and you can run it by hand:
 it compares the working tree with the base branch and reports a change that
 lowers the quality bar, such as a deleted test, a new skip marker, a new lint
 suppression, fewer assertions, or a CI step that may now fail silently. It
-exits 0 when clean, 1 with findings, and 2 when it could not finish. Each hook
-has tests in `config/claude/hooks/tests/`.
+exits 0 when clean, 1 with findings, and 2 when it could not finish.
+`comment-check.py` is a command of the same kind. It lists each comment whose
+code changed in the diff while the comment did not, so that a reviewer reads
+it again. Its hits are advice: the verifier judges each one, and a hit alone
+never fails a change. Each hook has tests in `config/claude/hooks/tests/`.
 
 **Status line.** `statusline-command.sh` draws three lines under the prompt:
 
@@ -130,7 +134,8 @@ native panes and bands. `settings.json` loads them from `~/.claude/mods/` with
 
 **Commands and skills.** Two slash commands live in `config/claude/commands/`:
 `/explore` and `/map`. These skills live in `config/claude/skills/`, and Claude
-loads whichever one matches the request:
+loads whichever one matches the request. Only you start `create-verify-skill`
+and `correct`:
 
 | Skill                   | What it's for                                                                                                  |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------- |
@@ -142,8 +147,12 @@ loads whichever one matches the request:
 | `writing-markdown-docs` | House style for docs, with a reference per document type and a `check_doc.py` linter                           |
 | `visual-artifacts`      | Learning pages, prototypes, guides and plan pages published as Claude Artifacts, with a render checker         |
 | `brief-artifact`        | A decision or a short report as one page: markdown in, and a "Copy response" button gives the answer to paste |
-| `scaffold-docs`         | Writes a `CLAUDE.md` entry point into each meaningful folder and keeps a versioned changelog                   |
-| `orient`                | Reads those scaffold docs at the start of a session instead of exploring the tree again                        |
+| `setup-repo`            | Lists what a repo lacks for this way of working with a read-only script, then fills the gaps; never merges    |
+| `orient`                | Reads the root map and the docs beside it at the start of a session instead of exploring the tree again        |
+| `create-verify-skill`   | Writes a verify skill into a project: a feature map, a runner that drives the real app, and kept evidence      |
+| `maintain-verify-skill` | Finds where a project's verify skill no longer fits the project, then corrects the map, never the result  |
+| `merge-follow-up`       | Sees a merged pull request with a read-only script, then rebases your open branches and reinstalls; never merges |
+| `correct`               | Turns a correction you gave more than once into a rule with an enforcer, and keeps the table of those rules   |
 
 ## Codex
 

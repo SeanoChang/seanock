@@ -3,8 +3,9 @@
 The harness has one version, in VERSION at the repo root. Three things can
 drift from it with no error:
 
-- the changelog, when a release changes the number and adds no entry;
-- the architecture document, when a major release keeps the old description;
+- the changelog, when a pull request changes the number and adds no entry;
+- the architecture document, when a pull request takes the next major and the
+  document keeps the old description;
 - the decision records, when a file is added out of order or without a number.
 
 The status line shows the version of the tree that is live. That part is
@@ -77,15 +78,44 @@ def test_every_changelog_heading_is_a_release_entry():
         assert SEMVER.fullmatch(v), f"changelog entry {v!r} is not X.Y.Z"
 
 
-def test_changelog_entries_go_from_new_to_old_and_only_the_top_one_is_unreleased():
+def test_changelog_entries_go_from_new_to_old_and_each_has_a_date():
+    """Each pull request into dev is a version with its own dated entry (decision 0008), so no entry
+    waits for a release."""
     found = entries(CHANGELOG.read_text(encoding="utf-8"))
     numbers = [as_numbers(v) for v, _ in found]
     assert numbers == sorted(set(numbers), reverse=True), (
         f"changelog entries are out of order or repeated: {[v for v, _ in found]}"
     )
-    assert all(date != "unreleased" for _, date in found[1:]), (
-        "only the top changelog entry may be unreleased"
+    assert all(date != "unreleased" for _, date in found), (
+        f"each changelog entry carries the date of its pull request: {found}"
     )
+
+
+def next_numbers(old):
+    """The numbers that may follow `old`: the next minor, or the next major."""
+    major, minor, _ = old
+    return {(major, minor + 1, 0), (major + 1, 0, 0)}
+
+
+def test_each_changelog_entry_is_the_next_number_after_the_one_below_it():
+    """One pull request raises the middle number by one, or takes the next major. Above the oldest
+    entry, a number that is left out, a middle number raised two times in one pull request, and a last
+    number other than 0 all fail here. The oldest entry has none below it and is not checked."""
+    found = [as_numbers(v) for v, _ in entries(CHANGELOG.read_text(encoding="utf-8"))]
+    for new, old in zip(found, found[1:]):
+        assert new in next_numbers(old), (
+            f"{'.'.join(map(str, new))} follows {'.'.join(map(str, old))} in the changelog; the next number "
+            f"is {' or '.join('.'.join(map(str, n)) for n in sorted(next_numbers(old)))}"
+        )
+
+
+@pytest.mark.parametrize("old, new, fits", [
+    ((0, 3, 0), (0, 4, 0), True), ((0, 9, 0), (0, 10, 0), True), ((0, 9, 0), (1, 0, 0), True),
+    ((0, 3, 0), (0, 5, 0), False), ((0, 3, 0), (0, 3, 1), False), ((0, 3, 0), (0, 4, 1), False),
+    ((0, 3, 0), (2, 0, 0), False), ((0, 3, 0), (1, 1, 0), False), ((1, 2, 0), (1, 2, 0), False),
+])
+def test_the_next_number_is_the_next_minor_or_the_next_major(old, new, fits):
+    assert (new in next_numbers(old)) is fits
 
 
 def test_the_architecture_document_names_the_current_major():

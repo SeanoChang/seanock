@@ -1087,7 +1087,7 @@ changes it.
 - A session where `GIT_DIR` or `GIT_WORK_TREE` is set in the environment.
 - A config file, or a file it includes, that is a named pipe. Every git
   command would wait on it, the ones before this change too.
-- A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`.
+- A git older than 2.45, which does not know `GIT_NO_LAZY_FETCH`.
 
 ## Installer (`install.sh`, 2026-11-13)
 
@@ -1127,6 +1127,44 @@ changes it.
   every call, no change passes until that is fixed. The same holds for a repo
   that the guard cannot read but git can: one that works through `GIT_DIR`,
   or one whose `core.worktree` points elsewhere.
+- **The top of the work tree is checked, not taken from git.** git takes it
+  from a setting when there is one (`core.worktree`), and that setting can
+  name any folder. The guard ran every later call there. When the folder
+  was another repo, the guard read that repo: `floor-guard: clean` for a
+  tree that had lost a test. An adversary review of the comment check
+  found it on 2026-11-15, and it was there since the first version; the
+  sentence above said "did not run" for such a repo, and that was true only
+  when the other folder was no repo. Now the guard gives a result only
+  when three answers name one folder, by device and inode: the top of the
+  work tree that git names where the caller pointed (`--repo`); the first
+  folder at or above `--repo` that holds a `.git` entry, which the guard
+  finds itself; and the top that git names when it is asked in that
+  folder, where every call then runs. Anything else is exit 2. So the
+  guard gives a result only where it gave one before, and for the same
+  folder; it has more reasons for exit 2 and no new result.
+- **That rule is the third form of the fix, and the class was "the guard's
+  idea of the tree can differ from git's".** The first form asked git
+  where the caller pointed and ran the calls in the folder with the `.git`
+  entry. The adversary planted a git dir inside the tree that names the
+  tree as its work tree; the tree's own setting, which named another repo,
+  was never looked at. The second form asked git only in the folder that
+  the guard's walk found. The walk took "could not look" for "not there":
+  for a tree whose top folder the guard may not enter (one `chmod`), it
+  went on to the repo above and said `clean`. Now a folder that cannot be
+  looked into is an error, git must also take the `.git` entry of the
+  folder (it passes over one that is no git dir and takes a repo further
+  up), and the three answers must agree.
+- **A submodule checkout has a work tree setting too** (git writes it), and
+  it names the submodule's own folder, so it is read as before. A repo
+  with its git dir kept elsewhere and a linked work tree have no such
+  setting.
+- **A folder whose `.git` entry is broken is an error** (an empty folder, a
+  link to nowhere), also when the repo above says that this folder is its
+  work tree. Before this change it was read as the repo above it.
+- **Who can write the repo's git settings can do more than that.** The same
+  person can move the base ref to the head commit, and the guard then
+  compares the change with itself. The guard reads a tree that an agent
+  changed; it is no protection against someone who edits `.git` by hand.
 - **The verifier skips the guard for a tree that is not under git, and only
   when the brief says so** and its own `git -C <tree> rev-parse` fails. The
   lead that writes the brief is trusted with that statement, as it is with
@@ -1250,6 +1288,14 @@ changes it.
   finding that still stands keeps the verdict at fail. This holds for every
   finding, not only for guard hits. It was read from the text (2026-11-14)
   and not run with a live verifier.
+- **One test of the guard waits with no time limit**
+  (`test_repo_config_programs_never_run_and_nothing_is_written`). Its last
+  step runs `git diff` and `git status` with a stand-in filter program, and
+  git stops that program with SIGTERM. In a test process that ignores
+  SIGTERM, git waits forever. That happened once (2026-11-14): a test of the
+  verify runner left the signal ignored for the tests after it. That test
+  file now puts the signals back; the two git calls still have no time
+  limit.
 
 ### Not tested
 
@@ -1260,7 +1306,10 @@ changes it.
   hand on a case-sensitive APFS image (2026-11-13): all 183 tests passed
   there, and the test failed when the inode check was removed. On a disk that
   ignores letter case the inode check cannot change a result.
-- A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`, and a real
+- The comparison of two spellings of one folder on a disk that keeps
+  letter case apart: the test for another letter case has nothing to run
+  there, and it then passes with no assertion. The disk of CI ignores case.
+- A git older than 2.45, which does not know `GIT_NO_LAZY_FETCH`, and a real
   git older than 2.43 (the test uses a stand-in that rejects the option).
 - Refs kept in the reftable format, and a broken entry in `packed-refs`. The
   broken-ref tests write loose ref files. Both ended with exit 2 in a review
@@ -1363,3 +1412,919 @@ has none.
 
 - Either Codex mode. The Codex file was read, not run.
 - Any model but Sonnet, and more than three runs of the gate.
+
+## Verify runner (`config/claude/skills/create-verify-skill`, 2026-11-14)
+
+### By design
+
+- **Command-line steps only.** The step kind is `run`. A server that must
+  stay up and a screen need a later runner version; the runner refuses a
+  kind that it does not know.
+- **The runner is a copy in each project.** A project can run it in CI and
+  on a machine without this repo. A fix to the runner does not reach a
+  project until its copy is replaced. The map and the copy both name the
+  runner version.
+- **The map decides what a pass means.** A step that expects only exit 0
+  passes for most broken features. The skill text asks for a step that can
+  fail, and for a run that shows it; no code checks that.
+- **A result is tied to a commit by the pass line,** which names the commit
+  and says `dirty` or `partial`. The reader must compare that commit with
+  `HEAD`. No code does that for the reader.
+- **The doctor refuses an `env` value that starts with `/` or `~`.** It does
+  not see a real path that the app builds itself, or one inside a longer
+  value. The app also gets the caller's whole environment, so a variable that
+  the map does not set still points where it points in the shell.
+- **Two runs share the build folder of the project.** Evidence and temp
+  folders are separate per run; the build is not.
+- **A map is code.** `verify run` runs the commands that the map names, as
+  the tests of a project run its code. Running it on a branch trusts that
+  branch as much as running its tests does. `clean` reads `.verify/runs/`,
+  which git ignores; it does not write through a link there, it does not
+  signal group 0 or 1, and it stops a process only when pid and start time
+  match. It was not hardened further against a hostile `.verify/` folder.
+- **Each feature gets a fresh folder and a fresh copy of the fixture.** A
+  large fixture is copied once per feature, and a costly set-up step runs
+  once per feature that needs it.
+
+### Minor
+
+- **What a step left running is stopped by its process group.** A process
+  that moved to another session or group is not found. After a command ends,
+  the runner signals its group once more; in theory the system could have
+  given that group number to a new process in the microseconds between.
+- **`clean` cannot stop the leftovers of a cut-off run when the command
+  itself has ended.** It stops a process only when the pid and the start time
+  that the run recorded both match, and only the command's own pid is
+  recorded.
+- **A runner that is killed between the start of a command and the write of
+  its pid** leaves that command running, and `clean` does not know it.
+- **`ps` gives start times to the second.** A recorded pid that the system
+  gave to a new process within the same second would match.
+- **Where `ps` gives no start time** (BusyBox, an image with no procps),
+  `clean` still finds a runner that has ended and removes its temp folder,
+  but it stops no process, because it cannot tell that a pid still means the
+  recorded command. A run whose runner pid went to another process stays
+  `live` there. Shown with a stand-in `ps`, not on such a system.
+- **A temp folder that cannot be removed** (a file with a system flag,
+  another owner) stays. The run prints `not-removed`, keeps its result, and
+  `clean` tries again later. Read-only folders are not such a case: the
+  runner makes them writable first.
+- **An exit 2 of the scaffold can leave the skill folder.** The `.gitignore`
+  line is written after the folder. When that write fails, the folder is
+  there and a second call refuses it, although the texts say that exit 2
+  means nothing was written. Found by the verifier, 2026-11-14.
+- **Neither skill text says that a step runs in the project root by
+  default.** A step that writes to a relative path writes into the project,
+  not into `{tmp}`, and can then differ between a full run and `--only`.
+  `cwd` on a step changes it. Found by the verifier, 2026-11-14.
+- **A stop signal in the first moments of a run** (before the temp folder
+  exists, or between the start of a command and the first line that guards
+  it) was not shown to leak or not to leak; twelve timed signals did not hit
+  it.
+- **The runner ignores the stop signals from the start of its clean-up to
+  its end as a process,** and so does each program it starts in that time
+  (`git`, `ps`). A second Ctrl-C does not stop a clean-up that hangs;
+  `kill -9` does, and `verify clean` then finishes the job.
+- **When git refuses the repo, the doctor names the wrong cause.** For
+  example `detected dubious ownership` in a container job: the gap reads
+  `evidence-not-ignored .verify/` although the folder is ignored. The run is
+  refused, which is the safe side. Found by the verifier, 2026-11-14.
+- **A `.git` that points to a repo that is gone reads as "no repo".** Git
+  then says `not a git repository`, the doctor is clean, and the run can
+  pass with the mark `nogit`. The same holds with `GIT_DIR` set to a path
+  that does not exist. Found by the adversary, 2026-11-14.
+- **Git state is read at the start and at the end of a run, not between.**
+  A step that edits a tracked file and a later step that puts it back leave
+  no `dirty` mark. Found by the adversary, 2026-11-14.
+- **A record with a pid that the system cannot hold ends `runs` and `clean`
+  with exit 2 for the whole project** (`OverflowError`). It needs a damaged
+  `run.json` or `started.pids`. Found by the adversary, 2026-11-14.
+- **A step that takes the read permission from the run's temp folder
+  itself** (not from a folder inside it) leaves a folder that `clean` keeps
+  on every call, until someone makes it readable by hand. Found by the
+  adversary, 2026-11-14.
+- **`verify runs` says `not-cleaned` for more than a failed removal:** also
+  for a run with `--keep-tmp`, and for a run whose temp folder could not be
+  made. The skill text names only the first case. `clean` removes a folder
+  that `--keep-tmp` kept. Found by the adversary, 2026-11-14.
+- **A killed runner that its parent has not yet collected stays `live`**
+  until the parent does. Found by the adversary, 2026-11-14.
+- **Start times are read in UTC since 2026-11-14.** Before, `ps` printed
+  local time, and `clean` from a session in another time zone took a live
+  run for a cut-off one and removed its temp folder (found by the
+  adversary). A run that an older copy of the runner recorded in local time
+  has the same problem until it ends. The reverse is possible at long odds
+  too: within the hours of the zone's offset, a new process that got the
+  recorded pid at the one second that reads the same in UTC would count as
+  the recorded one, and `clean` would stop it.
+
+## Merge follow-up (`config/claude/skills/merge-follow-up`, 2026-11-14)
+
+### By design
+
+- **Each session gets each event once; only the reinstall is claimed once.**
+  The design page of 2026-11-14 said that one session claims an event. With
+  that, a second session would never learn of a merge, and its branches
+  would stay behind. So the cursor is per session, and `--claim` is for a
+  step that must run once.
+- **An event is delivered at most once.** The cursor is saved before the
+  script prints the events. A session that stops before it acts has the
+  events in its conversation only. If the print itself fails (a closed pipe
+  gives exit 120, which is not a result), those events are lost. The skill
+  text forbids a pipe.
+- **A head that takes pull requests is marked `shared_head`,** and the text
+  forbids a rebase of it or a push to it. The mark comes from the branch
+  names of the merge gate (`main`, `master`, `trunk`, `dev`, `develop`,
+  `development`, `integration`), from the branch that `$MERGE_GATE_BASE`
+  names, and from the bases of the listed pull requests, all compared
+  without regard to case. A head with no name is marked. A branch that is
+  the base of another of your pull requests (a stack) is marked too. An
+  integration branch with another name is not marked when none of your 100
+  newest pull requests has it as its base; for that one the rule holds in
+  text only. The script does not ask GitHub whether a pull request of
+  another author targets a head: that is one more call for each event, for
+  a rare case.
+- **The agent has two push commands, and both name the branch in full.**
+  A fix goes up with a plain push, which git refuses when the branch on
+  GitHub has a commit that the local branch does not include. Only a push
+  after a rebase uses force, with `--force-with-lease` and
+  `--force-if-includes` together. The lease alone protects nothing once a
+  fetch ran, and the skill's own first step is a fetch: a commit that
+  someone else added to the task branch would be overwritten (found by the
+  adversary, 2026-11-15). With both flags git refuses that push. The text
+  says to stop and report then. `--force-if-includes` needs git 2.30 or
+  newer; an older git refuses the command.
+- **`--force-if-includes` reads the reflog of the local branch.** A foreign
+  commit that the local branch once pointed at, and that a later reset or
+  rebase dropped, counts as included, and the push overwrites it. The rule
+  "push only to a branch that this session created" and the stop after a
+  refused push are text only.
+- **A branch name or commit id that is not of the plain form is given as
+  `null`.** A plain name is letters, digits and `. _ / -`, at most 200, with
+  no `..`. Git allows more; a branch with such a name gets its events with no
+  name, and the agent reports them and runs nothing. Check names are free
+  text and are passed on as they are; the text calls them data.
+- **A session's first look reports nothing.** It records what is there. A
+  merge that happened before that look is not news.
+- **The script sees the 100 newest pull requests of the signed-in user.**
+- **It reports no green check, no review and no comment.**
+- **"Branches that this session created" is the session's own knowledge.**
+  No code records who made a branch. A session that lost that knowledge (a
+  new session, a compacted one) must read its plan or ask.
+- **Polling needs a tool that wakes the session.** Without one, the skill
+  looks when the user next writes.
+- **The repair of a squashed release is commands in the skill text,** tested
+  as written on a real repo. No code runs them for the agent, and the push
+  is always the user's.
+
+### Minor
+
+- **Two looks of one session that overlap can report one event twice.** The
+  script reads the pull requests before it takes the lock, so the slower
+  look can save an older picture over the newer one.
+- **A subagent has the session name of its lead** (`CLAUDE_CODE_SESSION_ID`
+  is the same). A look from a subagent takes the lead's events, and both
+  hold the same claim. The text says to look from the lead only.
+- **The repair of a squashed release is not claimed, and has no check for
+  "already repaired".** Each session that gets the release event builds its
+  own `sync/...` branch and hands over a push command, also after the user
+  has repaired it by hand. The extra commit changes no file and the push is
+  a fast-forward.
+- **A session that has not looked for 30 days loses its cursor.** Its next
+  look is a first look, and what happened in between is not reported.
+- **A look that sees a shorter list forgets the rest.** The cursor is
+  replaced by the list of the look. After a look as another GitHub user
+  (`gh auth switch`), or after a pull request left the 100 newest, the next
+  look with the full list reports old merges as new. The checks of the
+  repair stop an old release; a reinstall claim for an old number would be
+  given. Found by the adversary, 2026-11-14.
+- **An answer of `gh` that GitHub does not give can stop every look.** A
+  base name that is a list gives exit 2 on each look while that pull
+  request is listed. A parent count in digits that are not ASCII would be
+  read as a number. Both found by the adversary with a stand-in `gh`.
+- **The order of `gh pr list` beyond 100 pull requests was not checked.**
+  If it is not newest first, an old pull request can come back into the
+  list and be reported as new.
+- **A new task branch with a name that is already on GitHub can move that
+  branch.** The plain push is a fast-forward when the old branch of that
+  name is fully inside the base (a merged branch that nobody deleted). No
+  commit is lost. Found by the adversary on #20, 2026-11-15.
+- **With the reflog of the local repo turned off, the force push after a
+  normal rebase is refused** (`core.logAllRefUpdates=false`).
+  `--force-if-includes` has nothing to read then. The agent stops and
+  reports. Found by the adversary on #20.
+- **The lock is `flock` on a file beside the state file.** It is opened
+  without following a link and is never emptied. A file system that does
+  not honour `flock` (some network mounts) gives no lock.
+
+### Not tested
+
+- No live session followed the skill text. No Codex session ran the script.
+- The script against the real `gh` in CI: the tests use a stand-in that
+  answers from a file. It ran by hand against the real `gh` on this repo.
+
+## Setup repo (`config/claude/skills/setup-repo`, 2026-11-15)
+
+### By design
+
+- **The script reads; the agent fills.** `repo-doctor.py` writes no file and
+  calls no network and no `gh`. It calls git with `rev-parse` and
+  `for-each-ref` only.
+- **`unknown` is never a pass.** A check that could not find out gives exit
+  1, as a gap does.
+- **The integration branch is known by four names** (`dev`, `develop`,
+  `development`, `integration`), the ones of the merge rule. A repo that
+  integrates on another branch shows a gap; the text says to report it and
+  to create nothing. The check reads the remote-tracking refs, so it sees
+  what the last fetch saw. A clone of one branch (`--single-branch`,
+  `--depth`) never fetches `dev`, so it shows a gap although GitHub has the
+  branch.
+- **`dev` is made with one command that cannot move a branch.** The text
+  gives `git push --force-with-lease=refs/heads/dev: origin
+  refs/remotes/origin/<default>:refs/heads/dev`. The empty value after the
+  colon makes git refuse when the remote has a `dev` already, also one that
+  the clone never fetched, and the source is the remote-tracking ref, so no
+  local branch and no local commit can go into it. The first version (a
+  local `git branch`, then a plain push) pushed an old local `dev` when one
+  was there, and fast-forwarded a remote `dev` that was behind the default
+  branch. Both reviewers found that, 2026-11-15. A remote that has `dev`
+  only as a tag gets a branch `dev` beside it.
+- **The workflow checks read the files as text, line by line,** against two
+  fixed lists of commands, as whole words. A command in a step that never
+  runs counts. A command that is not on the lists does not; the text says
+  to wrap it in `make test` or `make lint`, or to report the gap.
+- **A check that is `ok` shows that a file names something, not that it
+  works.** `ci-tests` does not show that CI passes or that a branch is
+  protected. `verify-skill` does not run the verify skill. `rule-table`
+  checks the outer form only; the rows are checked by `rules.py` of the
+  `correct` skill.
+- **The root map is `CLAUDE.md`, else `AGENTS.md`,** at the top of the repo.
+  One form names a command: a line that starts with `build`, `test`,
+  `lint` or `install` (after markdown marks, with `command` or `commands`
+  allowed after it), then `:` or the `|` of a table row, and then at once
+  a code span that holds something. Nothing else counts: not `## Tests`,
+  not `Testing:`, not a sentence, and not a fenced block below a label.
+  This is the third form of the rule. The first took any line with the word
+  and a code span, and the second took a code span right after the word and
+  a fenced block near a label; the adversary got a sentence past each. A
+  rule that guesses at free text was the class, so the rule now reads the
+  one form that the skill text gives, and a map in another form shows a
+  gap. That is the safe side: the agent adds four lines.
+- **The pattern of the rule has one way to match each part.** The first
+  text of the one-form rule did not: on a line with the start of a code
+  span and no end, the time grew with the square of the length, and the
+  map is read up to one mebibyte. An automated security review saw it; a
+  test holds a line of that size.
+- **What the one form still takes.** A line such as "Install: `uv` first"
+  has the form and counts. The script cannot tell a command from a path in
+  the code span, and it reads a label inside an HTML comment, an indented
+  code block or the inner fence of a longer fence as a label.
+- **The command that makes `dev` ends with exit 0 when GitHub has a `dev`
+  at the same commit as the default branch.** Git says "Everything
+  up-to-date", nothing moves, and an agent can report that it made the
+  branch.
+- **The map holds only commands that ran.** For an install command that
+  writes outside the repo, the text says to leave the line out until the
+  user has said yes and the command ran. The first version let the agent
+  write it without a run; the verifier found that.
+- **No text from the repo is printed.** Each line is built from fixed words
+  and counts: `pytest in 2 of 3 workflow file(s)`, `2 verify skill(s)`. A
+  file name, a folder name, a key of the rule table and the text of an
+  unexpected error are never in the output, so a name cannot read as a
+  result line or as an instruction to the reader. Two automated security
+  reviews asked for this, 2026-11-15; the first answer (print a name only
+  when it is a plain one) still let a name carry a sentence. The cost: the
+  agent must find the workflow file itself.
+- **A path that leaves the repo through a link counts as absent,** and each
+  file is read up to 1 MiB.
+- **`scaffold-docs` left the repo with this change.** `orient` still reads
+  `docs/OVERVIEW.md` and `docs/changelog/` when they are there; nothing in
+  the harness writes them any more.
+- **The first workflow of a repo is merged by the user,** and the paths of
+  `REVIEW.md` are the user's call. Both are text in the skill; no code holds
+  them.
+
+### Minor
+
+- **More ways in which a workflow counts and runs nothing** (found by the
+  adversary, 2026-11-15; all of the kind "the files are read as text"): a
+  file name that is a command name (`cache-dependency-path: tox.ini`,
+  `cp .flake8 dist/`), `pip install pytest ruff` with no run, a command in a
+  comment after a command, a workflow that no pull request starts (`on:
+  workflow_dispatch`), a workflow file that is a link to another file, a
+  hidden line break (U+2028) inside a comment line, and a file of more than
+  1 MiB that is cut inside a longer word.
+- **One `.claude/rules.json` that is nested very deep ends the whole run**
+  with exit 2 (`RecursionError`), so the other seven checks print nothing.
+  A table with a key two times, with `NaN` or with a huge number is `ok`; a
+  table that starts with a byte order mark is a gap.
+- **A folder that cannot be read gives a gap, not `unknown`** (`.github`
+  with no read bit, a link loop at `.github/workflows`). A plain file where
+  a folder is expected (`.claude`, or `.claude/skills/verify-x` beside a
+  real verify skill) gives `unknown`. Both fail safe: never `ok`.
+- **A `CLAUDE.md` that is not a regular file** (a folder, a pipe, a dead
+  link) is passed over for `AGENTS.md` with no word about it.
+- **`verify-skill` is `ok` for two links** named `verify` and
+  `features.json` that stay inside the repo, whatever they point to.
+- **`comment-rule` looks for the sentence anywhere in the map,** so "Never
+  change a comment in the same commit as the code it describes." counts.
+- **Ten workflow files of 1 MiB each take about 18 seconds.**
+- **A file that is swapped between the check and the read is not handled.**
+- **On a disk that ignores case, `claude.md` is read as `CLAUDE.md`.**
+- **A whitespace-only `REVIEW.md` is a gap** ("is empty").
+- **Fences that the root map rule does not see as fences** (the adversary's
+  third round, 2026-11-15). A label inside such a block counts as a label:
+  a fence that is indented four spaces in a list item, a fence in a
+  blockquote, a backtick fence that a `~~~` line seems to close, and a line
+  such as ```` ```bash``` text ````.
+- **Marks in the map that give a gap where a reader sees the form:** a line
+  that a U+2028 or a form feed splits (Python's `splitlines()` splits
+  there), a command in a span of two backticks, and a byte order mark before
+  the first line. All three fail safe: a gap, never `ok`.
+- **The reference test of the label rule uses ASCII lines only.** A line
+  with Unicode whitespace or a long s (`ſ`) is not in it.
+
+### Not tested
+
+- No live session followed the skill text. The examples of the text are run
+  through the script by a test: a repo set up as the text says is clean.
+- The script ran by hand on this repo (6 gaps: no lint in CI, no root map,
+  no `REVIEW.md`, no comment rule, no rule table, no verify skill) and on
+  one other project (7 gaps).
+
+## Maintain verify skill (`config/claude/skills/maintain-verify-skill`, 2026-11-15)
+
+### By design
+
+- **`check` runs the app.** Without `--no-run` it starts the runner copy of
+  the project (`verify run`), which builds the app and runs every step in
+  temp folders. The project's own code runs, as in any verify run. With
+  `--no-run`, nothing of the app runs: one file of the project is started,
+  the runner copy for its doctor, and only as the next two points say. Git
+  is called to list the tracked files, and the doctor of the runner asks
+  git if the evidence folder is ignored. Both calls get no `GIT_` variable
+  of the caller, and the file watcher of the repo's settings is off for
+  them (an automated security review asked for this, 2026-11-15; a test
+  then showed that the doctor's call started that program).
+- **The runner copy is started only when it is the current runner, byte for
+  byte.** A copy that is behind, or that someone changed, is `runner-old`,
+  and the doctor and the run are left out until `bump` brought it up. So
+  `check` never runs a runner that the installed skills do not hold.
+- **The runner copy is started in Python's isolated mode (`-I`),** for the
+  doctor and for the run. A plain start puts the copy's own folder first on
+  the module path. The adversary's third round put a tracked `tempfile.py`
+  beside the copy: it ran as code of the project under `--no-run`, it left
+  a `__pycache__` folder, and the result was still `drift: clean`. With
+  `-I` the copy loads the modules of the Python that runs `drift.py` and
+  nothing from its own folder, from the project or from a `PYTHON`
+  variable. The steps of a full run still get the caller's variables: `-I`
+  changes how the runner starts, not what it hands on. The trust rule in
+  one sentence: under `--no-run`, the bytes that run are the installed
+  skills', Python's own and git's, and no file of the project is code. The
+  rule does not hold when a lookup path of the caller leads into the
+  project (the next point).
+- **A lookup path of the caller that leads into the project can make a
+  file of the project run.** Three ways are known, each shown in a run, and
+  the list may not be whole. The first is an empty entry, `.` or another
+  relative folder in `PATH`: the doctor's two git calls start with the
+  project as the current folder, `drift.py` calls git for the file list,
+  and a relative entry of `PATH` is read from the current folder. The
+  second is an absolute folder of `PATH` that lies inside the project, such
+  as `<project>/bin`. In both, a tracked file named `git` in that place
+  runs. The third is an empty or relative entry in `PYTHONPATH` while
+  `drift.py` is started from inside the project: the copy of the runner is
+  started in isolated mode, but `drift.py` itself is a plain script, so
+  files of the current folder load as modules. A tracked `fnmatch.py` loads
+  in place of Python's own. A tracked `__future__.py` loads at the first
+  import of `drift.py`. A tracked `sitecustomize.py` runs when Python
+  starts, before any line of `drift.py`. In all three ways the file runs
+  also under `--no-run`, and the result can still be `drift: clean`. The
+  project alone cannot set these variables of the caller. A tool that the
+  caller set up to read `PATH` entries from a file of the project can. With
+  such a `PATH` every `git` that is typed in that folder runs the same
+  file. With such a `PYTHONPATH` other Python scripts that are started in
+  that folder can load the same files. A script that is started in isolated
+  mode does not, and a module that Python holds from its start is not
+  looked up again (`os`, seen with Python 3.12). The runner has the same
+  lookups when it is started by hand. The reviews of 2026-11-15 found the
+  three ways one after the other (rounds four, five and six), after the
+  module path of the copy: it is one class, a lookup path that leads into
+  the project. It is not fixed. A fix has to cover the class and not one
+  variable. For the third way `drift.py` cannot help itself, because the
+  files above load before a line of it can act: the start has to be
+  isolated from outside, with `python3 -I` in the three commands of the
+  skill text. In a run of `check --no-run` that was started so, nothing of
+  the project loaded. For the first two ways `drift.py` finds git one time,
+  with the relative entries and every folder inside the project left out,
+  and gives the doctor a `PATH` without them. "Inside the project" has to
+  be tested after links are followed, and without regard to letter case on
+  a disk that ignores it.
+- **What the runner refuses before a run is a finding, and the runner itself
+  is asked for it.** The map: `check` loads the text of the current runner
+  as a module, from the bytes that it compares with the copy, and calls its
+  `load_map`; a refusal is `failed-map` with the runner's own reason. None
+  of the runner's commands runs for this, and no cache file is written. The
+  doctor: `check` runs `verify doctor`, also with `--no-run`; each gap is
+  `failed-doctor`. Each step is left out when the one before it gave a
+  finding. `drift.py` holds no copy of the runner's rules.
+- **This is the third form of the check.** An adversary review broke the
+  first two with one class, "drift.py does not see what the runner
+  refuses". The first said `clean` without the run for a map that the
+  runner does not take, and threw the other findings away when the runner
+  ended with exit 2. The second asked the runner's map rules only: a gap of
+  the doctor (a value of `env` outside the temp folder, a fixture folder
+  that is gone) was still `clean` without the run, and every exit 2 of the
+  runner became a finding, also "the run was interrupted". Now each stage
+  of the runner is asked through its own contract, and no reason text is
+  read to tell a refusal from a crash.
+- **A runner result counts only in its full form.** For the doctor: exit 0
+  with the one line `doctor clean`, or exit 1 with the summary line and as
+  many gap lines above it as it counts. For the run: exit 0 with the pass
+  line, or exit 1 with the summary line and a failed line above it.
+  Anything else (exit 2 with the runner's error line, another exit code, a
+  foreign last line, a signal, a timeout) is `drift: error`, exit 2.
+- **`drift: error` keeps the findings that were found before it.** They are
+  printed above the error line. Exit 2 still means that the list is not
+  whole.
+- **With no current runner beside the script nothing is started,** and the
+  form of the map is not checked by the runner's rules. The line
+  `runner-old unknown runner` keeps the result from being clean.
+- **A current runner whose text cannot be loaded,** or that has no
+  `load_map` and `MapError`, is `drift: error`.
+- **A pattern matches as `fnmatch` does, case-sensitive, and `*` also takes
+  a `/`.** So `src/**/*.py` does not match `src/a.py`, and such a map shows
+  a stale path. The runner itself has no rule for `paths`.
+- **`uncovered-path` looks only into top folders that some pattern reaches
+  into,** and counts files per folder. A new top folder is not listed.
+- **A failed build has its own line,** `failed-build`, counted in `failed=`.
+  The design gave no line for it; without one a failed build would read as
+  no failed step.
+- **`bump` reads the runner number from the text of the runner** (`RUNNER =
+  N`, exactly one such line) and never runs or loads the file. It writes
+  a new file beside the copy and renames it, so it does not write through
+  a link, and it keeps the mode of the copy, with execute added.
+- **`runner=unknown`** in the last line when no current runner is beside
+  the script. It is a finding, not a pass.
+- **Names in a finding are data.** A feature id, a pattern, a folder name
+  and the reason of a failed step are printed, with non-printable
+  characters replaced. The agent needs them to act; the text calls them
+  data.
+- **What to do with a finding is text only.** No code stops an agent that
+  weakens a step.
+
+### Minor
+
+- **Two `bump` runs at one time share one temp name.** The copy stays
+  whole; one of the two can fail.
+- **A `.claude` or `skills` folder that is itself a link is followed.** Only
+  the `verify-<app>` folder and the copy are checked for links.
+- **A `features.json` nested so deep that Python gives up on it** is
+  `drift: error RecursionError`, exit 2, and not `failed-map`.
+- **A `features.json` that is a link to a device or a pipe is read.** A link
+  to `/dev/zero` makes `check` hang; the runner has the same limit.
+- **`bump` says `clean` for a copy with the right bytes that is not
+  executable.** It compares bytes only. A copy with mode `000` is replaced
+  by one with mode `100`, which Python cannot read: set the mode by hand.
+- **A `[` in a pattern starts a set, as in a shell.** A map that names a
+  path such as `app/[slug]/page.tsx` shows a stale path. Write `[[]slug]`.
+- **The `app` of the map is not compared with the name of the skill
+  folder.** A map with another valid `app` in `verify-<app>/` gives no
+  finding.
+- **`--help` prints the usage with exit 0,** and its last line is not a
+  result line. By the rule of the text, that is not a result.
+- **A locale that cannot print a character of a finding ends the script
+  with a Python error** and no last line. That is not a result either.
+- **When git cannot list the tracked files, nothing else is printed.** The
+  run ends with `drift: error`, and a `failed-map` or `runner-old` that the
+  script already knew is not above it. Exit 2 means that the list is not
+  whole, so no wrong result follows.
+- **A build command that starts with a placeholder is not checked by the
+  doctor.** When a map names `{root}/scripts/build.sh` and the file has
+  moved, `--no-run` says `clean`, and a full run ends with `drift: error`
+  (the runner's exit 2), not with `failed-build`. The cause is in the
+  runner: its doctor passes over a tool with a placeholder.
+- **A file that changes while `check` runs** (the map or the copy, between
+  the reading and the run) can give findings of two states. A copy that is
+  swapped between the comparison and its start is started.
+
+### Not tested
+
+- The timeout of three hours on the runner's run.
+- A git that hangs or is missing; only a folder outside git is tested.
+- A file name that is not UTF-8.
+- No live session followed the skill text. The commands of the text run as
+  written in a test, on a project that the real scaffold made.
+- Whether a variable that a project's own Claude Code settings set for a
+  session (`PATH`, `PYTHONPATH`) reaches `drift.py` as a lookup path into
+  the project.
+- `bump` and a full `check` with `drift.py` started in isolated mode.
+- Linux, except through CI.
+
+## Correct (`config/claude/skills/correct`, 2026-11-15)
+
+### By design
+
+- **The script finds lines; the agent finds rules.** `mine` lists a typed
+  line when it holds one of about twenty words (`don't`, `never`, `again`,
+  ...), and counts two lines as one only when they differ in case and
+  punctuation. A correction in other words is not listed, and a line with
+  such a word that is no correction is listed. Grouping by meaning is the
+  agent's work.
+- **A line in which anything looks like a secret is held back whole,** and
+  only its line number is printed. The forms are: keys of several vendors,
+  GitHub, AWS and Slack tokens, a JSON web token, a `Basic` value, a key
+  word (the next point; a private key header holds one), a URL with a
+  password (with or without a user name), a UUID, a run of 20 or more
+  letters and digits that has both, and a run of 24 or more characters of
+  letters, digits and `+ / _ = -` that has a small letter, a capital and a
+  digit. No form asks what stands next to the secret. So a line with a
+  commit id of 20 characters or more, a UUID or a long mixed path is held
+  back too.
+- **A line with a key word is held back, whatever stands next to the
+  word.** The key words, in any letter case and also inside a longer word:
+  `pass` (so also `password`, `passwd`, `passphrase`, `passcode`,
+  `passkey`, `DB_PASS`), `pw` (so also `pwd`), `secret`, `token`, `api key`,
+  `access key` and `private key` (with a space, `_`, `-` or nothing
+  between), `auth`, `cred` (so also `credential`, `creds`), `bearer`. This
+  is the fourth form
+  of the rule, and the class was "the rule asks what stands next to the
+  key word". The first wanted the key word to touch a `:` or `=`, or a
+  flag to start at the key word. The second took a `:` or `=` anywhere
+  after it, or a dash before it. The adversary got `SECRET_KEY=x` and
+  `--db-password x` past the first, and the verifier got "my password is
+  x" and `setdefault("PASSWORD", "x")` past the second: such a line has no
+  mark that a rule could ask for. The cost is a line that holds no secret
+  and is counted, not shown: "the per-token price", "the token count is
+  wrong", "the author said no", "make the tests pass", "never bypass the
+  gate", "round upward". On one real history the rule cost one candidate
+  of 42, a line with the word `token`; 14 lines are held back where the
+  first form held back 1.
+- **The list of key words only grows.** The first list of the fourth form
+  left `pass` out, because "make the tests pass" is what a correction
+  says. Two automated security reviews of that commit showed the price:
+  `DB_PASS=x` and `--pass x`, which the form before held back, were
+  printed. So `pass` is on the list again, with `pw` and `cred`, and a
+  test holds the rule against the one before on random lines: a line that
+  the form before held back is never printed. On the real history the
+  three short words cost no candidate (2 more lines held back). The same
+  reviews asked for a `pass` that counts only with a `:`, `=`, `_` or dash
+  beside it; that is the class above, and it was not taken. One of them
+  asked for one shared list with the secret check of the visual-artifacts
+  skill (`assemble.py`): not taken, because that check reads source files
+  for another purpose, lets a placeholder pass, and ships in another skill
+  folder.
+- **A line with a character that is not printable is held back whole:** a
+  control character, a zero-width character, a line or paragraph separator.
+  Such a character can split a secret or join it to a word, and each way to
+  print the line guesses which. The first fix took these characters out
+  before the check and printed a space for them; an automated security
+  review showed that the printed form was then one that nobody had checked
+  (`--password`, a control character, the value). Tab, LF, CR and the space
+  characters of other scripts (a no-break space, the wide space of Chinese
+  text) pass and count as spaces. A line with an emoji that is joined from
+  several (a zero-width joiner) is held back too.
+- **No line is printed in a form that was not checked.** The text is
+  checked as typed with full-width characters made plain, again with each
+  line break closed (a secret that was copied from a wrapped line has a
+  break in it), each of the two also with its spaces joined, and in the
+  form that is printed. A secret that a plain space splits is not seen.
+- **The same review asked for two more things.** A URL password can now be
+  4,096 characters long (it was 256). A rule for a long run of hex digits
+  alone was not put back: a run of 20 or more letters and digits with both
+  kinds is held back, and a hex value of 32 characters from a random source
+  has both kinds except in about one case in three million.
+- **A secret of a form that is not on the list is not seen.** Examples: a
+  value of fewer than 20 characters in a line with no key word, a value of
+  small letters only, `Basic` with fewer than 16 characters after it. An
+  automated security review asked to hold back every run of 20 or more
+  characters that has two kinds of characters, separators included. That
+  was taken in part (letters and digits with no separator, from 20): the
+  full rule would hold back ordinary paths such as
+  `tests/test_runner_part2.py`, which corrections name often. A trial on
+  one real history gave the same counts before and after the stricter
+  rules: 42 candidates, 1 line held back. (The key word rule changed that
+  count later; see the point on key words.)
+- **`mine` reads git with its own format.** The `GIT_` variables of the
+  caller are dropped, and no signature is checked, so that only the
+  script's own format reaches it. Each commit starts with a mark that is
+  made for the run. The git settings of the user and of the repo are read.
+  A test sets `log.showSignature`, `format.pretty` and `color.ui`, and the
+  result does not change; other settings are not tested.
+- **Two typed lines are one candidate when they differ only in case, marks
+  and spaces,** in any script. Accents count: `écrire` and `ecrire` are two.
+- **Only the text that was typed is read.** The pasted content of a prompt
+  is never opened.
+- **A line of more than 400 characters is left out** (and counted): it is a
+  paste or a brief, not a correction. It is checked for a secret first, so
+  it is counted as held back when it has one.
+- **What is printed of a line is its first 160 characters.**
+- **The layer `config` is in the list.** The design page of 2026-11-14 gave
+  six layers and an example row with a seventh, `config`. The list has
+  seven: architecture, types, config, lint, test, hook, docs.
+- **A `docs` rule is a gap until the row says why no code can check it**
+  (`accepted`). A rule that only a reader can judge is then no gap, and the
+  table shows the reason.
+- **The table that a person reads is a file under git** (`.claude/rules.md`),
+  and `check` reports it when it is not what `table` writes.
+- **`mine` reads at most the 2,000 newest commits,** prints at most 200
+  history candidates and 30 files, and says in its last line how many it
+  did not show.
+
+### Minor
+
+- **`not-in-ci` reads the `run:` commands of the workflow files as text.**
+  A command names the enforcer when one of its words is the enforcer path,
+  or a folder above it, written as a path: with a slash in it (`tests/`,
+  `./tests`, `config/hooks`, `./lint.sh`). A word is what stands between
+  spaces, quotes and the marks `; & | ( ) < >`. The first version took a
+  bare folder name as a whole word, and the adversary showed `npm test`,
+  `make test` and `echo "no tests yet"` counting for a folder; the class
+  was "a word of a command is taken for a path". So a bare `tests` no
+  longer counts, and `pytest tests` gives `not-in-ci`: the cost is one
+  slash in the workflow. A path inside a longer word does not count either
+  (`--ignore=tests/`, `PYTHONPATH=tests/`, `tests/*.py`), and a file at the
+  top of the repo needs `./` before it. A job name, a step name, an input
+  of an action and a comment do not count. A workflow that runs every test
+  with no path named (`pytest`) does not count. A `run:` with nothing after
+  it on its line is not a step (the `defaults` of a workflow have such a
+  key); a command that starts on the line below it is so not read. The
+  block of a `run:` is found by its indent, with no YAML parser: a `run:`
+  key inside a quoted string, or a command in a flow mapping
+  (`{run: ...}`), is read wrongly.
+- **A path that a command names is not a path that the command runs.**
+  `ls tests/`, `rm -r tests/` and `pytest --ignore tests/e2e` count.
+- **A path in quotes inside a longer word of the shell counts:**
+  `--ignore="tests/e2e"`, `PYTHONPATH="tests/" true`. A quote ends a word
+  for the script and not for the shell.
+- **Some right spellings give `not-in-ci`:** an enforcer path with a space
+  in it, a command whose path stands on the next line of a plain YAML
+  value, and a quoted key (`"run": ...`). A `run:` line inside the block
+  of another key (the `script: |` of an action) counts.
+- **Characters that print as nothing and are printable for Python pass:**
+  U+3164, U+034F, U+2800, U+FE0F, U+115F, U+180B, U+E0101. One of them
+  inside a secret splits it for the script and not for the eye. Found by
+  the adversary's second round, as are the next three points.
+- **A wrapped secret with a mark at the start of the next line is not
+  joined** (`> `, `│`, a backslash at the line end), and a tab or a
+  no-break space inside a secret prints as a space.
+- **The URL rule is slow on a line with `://` and thousands of colons:**
+  about 0.6 seconds for 4 KB.
+- **A key word in letters of another script that look the same** (a
+  Cyrillic `а` in `pаssword`) is not a key word.
+- **A key word in another language is not a key word.** The list is
+  English. A line such as `密碼是 x` or `パスワードは x` is printed when the
+  value has fewer than 20 characters. It is inside the boundary above (a
+  line with no key word), and it is the likeliest case for a user who types
+  in Chinese. Words to weigh for the list: `密碼`, `密码`, `金鑰`, `密鑰`,
+  `パスワード`. Found by the verifier, 2026-11-15.
+- **A short secret beside a word that is not on the list is printed:**
+  `curl -u name:value`, "the session cookie x", "the otp x", `key=x`. The
+  adversary named `cookie`, `jwt`, `otp`, `session` and the `-u name:value`
+  form as ones to weigh. `key` alone is not on the list.
+- **A key word with a hyphen of another kind between its parts** (`api`,
+  then U+2010 or U+2011, then `key`) is not a key word. With a full-width
+  hyphen it is one, because that is made plain first.
+- **A line of characters that grow when they are made plain is slow.** One
+  million U+FDFA (18 characters each after the step) take about 10 seconds.
+  The time grows with the length in a straight line: 0.9 seconds for
+  100,000.
+- **Only the first 50 numbers of the held-back lines are printed.** The
+  count is whole. `SKILL.md` says "You get its line number"; past 50 lines
+  you get the count only. A line with a key word is held back, so a long
+  history reaches 50 sooner than before.
+- **One history line that is JSON nested very deep stops `mine`** with exit
+  2 (`RecursionError`); other broken lines are skipped. Found by both
+  reviewers, 2026-11-15. It prints nothing from the file.
+- **A `.claude/rules.md` that is not UTF-8 gives exit 2,** where
+  `table-stale` would be the better answer.
+- **When the rename of `table` fails** (`.claude/rules.md` is a folder),
+  `.claude/rules.md.part` stays on disk.
+- **A usage error** (`rules.py chek`) ends with exit 2 and the line of
+  `argparse` on stderr, not with `rules: error ...`. It is not a result, and
+  the text says so.
+- **A typed line that starts with `/` is left out** as a slash command, also
+  when it is a correction that starts with a path.
+- **`check` does not run a workflow or a hook.** It shows that the enforcer
+  file is there and that CI names it, not that the check passes or that the
+  hook is installed.
+- **An `evidence` line is free text.** The script does not look up the
+  commit that it names.
+- **A fix commit is one whose subject has the word `fix`.** A fix under
+  another word is not counted, and a subject that only names the word, such
+  as "Document the fix process", is.
+- **Only folders that are named count as this project.** A worktree beside
+  the repo needs `--project`.
+
+### Not tested
+
+- The live history of a second person. The trial ran on one history file
+  (2026-11-15): 41 candidates, 14 lines held back, 19 too long. With the
+  first form of the key word rule it was 42, 1 and 23. Only the summary
+  line of each run was read.
+- Signatures made with GnuPG. The test signs its commits with an SSH key.
+- A live session with the user in step 2. A fresh agent followed the text on
+  a stand-in project with the user's answer given ahead; it built two rules
+  and showed each enforcer fail on the old mistake. Its findings about the
+  text were taken.
+- Linux.
+
+## Versions (`tests/test_harness_version.py`, 2026-11-15)
+
+### By design
+
+- **No test reads a pull request.** That a title starts with the number, and
+  that one pull request holds exactly one number, is a rule for the agent
+  that opens it. A check for both needs a workflow that reads the base
+  branch and the title.
+- **The middle number does not say how large a change is.** It counts pull
+  requests into `dev` (decision record 0008). The changelog entry says what
+  a version holds.
+
+### Minor
+
+- **The tests and Markdown do not agree on what a heading is.** The tests
+  take a line that starts with `## ` and has the form `## X.Y.Z (date)`. A
+  heading with a tab after the hashes, with spaces before them, an
+  underlined heading or an `<h2>` is a heading on the page and none for
+  the tests; a `## ` line inside a comment or a code block is the other way
+  round. So a changelog written in such a form can show another top entry
+  than `VERSION` and pass. The pattern is older than the rule of 0.4.0. An
+  adversary review found it on 2026-11-15; no pull request that follows
+  the text writes such a heading.
+- **A date is checked for its form only.** `2026-13-45` and `0000-00-00`
+  pass, and so does a date that is older than the date of the entry below
+  it.
+- **The oldest entry is not checked against a rule.** Each entry is held
+  against the one below it, and the oldest has none: a changelog that
+  starts at `0.1.1` passes.
+- **A digit of another script passes as a digit** (the patterns use `\d`):
+  in a number of `VERSION` or of a heading after its first character, and
+  at every place of a date.
+- **The check of the major in `docs/architecture.md` reads one phrase,**
+  also inside a comment.
+- **Two open pull requests that take the same number are caught only when
+  their entries have different dates.** Both make the same change to
+  `VERSION`, so that file does not conflict in the rebase of the later
+  one. The changelog does. With different dates the two heading lines
+  differ: keeping both sides gives the number two times, and two tests
+  fail. With the same date, which is the usual case, git takes the heading
+  line as common to both: keeping both sides gives one entry with the text
+  of both pull requests, and every test passes. (That is git's default
+  conflict style. With `merge.conflictStyle=diff3` the heading stays inside
+  the conflict, and two tests fail for the same date too.) Taking one side loses the
+  entry of the other pull request, and every test passes too. Both
+  reviewers and the author ran this with git on 2026-11-15; the first text
+  of this point said that the tests catch it, from reading alone. So the
+  rule is one for the agent that rebases: every entry that `dev` holds is
+  still there afterwards, and the pull request's own entry is a new one on
+  top, with the next number.
+
+### Not tested
+
+- How GitHub draws the changelog. The points on headings follow the
+  CommonMark rules.
+
+## Comment check (`config/claude/hooks/comment-check.py`, 2026-11-15)
+
+### By design
+
+- **A hit is advice.** The check lists a comment block whose code changed
+  while no line of the block did. Whether the comment is now false is a
+  judgement, and the verifier makes it (step 9 of its text): a comment that
+  still holds is no finding, a false one is a Nit, and it is Important only
+  when a reader who trusts it would use the code wrongly.
+- **A check that did not run changes no verdict.** It goes under "Not
+  covered". The review line needs a floor guard result and does not need
+  this one. So a broken comment check cannot block a merge, and it cannot
+  open one.
+- **It sits beside the floor guard,** in `config/claude/hooks/`, and not in
+  a skill folder as the design page of 2026-11-14 had it. The verifier runs
+  both in the same way, and both read a repo they do not trust.
+- **It reads lines, not the language.** Line comments only (`#` and `//`),
+  by file extension. Block comments and docstrings are not read. A line
+  inside a multi-line string that starts with `#` or `//` reads as a
+  comment.
+- **The code under a comment** is the lines after the block up to a blank
+  line, the next comment block or a line indented less, at most 20 lines.
+- **No hit for:** a file that the diff adds as a whole, a deleted file, a
+  binary file, a link, a submodule, a change of line ends alone, code under
+  the comment that the change deleted in full, and a deletion right after
+  the last code line.
+- **It reads the committed diff from the merge base to HEAD.** The index
+  and the files of the working tree play no part, with one exception: git
+  reads `.gitattributes` from the working tree, also when the file is
+  untracked. The first text said that the working tree plays no part; the
+  adversary's third round showed the exception. An attribute there starts
+  no program. With `* -diff` it makes git print each file as binary, and the
+  run ends with exit 2 (the point on binary below). It needs `--base`; with
+  no base in the brief the verifier skips it and says so.
+- **Lint and tool markers are not comments for this check** (`noqa`,
+  `type: ignore`, `pragma`, `eslint-disable`, `pylint:`, `@ts-`, `nolint`,
+  `shellcheck`, `fmt:`, `isort:`, `mypy:`, `prettier-ignore`, `nosec`,
+  `nosemgrep`).
+- **git's diff is taken only after it is held against the two versions of
+  the file.** Each hunk must hold its removed lines and then its added
+  lines, with no line of context, and the lines outside the hunks must be
+  the same in both versions. A diff of another shape ends the run with exit
+  2. An adversary review showed three settings that gave a false `clean`
+  in the first version: `diff.interHunkContext` (also in the user's own
+  git settings) joined two hunks over an unchanged comment,
+  `core.bigFileThreshold` made git call a text file binary, and
+  `core.worktree` sent every call to another repo. The class was "a setting
+  changes what the script reads", so the script no longer trusts the text
+  of `git diff`: it checks it. The context is also set on the command line,
+  so the user's setting does no harm.
+- **"Changed" is what git's diff calls changed.** The script checks that
+  the diff is a true diff of the two versions; it does not check that it is
+  the smallest one. When git lists a comment line as removed and added again
+  with the same text (it can on a very large change, where it stops looking
+  for the best match), the comment counts as changed and gives no hit.
+- **The check trusts what is in `.git`.** It reads the refs, the commits
+  and the files as the repo's git shows them. The adversary's second round
+  got a false `clean` in three ways, and each needs a person who writes
+  into `.git`: a replace ref for the blob of the new file, a grafts file
+  that moves the merge base (with the setting that switches off git's
+  warning for it), and a tag named like the short id of the base commit
+  (with `core.warnAmbiguousRefs` off). The first design said "a setting
+  cannot change what the check reads"; that was too wide. It holds for the
+  text of `git diff`, which the check holds against the two versions. It
+  does not hold for which commit a name means or which file an object id
+  gives: git decides that, for this check and for every `git diff` and
+  `git log` of the same review. To pin each of these would be a list that
+  is never complete. The check is advice for a reviewer, not a lock. What
+  holds for every repo: it starts no program of the repo, and it writes
+  nothing. A base given as a full commit id cannot be taken for a ref name.
+- **An attribute or a setting that makes git read text as binary gives exit
+  2,** not a hit and not `clean`. A repo with `* -diff` in its attributes
+  cannot be checked.
+- **Every git call runs in the folder that `--repo` names.** The script
+  does not ask git for the top of the work tree. A bare repo is read too.
+- **The whole run has one time limit,** 100 seconds by default
+  (`--timeout`), for the git calls and for the script's own work, the
+  building of the output too. At the limit the run ends with exit 2. (The
+  second review round showed that the limit ended when the hits were
+  found: 60,000 hits in a file with a path of 20,000 characters then took
+  131 seconds.) Only the one write of the finished output is outside it. The first version had a limit for each
+  git call only, and one file with many comment blocks and many deletions
+  made the script's own loop run for minutes; that loop is linear now.
+- **A comment that starts with a marker word is not a comment for this
+  check,** also when more text follows: `# fmt: the output format` gives no
+  hit.
+- **Only the Claude verifier runs it.** The Codex verifier has no step for
+  it, as it has none for the floor guard.
+
+### Minor
+
+- **A usage error** (no `--base`) ends with exit 2 and the lines of
+  `argparse` on stderr, not with `comment-check: error ...`. The verifier
+  reads that as "did not run".
+- **Nine mutations of the builder's run changed no output,** so no test can
+  fail on them: five are equal code, and four are protections that these
+  commands do not reach in a test (`--no-pager`, `--no-textconv` on the raw
+  diff, `GIT_OPTIONAL_LOCKS`, the "Binary files" line of the first version).
+  One mutation of the fix round is equal code too: the gap of a hunk that
+  also adds lines never decides a hit, because its first added line already
+  marks the code as changed.
+- **A change with very many files can reach the time limit.** There is one
+  `git diff` call for each changed file, about 80 ms each on the machine of
+  the review: 2,000 changed files took 166 seconds there. The run then ends
+  with exit 2, which the verifier reads as "did not run".
+- **`PATH` and the `PYTHON` variables are the caller's own.** The check
+  drops the caller's `GIT_` variables and no others. A `git` that stands
+  first on `PATH`, or a module on `PYTHONPATH` (the verifier starts the
+  check with `python3`, not `python3 -I`), is a program of the caller and
+  can print any result.
+- **A caller that blocks the alarm signal has no limit for the whole run.**
+  The limit for each git call still holds.
+- **The output of a run with very many hits is built in memory** before it
+  is written.
+- **The text of a git error is in the error line.** A value in the repo's
+  settings can so reach the line `comment-check: error ...`. Step 9 of the
+  verifier calls every line of the check data, the text of an error too.
+- **"Pass means the checks ran"** in the Return part of the verifier's text
+  does not name the comment check as an exception. Step 9 says that a
+  comment check that did not run changes no verdict, and that rule is the
+  specific one.
+- **The indent of a line counts form feed and vertical tab too,** one
+  column each, like a space or a tab. The text of the script names spaces
+  and tabs only.
+- **When the limit of the whole run ends inside a git call, the error line
+  names the wrong cause:** `not a git repo: ... (the check did not finish
+  in 2 s)` for a repo that is one. The exit code is 2 in both cases.
+- **Replace refs are followed.** `GIT_NO_REPLACE_OBJECTS=1` would switch
+  them off, and the check does not set it: a replace ref needs a person who
+  writes into `.git`, which the check trusts (see "By design").
+
+### Not tested
+
+- A git older than 2.45, which does not know `GIT_NO_LAZY_FETCH` (the
+  variable is in git's own manual from 2.45.0 on; two other sections of
+  this file said 2.44 until 2026-11-15): in a
+  partial clone it could fetch through a program that the repo's settings
+  name.
+- The time limit on a system with no alarm signal (Windows).
+- Repeated lines such as `}`: the random test uses files with no duplicate
+  lines, so it does not check how git lines them up.
+- Git versions other than the local one, and Linux except through CI.
+- No live verifier followed step 9 yet. The first reviews after this change
+  are that test.

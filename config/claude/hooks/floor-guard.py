@@ -428,12 +428,63 @@ def check(base, new):
     return hits
 
 
-def run(repo, base_ref):
+def holder_of_git(folder):
+    """The first folder at or above `folder` that holds a `.git` entry.
+
+    Only "there is no such entry" sends the walk one folder up. A folder
+    that cannot be looked into is an error: "could not look" is not "not
+    there", and the folder above can be another repo.
+    """
+    here = os.path.realpath(folder)
+    while True:
+        try:
+            os.lstat(os.path.join(here, ".git"))
+            return here
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            raise GuardError(f"cannot look for .git in {here}: {e.strerror}")
+        parent = os.path.dirname(here)
+        if parent == here:
+            raise GuardError(f"no folder at or above {folder} holds a .git entry")
+        here = parent
+
+
+def answer(folder, *args):
+    """One path that git prints for a rev-parse question asked in `folder`."""
+    out = git(folder, "rev-parse", *args)
+    return os.fsdecode(out[:-1] if out.endswith(b"\n") else out)
+
+
+def tree_of(repo):
+    """The folder in which every git call runs: the top of the tree that holds `repo`.
+
+    The guard gives a result only when three answers name one folder, by
+    device and inode. git, asked where the caller pointed, names the top of
+    the work tree: what it refuses there is an error, as it was before this
+    check. The guard's own walk finds the first folder at or above that
+    holds a `.git` entry. And git, asked in that folder, takes that entry
+    (it passes over a `.git` that is no git dir and takes a repo further
+    up) and names the folder as the top again. The last answer is the one
+    of the folder where the calls run: git looks for its repo again in each
+    folder, and a core.worktree setting can name any folder as the top,
+    also another repo.
+    """
     try:
-        root = git(repo, "rev-parse", "--show-toplevel")
+        named = answer(repo, "--show-toplevel")
+        root = holder_of_git(repo)
+        answer(root, "--resolve-git-dir", ".git")
+        top = answer(root, "--show-toplevel")
     except GuardError as e:
         raise GuardError(f"not a git work tree: {repo} ({e})")
-    root = os.fsdecode(root[:-1] if root.endswith(b"\n") else root)
+    if not os.path.samefile(named, root) or not os.path.samefile(top, root):
+        raise GuardError(f"git names another folder as its work tree than the one that holds {repo} "
+                         "(a core.worktree setting?)")
+    return root
+
+
+def run(repo, base_ref):
+    root = tree_of(repo)
     if base_ref is not None:
         if base_ref.startswith("-"):
             raise GuardError(f"bad base ref: {base_ref}")

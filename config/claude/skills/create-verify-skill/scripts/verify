@@ -1,0 +1,651 @@
+#!/usr/bin/env python3
+"""verify: drive this project's app from its feature map and keep the evidence.
+
+  verify doctor            list what a run needs and does not have
+  verify run [--only ID]   build, run the steps of each feature, write a run folder
+  verify runs              list the run folders and their state
+  verify clean [RUN]       stop what a cut-off run left, and remove a temp folder that is still there
+
+Read the exit code and the last line together, never one without the other:
+
+  exit 0   "verify-<app>: pass N/N <commit>"   every step held
+  exit 1   "verify-<app>: summary ..."         a step failed or could not start
+  exit 2   "verify-<app>: error ..."           the run could not finish
+
+After the commit, the line says "dirty" when the tree had uncommitted changes
+and "partial" when --only left features out. Such a pass does not cover the
+commit.
+
+This file sits in <project>/.claude/skills/verify-<app>/ beside features.json,
+the feature map. The skill create-verify-skill copies it there, so the project
+can run it in CI and on a machine without that skill. RUNNER is the version of
+this file; a map names the version that it was written for.
+
+The app's own output goes to files in the run folder and never to this
+program's output. So nothing that the app prints can read as a result.
+
+Evidence: <project>/.verify/runs/<utc>-<pid>-<commit7>/ holds run.json and the
+output of the build and of each step. The run folder stays.
+
+Each feature runs in a fresh folder, {tmp}, with its own copy of the fixture,
+so a feature sees the same data alone and in a full run. All of them sit in
+one temp folder, which the run removes at the end.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+RUNNER = 1
+HERE = Path(__file__).resolve().parent
+MAP = HERE / "features.json"
+
+ID = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
+PLACE = re.compile(r"\{(root|tmp|bin)\}")
+TOP_KEYS = {"app", "runner", "build", "build_timeout_s", "bin", "fixture", "env", "timeout_s", "features"}
+FEATURE_KEYS = {"id", "paths", "steps"}
+STEP_KEYS = {"kind", "argv", "expect", "timeout_s", "stdin", "cwd"}
+TEXT_CHECKS = ("stdout_has", "stdout_lacks", "stderr_has", "stderr_lacks")
+EXPECT_KEYS = {"exit", *TEXT_CHECKS}
+
+
+class MapError(Exception):
+    """The feature map cannot be used."""
+
+
+class Interrupted(BaseException):
+    """A signal asked this program to stop. Not an Exception, so no handler of
+    ordinary errors takes it."""
+
+
+# ── the feature map ──────────────────────────────────────────────────────────
+
+def need(condition, message):
+    if not condition:
+        raise MapError(message)
+
+
+def only_keys(obj, allowed, where):
+    need(isinstance(obj, dict), f"{where} is not an object")
+    extra = sorted(set(obj) - allowed)
+    if extra:
+        raise MapError(f"{where} has a key this runner does not know: {extra[0]}")
+
+
+def texts(value, where):
+    need(isinstance(value, list) and value, f"{where} must be a list with at least one entry")
+    need(all(isinstance(v, str) and v for v in value), f"{where} must hold non-empty strings")
+    return value
+
+
+def seconds(value, where):
+    ok = isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+    need(ok, f"{where} must be a number above 0")
+    return value
+
+
+def inside(value, where):
+    """A path that stays inside its base folder."""
+    need(isinstance(value, str) and value, f"{where} must be a path")
+    path = Path(value)
+    need(not path.is_absolute() and ".." not in path.parts and not value.startswith("~"),
+         f"{where} must be a relative path with no '..'")
+    return value
+
+
+def load_map(path=MAP):
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise MapError(f"cannot read {path.name}: {exc.strerror}")
+    except ValueError as exc:
+        raise MapError(f"{path.name} is not JSON: {exc}")
+    only_keys(raw, TOP_KEYS, "the map")
+    for key in ("app", "runner", "features"):
+        need(key in raw, f"the map has no '{key}'")
+    need(isinstance(raw["app"], str) and ID.match(raw["app"]), "'app' must be lower-case letters, digits and '-'")
+    runner = raw["runner"]
+    need(isinstance(runner, int) and not isinstance(runner, bool), "'runner' must be a whole number")
+    need(runner == RUNNER, f"the map is for runner {runner}, this is runner {RUNNER}")
+    if raw.get("build") is not None:
+        texts(raw["build"], "'build'")
+    if "build_timeout_s" in raw:
+        seconds(raw["build_timeout_s"], "'build_timeout_s'")
+    if "timeout_s" in raw:
+        seconds(raw["timeout_s"], "'timeout_s'")
+    if "bin" in raw:
+        inside(raw["bin"], "'bin'")
+    if raw.get("fixture") is not None:
+        inside(raw["fixture"], "'fixture'")
+    env = raw.get("env", {})
+    need(isinstance(env, dict), "'env' is not an object")
+    need(all(isinstance(k, str) and k and "=" not in k and isinstance(v, str) for k, v in env.items()),
+         "'env' must map names to strings")
+    features = raw["features"]
+    need(isinstance(features, list) and features, "the map has no features")
+    seen = set()
+    for feature in features:
+        only_keys(feature, FEATURE_KEYS, "a feature")
+        for key in FEATURE_KEYS:
+            need(key in feature, f"a feature has no '{key}'")
+        fid = feature["id"]
+        need(isinstance(fid, str) and ID.match(fid), "a feature 'id' must be lower-case letters, digits and '-'")
+        need(fid not in seen, f"two features have the id '{fid}'")
+        seen.add(fid)
+        texts(feature["paths"], f"'paths' of {fid}")
+        steps = feature["steps"]
+        need(isinstance(steps, list) and steps, f"feature {fid} has no steps")
+        for number, step in enumerate(steps, 1):
+            where = f"step {number} of {fid}"
+            only_keys(step, STEP_KEYS, where)
+            for key in ("kind", "argv", "expect"):
+                need(key in step, f"{where} has no '{key}'")
+            need(step["kind"] == "run", f"{where}: this runner knows the kind 'run' only")
+            texts(step["argv"], f"'argv' of {where}")
+            if "timeout_s" in step:
+                seconds(step["timeout_s"], f"'timeout_s' of {where}")
+            need(isinstance(step.get("stdin", ""), str), f"'stdin' of {where} must be a string")
+            need(isinstance(step.get("cwd", ""), str), f"'cwd' of {where} must be a string")
+            expect = step["expect"]
+            only_keys(expect, EXPECT_KEYS, f"'expect' of {where}")
+            code = expect.get("exit")
+            need(isinstance(code, int) and not isinstance(code, bool), f"'expect' of {where} must name an exit code")
+            for key in TEXT_CHECKS:
+                if key in expect:
+                    texts(expect[key], f"'{key}' of {where}")
+    return raw
+
+
+def fill(text, places):
+    return PLACE.sub(lambda match: places[match.group(1)], text)
+
+
+# ── the project ──────────────────────────────────────────────────────────────
+
+def project_root():
+    if HERE.parent.name != "skills" or HERE.parent.parent.name != ".claude":
+        raise MapError("this file is not in <project>/.claude/skills/<name>/")
+    return HERE.parent.parent.parent
+
+
+def git(root, *args):
+    try:
+        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True,
+                              env=dict(os.environ, LC_ALL="C"), timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def git_state(root):
+    """The commit of the tree, and if the tree differs from it. No commit: (None, False)."""
+    head = git(root, "rev-parse", "--verify", "HEAD")
+    if head is None or head.returncode != 0:
+        return None, False
+    status = git(root, "status", "--porcelain", "--untracked-files=normal")
+    dirty = status is None or status.returncode != 0 or bool(status.stdout.strip())
+    return head.stdout.strip(), dirty
+
+
+def doctor(fmap, root):
+    gaps = []
+    commands = [fmap["build"]] if fmap.get("build") else []
+    commands += [step["argv"] for feature in fmap["features"] for step in feature["steps"]]
+    missing = set()
+    for argv in commands:
+        tool = argv[0]
+        if PLACE.search(tool):
+            continue  # it exists only after the build, or in the temp folder
+        found = (root / tool).exists() if "/" in tool and not os.path.isabs(tool) else shutil.which(tool)
+        if not found and tool not in missing:
+            missing.add(tool)
+            gaps.append(f"tool-missing {tool}")
+    if fmap.get("fixture") is not None and not (HERE / fmap["fixture"]).is_dir():
+        gaps.append(f"fixture-missing {fmap['fixture']}")
+    for name, value in sorted(fmap.get("env", {}).items()):
+        if value.startswith(("/", "~")):
+            gaps.append(f"env-outside-tmp {name}")
+    if not evidence_ignored(root):
+        gaps.append("evidence-not-ignored .verify/")
+    return gaps
+
+
+def evidence_ignored(root):
+    """True when git ignores .verify/, and when no git repo holds this folder.
+    False when git does not ignore it, and when git could not say."""
+    if shutil.which("git") is None:
+        return True
+    inside = git(root, "rev-parse", "--is-inside-work-tree")
+    if inside is None:
+        return False
+    if inside.returncode != 0:
+        return "not a git repository" in inside.stderr
+    ignored = git(root, "check-ignore", "-q", ".verify/probe")
+    return ignored is not None and ignored.returncode == 0
+
+
+# ── processes ────────────────────────────────────────────────────────────────
+
+def proc_start(pid):
+    """When the process started, as ps prints it. None when there is no such process.
+
+    ps prints local time in the caller's language. Both are fixed here, so
+    that two sessions with different settings get the same text for one process.
+    """
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                             env=dict(os.environ, LC_ALL="C", TZ="UTC0"), timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    text = out.stdout.strip()
+    return text if out.returncode == 0 and text else None
+
+
+def same_process(pid, start):
+    """Is the process with this pid the one that started at `start`?
+
+    "gone": no process has the pid. "same" and "other": one has, and its start
+    time is, or is not, the recorded one. "unknown": one has it and a start
+    time is missing (ps could not give it, now or when it was recorded). Only
+    "gone" and "other" say for certain that the recorded process has ended.
+    """
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        return "unknown"  # 0 and below name groups, and 1 is the system's first process
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return "gone"
+    except OSError:
+        pass  # it is there and belongs to another user
+    now = proc_start(pid)
+    if not start or now is None:
+        return "unknown"
+    return "same" if now == start else "other"
+
+
+def kill_group(pid, sig):
+    try:
+        os.killpg(pid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass  # the group is gone (macOS answers EPERM for a group of zombies)
+
+
+def write_json(path, data):
+    """Replace the file. It writes a new file and renames it, so it never writes through a link."""
+    partial = path.with_name(path.name + ".part")
+    try:
+        os.unlink(partial)
+    except FileNotFoundError:
+        pass
+    with open(partial, "x", encoding="utf-8") as handle:
+        handle.write(json.dumps(data, indent=2) + "\n")
+    os.replace(partial, path)
+
+
+def remove_tmp(tmp):
+    """Remove the temp folder of a run. True when it is gone.
+
+    A build can leave folders that are read-only, so each real folder is made
+    writable first. The marker goes last: a folder that could not be removed
+    whole still says whose it is, and a later clean can take it.
+    """
+    tmp = str(tmp)
+    for folder, names, _files in os.walk(tmp):
+        for path in [folder] + [os.path.join(folder, name) for name in names]:
+            if not os.path.islink(path):
+                try:
+                    os.chmod(path, 0o700)
+                except OSError:
+                    pass
+    try:
+        entries = list(os.scandir(tmp))
+    except OSError:
+        return not os.path.lexists(tmp)
+    for entry in entries:
+        if entry.name == ".verify-run":
+            continue
+        if entry.is_dir(follow_symlinks=False):
+            shutil.rmtree(entry.path, ignore_errors=True)
+        else:
+            try:
+                os.unlink(entry.path)
+            except OSError:
+                pass
+    try:
+        if os.listdir(tmp) in ([], [".verify-run"]):
+            if os.path.lexists(os.path.join(tmp, ".verify-run")):
+                os.unlink(os.path.join(tmp, ".verify-run"))
+            os.rmdir(tmp)
+    except OSError:
+        pass
+    return not os.path.lexists(tmp)
+
+
+def execute(argv, env, cwd, out_path, err_path, timeout, stdin_text, pids_path):
+    """Run one command in its own process group and leave nothing of it running."""
+    began = time.monotonic()
+    with open(out_path, "wb") as out, open(err_path, "wb") as err:
+        try:
+            proc = subprocess.Popen(argv, stdout=out, stderr=err, env=env, cwd=cwd, start_new_session=True,
+                                    stdin=subprocess.DEVNULL if stdin_text is None else subprocess.PIPE)
+        except OSError as exc:
+            return {"started": False, "error": exc.strerror or str(exc), "ms": 0}
+        timed_out = False
+        try:
+            write_json(pids_path, [{"pid": proc.pid, "start": proc_start(proc.pid)}])
+            try:
+                proc.communicate(None if stdin_text is None else stdin_text.encode(), timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+        finally:
+            kill_group(proc.pid, signal.SIGKILL)  # the command if it still runs, and what it left behind
+            proc.wait()
+        write_json(pids_path, [])
+    return {"started": True, "exit": proc.returncode, "timeout": timed_out,
+            "ms": int((time.monotonic() - began) * 1000)}
+
+
+def check_step(expect, result, out_path, err_path):
+    """Why the step failed, as a list of reasons. Empty when every expectation holds."""
+    if result["timeout"]:
+        return ["timeout"]
+    reasons = []
+    if result["exit"] != expect["exit"]:
+        reasons.append(f"exit {result['exit']}, expected {expect['exit']}")
+    streams = {"stdout": out_path.read_text(encoding="utf-8", errors="replace"),
+               "stderr": err_path.read_text(encoding="utf-8", errors="replace")}
+    for key in TEXT_CHECKS:
+        stream, mode = key.split("_")
+        for needle in expect.get(key, []):
+            if (needle in streams[stream]) != (mode == "has"):
+                reasons.append(f"{stream} {'lacks' if mode == 'has' else 'has'} {json.dumps(needle)}")
+    return reasons
+
+
+def overall(results, build_failed):
+    """The result of a run from the results of its features."""
+    if build_failed or "fail" in results:
+        return "fail"
+    if not results or "unverified" in results:
+        return "unverified"
+    return "pass"
+
+
+# ── run ──────────────────────────────────────────────────────────────────────
+
+def utc_now():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def run(fmap, root, only, keep_tmp):
+    """Run the features. Returns (record, lines to print before the last line)."""
+    app = fmap["app"]
+    commit, dirty = git_state(root)
+    began = utc_now()
+    name = f"{began.strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}-{commit[:7] if commit else 'nogit'}"
+    run_dir = root / ".verify" / "runs" / name
+    run_dir.mkdir(parents=True)
+    chosen = [feature for feature in fmap["features"] if not only or feature["id"] in only]
+    record = {"app": app, "runner": RUNNER, "commit": commit, "dirty": dirty,
+              "partial": len(chosen) < len(fmap["features"]),
+              "started": began.isoformat(timespec="seconds"), "finished": None,
+              "runner_pid": {"pid": os.getpid(), "start": proc_start(os.getpid())},
+              "tmp": None, "cleaned": False, "build": None, "features": [], "result": "unverified"}
+    pids_path = run_dir / "started.pids"
+    lines = []
+    tmp = None
+
+    def scene(name, with_fixture):
+        """A fresh folder inside the temp folder, and the places and the environment that point into it.
+        The build gets one and each feature gets one, so no feature reads what another one wrote."""
+        folder = tmp / name
+        folder.mkdir()
+        if with_fixture and fmap.get("fixture") is not None:
+            shutil.copytree(HERE / fmap["fixture"], folder / Path(fmap["fixture"]).name, symlinks=True)
+        places = {"root": str(root), "tmp": str(folder), "bin": str(root / fmap.get("bin", "."))}
+        env = dict(os.environ)
+        env.update({key: fill(value, places) for key, value in fmap.get("env", {}).items()})
+        return places, env
+
+    try:
+        tmp = Path(tempfile.mkdtemp(prefix=f"verify-{app}-")).resolve()
+        (tmp / ".verify-run").write_text(name, encoding="utf-8")
+        record["tmp"] = str(tmp)
+        write_json(run_dir / "run.json", record)
+        write_json(pids_path, [])
+        build_failed = False
+        if fmap.get("build"):
+            places, env = scene("_build", False)
+            argv = [fill(part, places) for part in fmap["build"]]
+            result = execute(argv, env, str(root), run_dir / "build.out", run_dir / "build.err",
+                             fmap.get("build_timeout_s", 1800), None, pids_path)
+            if not result["started"]:
+                raise MapError(f"the build could not start: {result['error']}")
+            record["build"] = {"argv": argv, "exit": result["exit"], "timeout": result["timeout"],
+                               "ms": result["ms"], "out": "build.out", "err": "build.err"}
+            build_failed = result["timeout"] or result["exit"] != 0
+            if build_failed:
+                lines.append("fail build: " + ("timeout" if result["timeout"] else f"exit {result['exit']}"))
+        for feature in chosen:
+            entry ={"id": feature["id"], "result": "unverified", "steps": []}
+            record["features"].append(entry)
+            if build_failed:
+                continue
+            entry["result"] = "pass"
+            places, env = scene(feature["id"], True)
+            for number, step in enumerate(feature["steps"], 1):
+                argv = [fill(part, places) for part in step["argv"]]
+                out_name, err_name = f"{feature['id']}-{number}.out", f"{feature['id']}-{number}.err"
+                result = execute(argv, env, fill(step.get("cwd", "{root}"), places), run_dir / out_name,
+                                 run_dir / err_name, step.get("timeout_s", fmap.get("timeout_s", 120)),
+                                 step.get("stdin"), pids_path)
+                shown = {"argv": argv, "exit": result.get("exit"), "timeout": result.get("timeout", False),
+                         "ms": result["ms"], "out": out_name, "err": err_name, "failed": []}
+                entry["steps"].append(shown)
+                if not result["started"]:
+                    entry["result"] = "unverified"
+                    shown["failed"] = [f"could not start: {result['error']}"]
+                else:
+                    shown["failed"] = check_step(step["expect"], result, run_dir / out_name, run_dir / err_name)
+                    if shown["failed"]:
+                        entry["result"] = "fail"
+                for reason in shown["failed"]:
+                    lines.append(f"{entry['result']} {feature['id']} step {number}: {reason}")
+                if shown["failed"]:
+                    break
+        record["result"] = overall([entry["result"] for entry in record["features"]], build_failed)
+    finally:
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            signal.signal(sig, signal.SIG_IGN)  # the clean-up below must finish; the process ends soon after
+        if tmp is not None and not keep_tmp:
+            record["cleaned"] = remove_tmp(tmp)
+            if not record["cleaned"]:
+                lines.append(f"not-removed {tmp}")
+        # the tree can change while the run goes on: a build that rewrites a tracked file, a commit from elsewhere
+        commit_now, dirty_now = git_state(root)
+        record["dirty"] = dirty or dirty_now or commit_now != commit
+        record["finished"] = utc_now().isoformat(timespec="seconds")
+        write_json(run_dir / "run.json", record)
+    lines.append(f"evidence .verify/runs/{name}")
+    return record, lines
+
+
+def last_line(record):
+    app, results = record["app"], [entry["result"] for entry in record["features"]]
+    commit = record["commit"] or "nogit"
+    marks = "".join(f" {mark}" for mark in ("dirty", "partial") if record[mark])
+    if record["result"] == "pass":
+        return f"verify-{app}: pass {len(results)}/{len(results)} {commit}{marks}"
+    counts = " ".join(f"{kind}={results.count(kind)}" for kind in ("pass", "fail", "unverified"))
+    build = " build=fail" if record["build"] and (record["build"]["timeout"] or record["build"]["exit"] != 0) else ""
+    return f"verify-{app}: summary {counts}{build} {commit}{marks}"
+
+
+# ── runs and clean ───────────────────────────────────────────────────────────
+
+def read_record(run_dir):
+    try:
+        record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def run_state(record):
+    """done: cleaned. not-cleaned: the run finished and its temp folder is still there.
+    cut-off: the runner has ended for certain before it finished. live: anything else,
+    so a runner whose state is not known counts as live."""
+    if record is None:
+        return "unreadable"
+    if record.get("cleaned") is True:
+        return "done"
+    if record.get("finished"):
+        return "not-cleaned"
+    runner = record.get("runner_pid")
+    if not isinstance(runner, dict):
+        return "live"
+    return "cut-off" if same_process(runner.get("pid"), runner.get("start")) in ("gone", "other") else "live"
+
+
+def own_tmp(tmp, run_name):
+    """True only for a temp folder that this run made: it holds the marker of the run."""
+    marker = tmp / ".verify-run"
+    try:
+        return (tmp.is_absolute() and not tmp.is_symlink() and tmp.is_dir() and not marker.is_symlink()
+                and marker.read_text(encoding="utf-8") == run_name)
+    except OSError:
+        return False
+
+
+def clean_run(run_dir):
+    """Returns (state, detail). state is cleaned, done, live or kept."""
+    record = read_record(run_dir)
+    state = run_state(record)
+    if state == "unreadable":
+        return "kept", "run.json cannot be read"
+    if state in ("done", "live"):
+        return state, ""
+    try:
+        started = json.loads((run_dir / "started.pids").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        started = []
+    for entry in started if isinstance(started, list) else []:
+        if isinstance(entry, dict) and same_process(entry.get("pid"), entry.get("start")) == "same":
+            kill_group(entry["pid"], signal.SIGKILL)
+    tmp = record.get("tmp")
+    if isinstance(tmp, str) and tmp and os.path.lexists(tmp):
+        if not own_tmp(Path(tmp), run_dir.name):
+            return "kept", "the temp folder does not carry the marker of this run"
+        if not remove_tmp(tmp):
+            return "kept", "the temp folder could not be removed"
+    record["cleaned"] = True
+    write_json(run_dir / "run.json", record)
+    return "cleaned", ""
+
+
+def run_dirs(root):
+    base = root / ".verify" / "runs"
+    return sorted(path for path in base.iterdir() if path.is_dir() and not path.is_symlink()) if base.is_dir() else []
+
+
+# ── the command line ─────────────────────────────────────────────────────────
+
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+
+
+def on_signal(signum, frame):
+    for sig in STOP_SIGNALS:
+        signal.signal(sig, signal.SIG_IGN)  # one stop is enough: the clean-up that follows must finish
+    raise Interrupted()
+
+
+def say(text):
+    """Print one line. A name from a file cannot start a new line and so cannot stand as the last line."""
+    print("".join(ch if ch.isprintable() else " " for ch in str(text)), flush=True)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="verify", description=__doc__.split("\n\n")[0])
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("doctor")
+    run_parser = commands.add_parser("run")
+    run_parser.add_argument("--only", action="append", default=[], metavar="ID")
+    run_parser.add_argument("--keep-tmp", action="store_true")
+    commands.add_parser("runs")
+    clean_parser = commands.add_parser("clean")
+    clean_parser.add_argument("run", nargs="?")
+    args = parser.parse_args(argv)
+
+    tag = "verify"
+    try:
+        fmap = load_map()
+        tag = f"verify-{fmap['app']}"
+        root = project_root()
+        if args.command == "doctor":
+            gaps = doctor(fmap, root)
+            for gap in gaps:
+                say(gap)
+            say(f"{tag}: summary gaps={len(gaps)}" if gaps else f"{tag}: doctor clean")
+            return 1 if gaps else 0
+        if args.command == "runs":
+            dirs = run_dirs(root)
+            for path in dirs:
+                record = read_record(path)
+                say(f"{path.name} {run_state(record)} {(record or {}).get('result', '-')}")
+            say(f"{tag}: runs {len(dirs)}")
+            return 0
+        if args.command == "clean":
+            dirs = run_dirs(root)
+            if args.run is not None:
+                dirs = [path for path in dirs if path.name == args.run]
+                if not dirs:
+                    raise MapError(f"no run folder named {json.dumps(args.run)}")
+            counts = {"cleaned": 0, "kept": 0, "live": 0}
+            for path in dirs:
+                state, detail = clean_run(path)
+                if state != "done":
+                    counts[state] += 1
+                    say(f"{state} {path.name}" + (f": {detail}" if detail else ""))
+            if counts["kept"]:
+                say(f"{tag}: summary kept={counts['kept']} cleaned={counts['cleaned']} live={counts['live']}")
+                return 1
+            say(f"{tag}: cleaned {counts['cleaned']}" + (f" live={counts['live']}" if counts["live"] else ""))
+            return 0
+        known = {feature["id"] for feature in fmap["features"]}
+        unknown = sorted(set(args.only) - known)
+        if unknown:
+            raise MapError(f"no feature has the id {json.dumps(unknown[0])}")
+        gaps = doctor(fmap, root)
+        if gaps:
+            for gap in gaps:
+                say(gap)
+            raise MapError(f"the doctor found {len(gaps)} gap(s)")
+        for sig in STOP_SIGNALS:
+            signal.signal(sig, on_signal)
+        record, lines = run(fmap, root, set(args.only), args.keep_tmp)
+        for line in lines:
+            say(line)
+        say(last_line(record))
+        return 0 if record["result"] == "pass" else 1
+    except MapError as exc:
+        say(f"{tag}: error {exc}")
+        return 2
+    except (Interrupted, KeyboardInterrupt):
+        say(f"{tag}: error the run was interrupted")
+        return 2
+    except Exception as exc:  # anything else: the run did not finish, and it must not read as a result
+        say(f"{tag}: error {type(exc).__name__}: {exc}")
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
