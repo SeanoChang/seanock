@@ -65,8 +65,8 @@ GREET = feature("greet", step("greet", "Ada", expect={"exit": 0, "stdout_has": [
 BOOM = feature("boom", step("boom", expect={"exit": 0}))
 
 
-def sh(*argv, cwd):
-    return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=120)
+def sh(*argv, cwd, env=None):
+    return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=120, env=env)
 
 
 def git(project, *args):
@@ -80,6 +80,9 @@ class Project:
     def __init__(self, root):
         self.root = root
         self.skill = root / ".claude" / "skills" / "verify-demo"
+        # the runner's temp folders go under pytest's folder, so a test that leaves one leaves it there
+        (root.parent / "t").mkdir(exist_ok=True)
+        self.env = dict(os.environ, TMPDIR=str(root.parent / "t"))
 
     def write_map(self, features, **top):
         data = {"app": "demo", "runner": 1, "features": features, **top}
@@ -90,13 +93,13 @@ class Project:
         git(self.root, "commit", "-q", "--allow-empty", "-m", "change")
         return git(self.root, "rev-parse", "HEAD")
 
-    def verify(self, *args):
-        done = sh(PY, str(self.skill / "verify"), *args, cwd=self.root)
+    def verify(self, *args, env=None):
+        done = sh(PY, str(self.skill / "verify"), *args, cwd=self.root, env=env or self.env)
         lines = done.stdout.splitlines()
         return done.returncode, lines
 
-    def start(self, *args):
-        return subprocess.Popen([PY, str(self.skill / "verify"), *args], cwd=self.root,
+    def start(self, *args, env=None):
+        return subprocess.Popen([PY, str(self.skill / "verify"), *args], cwd=self.root, env=env or self.env,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     def runs(self):
@@ -105,6 +108,20 @@ class Project:
 
     def record(self, index=-1):
         return json.loads((self.runs()[index] / "run.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture(autouse=True)
+def stop_signals_as_before():
+    """run() leaves the stop signals ignored, because the runner ends right after it.
+
+    A test that calls run() in this process would leave them ignored for every
+    later test, and each program those tests start would ignore SIGTERM too.
+    """
+    before = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)}
+    yield
+    for sig, handler in before.items():
+        if handler is not None:
+            signal.signal(sig, handler)
 
 
 @pytest.fixture
@@ -261,6 +278,40 @@ def test_a_failed_run_carries_the_same_marks_on_its_summary_line(project):
     assert code == 1 and lines[-1] == f"verify-demo: summary pass=0 fail=1 unverified=0 {head} dirty partial"
 
 
+def test_a_tree_that_changes_while_the_run_goes_on_makes_the_result_dirty(project):
+    edit = feature("edits", {"kind": "run", "argv": [PY, "-c", "import sys; open(sys.argv[1], 'a').write('# changed\\n')", "{root}/app.py"],
+                             "expect": {"exit": 0}})
+    project.write_map([edit])
+    head = project.commit()
+
+    code, lines = project.verify("run")
+
+    assert code == 0 and lines[-1] == f"verify-demo: pass 1/1 {head} dirty"
+    assert project.record()["dirty"] is True
+
+
+def test_a_commit_made_while_the_run_goes_on_makes_the_result_dirty(project):
+    commit = feature("commits", {"kind": "run", "argv": ["git", "-C", "{root}", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                                                         "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "moved"],
+                                 "expect": {"exit": 0}})
+    project.write_map([commit])
+    head = project.commit()
+
+    code, lines = project.verify("run")
+
+    assert code == 0 and lines[-1] == f"verify-demo: pass 1/1 {head} dirty"
+    assert git(project.root, "rev-parse", "HEAD") != head
+
+
+def test_an_untracked_file_makes_the_tree_dirty_whatever_the_git_config_says(project):
+    git(project.root, "config", "status.showUntrackedFiles", "no")
+    (project.root / "new.py").write_text("x = 1\n")
+
+    code, lines = project.verify("run")
+
+    assert code == 0 and lines[-1].endswith(" dirty")
+
+
 def test_a_pass_of_some_features_says_partial(project):
     project.write_map([GREET, feature("other", step("greet", "Bo"))])
     head = project.commit()
@@ -383,6 +434,24 @@ def test_the_doctor_lists_each_gap_and_a_run_then_refuses(project):
     code, lines = project.verify("run")
     assert code == 2 and lines[-1] == "verify-demo: error the doctor found 7 gap(s)"
     assert project.runs() == []
+
+
+FAKE_GITS = {
+    "no answer at all": "#!/bin/sh\necho \"fatal: detected dubious ownership in repository\" >&2\nexit 128\n",
+    "a work tree, but check-ignore fails": "#!/bin/sh\ncase \"$*\" in *is-inside-work-tree*) echo true; exit 0;; esac\n"
+                                           "echo \"fatal: cannot read the index\" >&2\nexit 128\n",
+}
+
+
+@pytest.mark.parametrize("fake", sorted(FAKE_GITS))
+def test_when_git_cannot_say_if_the_evidence_is_ignored_the_doctor_counts_it_as_a_gap(project, tmp_path, fake):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "git").write_text(FAKE_GITS[fake])
+    (bin_dir / "git").chmod(0o755)
+    env = dict(project.env, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+    assert project.verify("doctor", env=env) == (1, ["evidence-not-ignored .verify/", "verify-demo: summary gaps=1"])
 
 
 # ── steps that do not end well ───────────────────────────────────────────────
@@ -516,6 +585,41 @@ def test_clean_leaves_a_live_run_alone_and_a_stop_signal_ends_that_run_cleanly(p
         stop(pids)
 
 
+@pytest.mark.parametrize("runner_zone, other_zone", [("UTC", "Asia/Taipei"), ("America/New_York", "UTC")])
+def test_a_session_in_another_time_zone_sees_the_same_runs_as_live_and_as_cut_off(project, runner_zone, other_zone):
+    """ps prints a start time in local time. Two sessions with two zones must still mean the same process."""
+    pid_file = hang_project(project)
+    runner = project.start("run", env=dict(project.env, TZ=runner_zone))
+    pids = wait_for(pid_file)
+    other = dict(project.env, TZ=other_zone)
+    try:
+        tmp = Path(project.record()["tmp"])
+
+        code, lines = project.verify("clean", env=other)
+
+        assert code == 0 and lines[-1] == "verify-demo: cleaned 0 live=1"
+        assert alive(pids[0]) and tmp.is_dir()
+
+        runner.kill()
+        runner.wait()
+        assert project.verify("clean", env=other)[1][-1] == "verify-demo: cleaned 1"
+        assert all(gone(pid) for pid in pids) and not tmp.exists()
+    finally:
+        runner.kill()
+        stop(pids)
+
+
+def test_the_start_time_of_a_process_does_not_depend_on_the_zone_or_language_of_the_caller(runner_module, monkeypatch):
+    seen = set()
+    for zone, language in (("UTC", "C"), ("Asia/Taipei", "ja_JP.UTF-8"), ("America/New_York", "de_DE.UTF-8"),
+                           ("Australia/Lord_Howe", "C"), ("UTC", "de_DE.UTF-8")):
+        monkeypatch.setenv("TZ", zone)
+        monkeypatch.setenv("LC_ALL", language)
+        seen.add(runner_module.proc_start(os.getpid()))
+
+    assert len(seen) == 1 and None not in seen
+
+
 @pytest.mark.parametrize("marker", [None, "another-run"])
 def test_clean_never_removes_a_folder_that_does_not_carry_the_marker_of_the_run(project, tmp_path, marker):
     pid_file = hang_project(project)
@@ -607,18 +711,162 @@ def test_a_run_folder_that_is_a_link_is_not_a_run(project, tmp_path):
     shutil.rmtree(json.loads((elsewhere / "run.json").read_text())["tmp"], ignore_errors=True)
 
 
-@pytest.mark.parametrize("pid", [0, 1, -1, -42])
-def test_clean_never_signals_group_0_or_1_whatever_the_file_says(runner_module, tmp_path, monkeypatch, pid):
+def ended_pid():
+    child = subprocess.Popen([PY, "-c", "pass"])
+    child.wait()
+    return child.pid
+
+
+@pytest.mark.parametrize("pid", [0, 1, -1, -42, True, None, "77", 1.5])
+def test_a_pid_that_names_a_group_or_the_first_process_is_never_asked_about_or_signalled(runner_module, monkeypatch, pid):
+    asked = []
+    monkeypatch.setattr(runner_module.os, "kill", lambda *args: asked.append(args))
+    monkeypatch.setattr(runner_module, "proc_start", lambda _pid: "same")
+
+    assert runner_module.same_process(pid, "same") == "unknown"
+    assert asked == []
+
+
+def test_same_process_tells_gone_same_other_and_unknown_apart(runner_module, monkeypatch):
+    me = os.getpid()
+    started = runner_module.proc_start(me)
+
+    assert started
+    assert runner_module.same_process(ended_pid(), started) == "gone"
+    assert runner_module.same_process(me, started) == "same"
+    assert runner_module.same_process(me, "Thu Jan  1 00:00:00 1970") == "other"
+    assert runner_module.same_process(me, None) == "unknown"
+    monkeypatch.setattr(runner_module, "proc_start", lambda _pid: None)
+    assert runner_module.same_process(me, started) == "unknown"
+    assert runner_module.same_process(ended_pid(), started) == "gone"
+
+
+@pytest.mark.parametrize("answer, state", [("gone", "cut-off"), ("other", "cut-off"), ("same", "live"), ("unknown", "live")])
+def test_only_a_runner_that_has_ended_for_certain_makes_a_run_cut_off(runner_module, monkeypatch, answer, state):
+    monkeypatch.setattr(runner_module, "same_process", lambda pid, start: answer)
+
+    assert runner_module.run_state({"cleaned": False, "finished": None, "runner_pid": {"pid": 5, "start": "x"}}) == state
+    assert runner_module.run_state({"cleaned": False, "finished": None, "runner_pid": None}) == "live"
+    assert runner_module.run_state({"cleaned": False, "finished": None}) == "live"
+    assert runner_module.run_state({"cleaned": False, "finished": "2026-01-01", "runner_pid": None}) == "not-cleaned"
+    assert runner_module.run_state({"cleaned": True, "finished": None}) == "done"
+
+
+@pytest.mark.parametrize("answer, signalled", [("same", [4242]), ("unknown", []), ("other", []), ("gone", [])])
+def test_clean_stops_a_recorded_process_only_when_it_is_the_same_for_certain(runner_module, tmp_path, monkeypatch,
+                                                                             answer, signalled):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    (run_dir / "run.json").write_text(json.dumps({"cleaned": False, "runner_pid": None, "tmp": None}))
-    (run_dir / "started.pids").write_text(json.dumps([{"pid": pid, "start": "same"}, {"pid": 4242, "start": "same"}]))
-    signalled = []
-    monkeypatch.setattr(runner_module, "proc_start", lambda _pid: "same")
-    monkeypatch.setattr(runner_module, "kill_group", lambda target, sig: signalled.append(target))
+    (run_dir / "run.json").write_text(json.dumps({"cleaned": False, "finished": None, "tmp": None,
+                                                   "runner_pid": {"pid": ended_pid(), "start": "x"}}))
+    (run_dir / "started.pids").write_text(json.dumps([{"pid": 4242, "start": "x"}, "junk", {"pid": 0, "start": "x"}]))
+    real = runner_module.same_process
+    sent = []
+    monkeypatch.setattr(runner_module, "same_process", lambda pid, start: answer if pid == 4242 else real(pid, start))
+    monkeypatch.setattr(runner_module, "kill_group", lambda target, sig: sent.append(target))
 
     assert runner_module.clean_run(run_dir) == ("cleaned", "")
-    assert signalled == [4242]
+    assert sent == signalled
+
+
+# ── the temp folder: removed whole, or still claimed ─────────────────────────
+
+def test_a_run_removes_a_temp_folder_that_holds_read_only_folders(project):
+    lock = "import os, pathlib; d = pathlib.Path(os.environ['SCRATCH'], 'cache', 'mod'); d.mkdir(parents=True); " \
+           "(d / 'f.txt').write_text('x'); os.chmod(d / 'f.txt', 0o444); os.chmod(d, 0o555); os.chmod(d.parent, 0o555); print('locked')"
+    project.write_map([feature("ro", {"kind": "run", "argv": [PY, "-c", lock], "expect": {"exit": 0, "stdout_has": ["locked"]}})],
+                      build=[PY, "-c", lock], env={"SCRATCH": "{tmp}"})
+    head = project.commit()
+
+    code, lines = project.verify("run")
+
+    assert code == 0 and lines[-1] == f"verify-demo: pass 1/1 {head}", lines
+    assert project.record()["cleaned"] is True and not Path(project.record()["tmp"]).exists()
+    assert not any(line.startswith("not-removed") for line in lines)
+
+
+def make_tmp(tmp_path, run_name="run-1"):
+    tmp = tmp_path / "verify-demo-x"
+    (tmp / "feature" / "deep").mkdir(parents=True)
+    (tmp / "feature" / "deep" / "file").write_text("x")
+    (tmp / "loose").write_text("x")
+    (tmp / ".verify-run").write_text(run_name)
+    return tmp
+
+
+def test_a_removal_that_stops_halfway_keeps_the_marker_so_a_later_clean_can_finish(runner_module, tmp_path, monkeypatch):
+    tmp = make_tmp(tmp_path)
+    run_dir = tmp_path / "run-1"
+    run_dir.mkdir()
+    (run_dir / "run.json").write_text(json.dumps({"cleaned": False, "finished": "2026-01-01T00:00:00+00:00", "tmp": str(tmp)}))
+    with monkeypatch.context() as patch:
+        patch.setattr(runner_module.shutil, "rmtree", lambda *args, **kwargs: None)
+
+        assert runner_module.remove_tmp(tmp) is False
+        assert (tmp / ".verify-run").read_text() == "run-1" and not (tmp / "loose").exists()
+        assert runner_module.clean_run(run_dir) == ("kept", "the temp folder could not be removed")
+        assert json.loads((run_dir / "run.json").read_text())["cleaned"] is False
+
+    assert runner_module.clean_run(run_dir) == ("cleaned", "")
+    assert not tmp.exists() and json.loads((run_dir / "run.json").read_text())["cleaned"] is True
+
+
+def test_the_removal_does_not_follow_a_link_out_of_the_temp_folder(runner_module, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("mine")
+    os.chmod(outside, 0o555)
+    tmp = make_tmp(tmp_path)
+    (tmp / "feature" / "link").symlink_to(outside)
+    (tmp / "toplink").symlink_to(outside)
+    try:
+        assert runner_module.remove_tmp(tmp) is True
+        assert (outside / "keep.txt").read_text() == "mine"
+        assert oct(outside.stat().st_mode & 0o777) == "0o555"
+    finally:
+        os.chmod(outside, 0o755)
+
+
+def test_a_run_that_cannot_remove_its_temp_folder_says_so_and_the_run_shows_as_not_cleaned(runner_module, project, monkeypatch):
+    monkeypatch.setattr(runner_module, "remove_tmp", lambda tmp: False)
+    fmap = {"app": "demo", "runner": 1, "features": [GREET]}
+
+    record, lines = runner_module.run(fmap, project.root, set(), False)
+
+    assert signal.getsignal(signal.SIGTERM) == signal.SIG_IGN  # the fixture stop_signals_as_before puts it back
+    assert record["result"] == "pass" and record["cleaned"] is False
+    assert lines[0] == f"not-removed {record['tmp']}" and lines[-1].startswith("evidence ")
+    assert runner_module.run_state(project.record()) == "not-cleaned"
+    monkeypatch.undo()
+    assert project.verify("clean") == (0, ["cleaned " + project.runs()[-1].name, "verify-demo: cleaned 1"])
+    assert not Path(record["tmp"]).exists()
+
+
+# ── a machine where ps gives no start time ───────────────────────────────────
+
+def test_without_start_times_a_live_run_stays_live_and_a_dead_runner_is_still_found(project, tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "ps").write_text("#!/bin/sh\nexit 1\n")
+    (bin_dir / "ps").chmod(0o755)
+    env = dict(project.env, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    pid_file = hang_project(project)
+    runner = project.start("run", env=env)
+    pids = wait_for(pid_file)
+    try:
+        tmp = Path(project.record()["tmp"])
+        assert project.record()["runner_pid"]["start"] is None
+
+        assert project.verify("clean", env=env) == (0, ["live " + project.runs()[0].name, "verify-demo: cleaned 0 live=1"])
+        assert tmp.is_dir() and alive(pids[0])
+
+        runner.kill()
+        runner.wait()
+        assert project.verify("clean", env=env)[1][-1] == "verify-demo: cleaned 1"
+        assert not tmp.exists() and project.record()["cleaned"] is True
+    finally:
+        runner.kill()
+        stop(pids)
 
 
 def test_clean_of_a_named_run_that_does_not_exist_is_an_error(project):

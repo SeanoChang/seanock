@@ -56,8 +56,13 @@ python3 .claude/skills/verify-__APP__/verify runs
 python3 .claude/skills/verify-__APP__/verify clean
 ```
 
-`clean` stops what a cut-off run left behind and removes its temp folder. It
-leaves a run that is still live alone, and it keeps every run folder.
+`runs` lists each run with its state: `done`, `live`, `cut-off` (its runner
+ended before the run finished) or `not-cleaned` (the run finished, printed a
+line `not-removed`, and its temp folder is still there).
+
+`clean` stops what a cut-off run left behind and removes those temp folders.
+It acts only when the runner of a run has ended for certain; any other run
+counts as live and is left alone. It keeps every run folder.
 
 ## The feature map
 

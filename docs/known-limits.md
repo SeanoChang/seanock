@@ -1250,6 +1250,14 @@ changes it.
   finding that still stands keeps the verdict at fail. This holds for every
   finding, not only for guard hits. It was read from the text (2026-11-14)
   and not run with a live verifier.
+- **One test of the guard waits with no time limit**
+  (`test_repo_config_programs_never_run_and_nothing_is_written`). Its last
+  step runs `git diff` and `git status` with a stand-in filter program, and
+  git stops that program with SIGTERM. In a test process that ignores
+  SIGTERM, git waits forever. That happened once (2026-11-14): a test of the
+  verify runner left the signal ignored for the tests after it. That test
+  file now puts the signals back; the two git calls still have no time
+  limit.
 
 ### Not tested
 
@@ -1411,6 +1419,60 @@ has none.
   its pid** leaves that command running, and `clean` does not know it.
 - **`ps` gives start times to the second.** A recorded pid that the system
   gave to a new process within the same second would match.
+- **Where `ps` gives no start time** (BusyBox, an image with no procps),
+  `clean` still finds a runner that has ended and removes its temp folder,
+  but it stops no process, because it cannot tell that a pid still means the
+  recorded command. A run whose runner pid went to another process stays
+  `live` there. Shown with a stand-in `ps`, not on such a system.
+- **A temp folder that cannot be removed** (a file with a system flag,
+  another owner) stays. The run prints `not-removed`, keeps its result, and
+  `clean` tries again later. Read-only folders are not such a case: the
+  runner makes them writable first.
+- **An exit 2 of the scaffold can leave the skill folder.** The `.gitignore`
+  line is written after the folder. When that write fails, the folder is
+  there and a second call refuses it, although the texts say that exit 2
+  means nothing was written. Found by the verifier, 2026-11-14.
+- **Neither skill text says that a step runs in the project root by
+  default.** A step that writes to a relative path writes into the project,
+  not into `{tmp}`, and can then differ between a full run and `--only`.
+  `cwd` on a step changes it. Found by the verifier, 2026-11-14.
+- **A stop signal in the first moments of a run** (before the temp folder
+  exists, or between the start of a command and the first line that guards
+  it) was not shown to leak or not to leak; twelve timed signals did not hit
+  it.
+- **The runner ignores the stop signals from the start of its clean-up to
+  its end as a process,** and so does each program it starts in that time
+  (`git`, `ps`). A second Ctrl-C does not stop a clean-up that hangs;
+  `kill -9` does, and `verify clean` then finishes the job.
+- **When git refuses the repo, the doctor names the wrong cause.** For
+  example `detected dubious ownership` in a container job: the gap reads
+  `evidence-not-ignored .verify/` although the folder is ignored. The run is
+  refused, which is the safe side. Found by the verifier, 2026-11-14.
+- **A `.git` that points to a repo that is gone reads as "no repo".** Git
+  then says `not a git repository`, the doctor is clean, and the run can
+  pass with the mark `nogit`. The same holds with `GIT_DIR` set to a path
+  that does not exist. Found by the adversary, 2026-11-14.
+- **Git state is read at the start and at the end of a run, not between.**
+  A step that edits a tracked file and a later step that puts it back leave
+  no `dirty` mark. Found by the adversary, 2026-11-14.
+- **A record with a pid that the system cannot hold ends `runs` and `clean`
+  with exit 2 for the whole project** (`OverflowError`). It needs a damaged
+  `run.json` or `started.pids`. Found by the adversary, 2026-11-14.
+- **A step that takes the read permission from the run's temp folder
+  itself** (not from a folder inside it) leaves a folder that `clean` keeps
+  on every call, until someone makes it readable by hand. Found by the
+  adversary, 2026-11-14.
+- **`verify runs` says `not-cleaned` for more than a failed removal:** also
+  for a run with `--keep-tmp`, and for a run whose temp folder could not be
+  made. The skill text names only the first case. `clean` removes a folder
+  that `--keep-tmp` kept. Found by the adversary, 2026-11-14.
+- **A killed runner that its parent has not yet collected stays `live`**
+  until the parent does. Found by the adversary, 2026-11-14.
+- **Start times are read in UTC since 2026-11-14.** Before, `ps` printed
+  local time, and `clean` from a session in another time zone took a live
+  run for a cut-off one and removed its temp folder (found by the
+  adversary). A run that an older copy of the runner recorded in local time
+  has the same problem until it ends.
 
 ## Merge follow-up (`config/claude/skills/merge-follow-up`, 2026-11-14)
 

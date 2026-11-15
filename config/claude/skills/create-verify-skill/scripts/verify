@@ -4,7 +4,7 @@
   verify doctor            list what a run needs and does not have
   verify run [--only ID]   build, run the steps of each feature, write a run folder
   verify runs              list the run folders and their state
-  verify clean [RUN]       stop what a cut-off run left, and remove its temp folder
+  verify clean [RUN]       stop what a cut-off run left, and remove a temp folder that is still there
 
 Read the exit code and the last line together, never one without the other:
 
@@ -191,7 +191,7 @@ def git_state(root):
     head = git(root, "rev-parse", "--verify", "HEAD")
     if head is None or head.returncode != 0:
         return None, False
-    status = git(root, "status", "--porcelain")
+    status = git(root, "status", "--porcelain", "--untracked-files=normal")
     dirty = status is None or status.returncode != 0 or bool(status.stdout.strip())
     return head.stdout.strip(), dirty
 
@@ -214,23 +214,62 @@ def doctor(fmap, root):
     for name, value in sorted(fmap.get("env", {}).items()):
         if value.startswith(("/", "~")):
             gaps.append(f"env-outside-tmp {name}")
-    ignored = git(root, "check-ignore", "-q", ".verify/probe")
-    if ignored is not None and ignored.returncode == 1:
+    if not evidence_ignored(root):
         gaps.append("evidence-not-ignored .verify/")
     return gaps
+
+
+def evidence_ignored(root):
+    """True when git ignores .verify/, and when no git repo holds this folder.
+    False when git does not ignore it, and when git could not say."""
+    if shutil.which("git") is None:
+        return True
+    inside = git(root, "rev-parse", "--is-inside-work-tree")
+    if inside is None:
+        return False
+    if inside.returncode != 0:
+        return "not a git repository" in inside.stderr
+    ignored = git(root, "check-ignore", "-q", ".verify/probe")
+    return ignored is not None and ignored.returncode == 0
 
 
 # ── processes ────────────────────────────────────────────────────────────────
 
 def proc_start(pid):
-    """When the process started, as ps prints it. None when there is no such process."""
+    """When the process started, as ps prints it. None when there is no such process.
+
+    ps prints local time in the caller's language. Both are fixed here, so
+    that two sessions with different settings get the same text for one process.
+    """
     try:
         out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
-                             env=dict(os.environ, LC_ALL="C"), timeout=10)
+                             env=dict(os.environ, LC_ALL="C", TZ="UTC0"), timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return None
     text = out.stdout.strip()
     return text if out.returncode == 0 and text else None
+
+
+def same_process(pid, start):
+    """Is the process with this pid the one that started at `start`?
+
+    "gone": no process has the pid. "same" and "other": one has, and its start
+    time is, or is not, the recorded one. "unknown": one has it and a start
+    time is missing (ps could not give it, now or when it was recorded). Only
+    "gone" and "other" say for certain that the recorded process has ended.
+    """
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        return "unknown"  # 0 and below name groups, and 1 is the system's first process
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return "gone"
+    except OSError:
+        pass  # it is there and belongs to another user
+    now = proc_start(pid)
+    if not start or now is None:
+        return "unknown"
+    return "same" if now == start else "other"
 
 
 def kill_group(pid, sig):
@@ -250,6 +289,45 @@ def write_json(path, data):
     with open(partial, "x", encoding="utf-8") as handle:
         handle.write(json.dumps(data, indent=2) + "\n")
     os.replace(partial, path)
+
+
+def remove_tmp(tmp):
+    """Remove the temp folder of a run. True when it is gone.
+
+    A build can leave folders that are read-only, so each real folder is made
+    writable first. The marker goes last: a folder that could not be removed
+    whole still says whose it is, and a later clean can take it.
+    """
+    tmp = str(tmp)
+    for folder, names, _files in os.walk(tmp):
+        for path in [folder] + [os.path.join(folder, name) for name in names]:
+            if not os.path.islink(path):
+                try:
+                    os.chmod(path, 0o700)
+                except OSError:
+                    pass
+    try:
+        entries = list(os.scandir(tmp))
+    except OSError:
+        return not os.path.lexists(tmp)
+    for entry in entries:
+        if entry.name == ".verify-run":
+            continue
+        if entry.is_dir(follow_symlinks=False):
+            shutil.rmtree(entry.path, ignore_errors=True)
+        else:
+            try:
+                os.unlink(entry.path)
+            except OSError:
+                pass
+    try:
+        if os.listdir(tmp) in ([], [".verify-run"]):
+            if os.path.lexists(os.path.join(tmp, ".verify-run")):
+                os.unlink(os.path.join(tmp, ".verify-run"))
+            os.rmdir(tmp)
+    except OSError:
+        pass
+    return not os.path.lexists(tmp)
 
 
 def execute(argv, env, cwd, out_path, err_path, timeout, stdin_text, pids_path):
@@ -316,18 +394,15 @@ def run(fmap, root, only, keep_tmp):
     name = f"{began.strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}-{commit[:7] if commit else 'nogit'}"
     run_dir = root / ".verify" / "runs" / name
     run_dir.mkdir(parents=True)
-    tmp = Path(tempfile.mkdtemp(prefix=f"verify-{app}-")).resolve()
-    (tmp / ".verify-run").write_text(name, encoding="utf-8")
     chosen = [feature for feature in fmap["features"] if not only or feature["id"] in only]
     record = {"app": app, "runner": RUNNER, "commit": commit, "dirty": dirty,
               "partial": len(chosen) < len(fmap["features"]),
               "started": began.isoformat(timespec="seconds"), "finished": None,
               "runner_pid": {"pid": os.getpid(), "start": proc_start(os.getpid())},
-              "tmp": str(tmp), "cleaned": False, "build": None, "features": [], "result": "unverified"}
+              "tmp": None, "cleaned": False, "build": None, "features": [], "result": "unverified"}
     pids_path = run_dir / "started.pids"
     lines = []
-    write_json(run_dir / "run.json", record)
-    write_json(pids_path, [])
+    tmp = None
 
     def scene(name, with_fixture):
         """A fresh folder inside the temp folder, and the places and the environment that point into it.
@@ -342,6 +417,11 @@ def run(fmap, root, only, keep_tmp):
         return places, env
 
     try:
+        tmp = Path(tempfile.mkdtemp(prefix=f"verify-{app}-")).resolve()
+        (tmp / ".verify-run").write_text(name, encoding="utf-8")
+        record["tmp"] = str(tmp)
+        write_json(run_dir / "run.json", record)
+        write_json(pids_path, [])
         build_failed = False
         if fmap.get("build"):
             places, env = scene("_build", False)
@@ -385,10 +465,14 @@ def run(fmap, root, only, keep_tmp):
         record["result"] = overall([entry["result"] for entry in record["features"]], build_failed)
     finally:
         for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
-            signal.signal(sig, signal.SIG_IGN)  # the clean-up below must finish
-        if not keep_tmp:
-            shutil.rmtree(tmp, ignore_errors=True)
-            record["cleaned"] = not tmp.exists()
+            signal.signal(sig, signal.SIG_IGN)  # the clean-up below must finish; the process ends soon after
+        if tmp is not None and not keep_tmp:
+            record["cleaned"] = remove_tmp(tmp)
+            if not record["cleaned"]:
+                lines.append(f"not-removed {tmp}")
+        # the tree can change while the run goes on: a build that rewrites a tracked file, a commit from elsewhere
+        commit_now, dirty_now = git_state(root)
+        record["dirty"] = dirty or dirty_now or commit_now != commit
         record["finished"] = utc_now().isoformat(timespec="seconds")
         write_json(run_dir / "run.json", record)
     lines.append(f"evidence .verify/runs/{name}")
@@ -417,16 +501,19 @@ def read_record(run_dir):
 
 
 def run_state(record):
-    """done: cleaned. live: its runner still runs. cut-off: the runner is gone, the run is not cleaned."""
+    """done: cleaned. not-cleaned: the run finished and its temp folder is still there.
+    cut-off: the runner has ended for certain before it finished. live: anything else,
+    so a runner whose state is not known counts as live."""
     if record is None:
         return "unreadable"
     if record.get("cleaned") is True:
         return "done"
+    if record.get("finished"):
+        return "not-cleaned"
     runner = record.get("runner_pid")
-    if isinstance(runner, dict) and isinstance(runner.get("pid"), int) and runner.get("start"):
-        if proc_start(runner["pid"]) == runner["start"]:
-            return "live"
-    return "cut-off"
+    if not isinstance(runner, dict):
+        return "live"
+    return "cut-off" if same_process(runner.get("pid"), runner.get("start")) in ("gone", "other") else "live"
 
 
 def own_tmp(tmp, run_name):
@@ -452,16 +539,13 @@ def clean_run(run_dir):
     except (OSError, ValueError):
         started = []
     for entry in started if isinstance(started, list) else []:
-        if isinstance(entry, dict) and isinstance(entry.get("pid"), int) and entry.get("start"):
-            # a group number of 0 means "my own group", and 1 is the system's first process
-            if entry["pid"] > 1 and proc_start(entry["pid"]) == entry["start"]:
-                kill_group(entry["pid"], signal.SIGKILL)
+        if isinstance(entry, dict) and same_process(entry.get("pid"), entry.get("start")) == "same":
+            kill_group(entry["pid"], signal.SIGKILL)
     tmp = record.get("tmp")
     if isinstance(tmp, str) and tmp and os.path.lexists(tmp):
         if not own_tmp(Path(tmp), run_dir.name):
             return "kept", "the temp folder does not carry the marker of this run"
-        shutil.rmtree(tmp, ignore_errors=True)
-        if os.path.lexists(tmp):
+        if not remove_tmp(tmp):
             return "kept", "the temp folder could not be removed"
     record["cleaned"] = True
     write_json(run_dir / "run.json", record)
