@@ -20,6 +20,20 @@ TEXT = (SKILL / "SKILL.md").read_text(encoding="utf-8")
 SCRIPT = SKILL / "scripts" / "pr-state.py"
 
 
+AGENT_PUSH = "git push --force-with-lease origin refs/heads/<head>:refs/heads/<head>"
+USER_PUSH = "git push origin refs/heads/sync/<release>-into-<integration>-<version>:refs/heads/<integration>"
+# Every sentence of the text that speaks of a push is one of these. A push that
+# names no branch can follow the upstream of the branch, which is often the base.
+PUSH_KINDS = [
+    r"\*\*Push only to a task branch that this session created, and only with this command:\*\* `" + re.escape(AGENT_PUSH) + "`",
+    r"push with the command above\.$",
+    r"^Never run a push with no branch named",
+    r"^Never rebase, and never push to, a release branch",
+    r"\*\*hand the push to the user\*\*",
+    r"Give the user this command, and do not run it yourself: `" + re.escape(USER_PUSH) + "`",
+]
+
+
 def flat(text):
     return " ".join(text.split())
 
@@ -46,11 +60,24 @@ def test_the_text_holds_no_command_that_merges_tags_or_deletes():
                    "git worktree remove", "--admin", "--auto"):
         assert banned not in commands, banned
     pushes = [line for line in commands.splitlines() if "git push" in line]
-    assert pushes == ["git push --force-with-lease origin <head>:<head>",
-                      "git push origin sync/<release>-into-<integration>-<version>:<integration>"]
+    assert pushes == [AGENT_PUSH, USER_PUSH]
     said = flat(TEXT)
     assert "Give the user this command, and do not run it yourself" in said
     assert "This skill never merges a pull request." in said
+
+
+def test_every_sentence_about_a_push_is_of_a_known_kind_and_names_its_branch():
+    body = flat(TEXT[TEXT.index("\n---", 4) + 4:])
+    sentences = [part.lstrip("-0123456789. ") for part in re.split(r"(?<=\.)\s+", body)]
+    about = [sentence for sentence in sentences if re.search(r"(?i)\bpush", sentence)]
+
+    assert len(about) == 7, about
+    for sentence in about:
+        assert any(re.search(kind, sentence) for kind in PUSH_KINDS), sentence
+    for kind in PUSH_KINDS:
+        assert any(re.search(kind, sentence) for sentence in about), kind
+    assert len([sentence for sentence in about if "push with the command above" in sentence]) == 2
+    assert "push" not in TEXT[:TEXT.index("\n---", 4)].lower()
 
 
 def test_the_three_results_in_the_text_are_the_lines_the_script_prints(module, capsys, tmp_path):
@@ -84,7 +111,7 @@ def test_the_text_keeps_a_session_off_the_branches_of_another():
     assert "Rebase the ones that **this session created**" in said
     assert "**Leave every other branch alone.**" in said
     assert "run `git rebase --abort` and report the branch" in said
-    assert "Always name the branch: a push with no branch named can follow the upstream of the branch" in said
+    assert "Never run a push with no branch named: it can follow the upstream of the branch" in said
     assert "a reviewer that passed the branch re-checks it before it is merged" in said
     assert "Delete nothing" in said
     assert "Never wait with `sleep` or a loop in the shell." in said
@@ -95,7 +122,8 @@ def test_the_text_keeps_every_push_off_a_branch_that_takes_pull_requests(module)
     said = flat(TEXT)
     rules = said[said.index("Three rules hold for every event:"):said.index("### `merged`, and `release` is false")]
 
-    assert "**Push only to a task branch that this session created.**" in rules
+    assert "**Push only to a task branch that this session created, and only with this command:**" in rules
+    assert f"`{AGENT_PUSH}`" in rules
     assert "Never rebase, and never push to, a release branch, an integration branch" in rules
     assert 'An event with `"shared_head": true` has such a branch as its head: change nothing on that branch.' in rules
     assert "Never tag." in rules
@@ -137,6 +165,13 @@ def commit(repo, name):
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", name)
     return git(repo, "rev-parse", "HEAD")
+
+
+def handed():
+    """The command that the text hands to the user, with the names of the test repo."""
+    assert f"`{USER_PUSH}`" in TEXT
+    return (USER_PUSH.replace("<release>", "main").replace("<integration>", "dev").replace("<version>", "1.2.0")
+            + " 2>&1 >/dev/null | cat >&2")
 
 
 def recipe():
@@ -183,8 +218,8 @@ def test_the_checks_pass_and_the_repair_joins_the_histories_without_changing_a_f
     assert git(work, "rev-parse", f"{branch}^{{tree}}") == git(work, "rev-parse", "origin/dev^{tree}")
     assert git(work, "rev-list", "--parents", "-n", "1", branch).split()[1:] == [
         git(work, "rev-parse", "origin/dev"), git(work, "rev-parse", "origin/main")]
-    assert git(work, "push", "--dry-run", "origin", f"{branch}:dev") == ""
-    git(work, "push", "-q", "origin", f"{branch}:dev")
+    pushed = subprocess.run(["bash", "-e", "-c", handed()], cwd=work, capture_output=True, text=True)
+    assert pushed.returncode == 0 and "[rejected]" not in pushed.stderr and "forced update" not in pushed.stderr, pushed.stderr
     git(work, "fetch", "-q", "origin")
     assert subprocess.run(["git", "merge-base", "--is-ancestor", "origin/main", "origin/dev"], cwd=work).returncode == 0
     assert git(work, "rev-parse", "origin/dev") == git(work, "rev-parse", branch)
@@ -232,11 +267,12 @@ def test_the_checks_fail_when_the_release_head_is_not_in_dev(squashed):
     assert checked.returncode == 1
 
 
-# ── the push after a rebase, run as the text gives it ────────────────────────
+# ── the one push command of the agent, run as the text gives it ──────────────
 
-def test_the_push_after_a_rebase_names_its_branch_and_cannot_land_on_the_base(tmp_path):
+def test_the_push_of_the_agent_names_its_branch_and_cannot_land_on_the_base(tmp_path):
     """A branch made from origin/dev has dev as its upstream, and git can be set to push there."""
-    command = re.search(r"`(git push --force-with-lease[^`]*)`", TEXT).group(1)
+    assert f"`{AGENT_PUSH}`" in TEXT and "`<head>` is the event's `head`" in flat(TEXT)
+    command = AGENT_PUSH.replace("<head>", "claude/x")
     origin = tmp_path / "origin.git"
     git(tmp_path, "init", "-q", "--bare", str(origin))
     work = tmp_path / "work"
@@ -248,17 +284,24 @@ def test_the_push_after_a_rebase_names_its_branch_and_cannot_land_on_the_base(tm
     assert git(work, "rev-parse", "--abbrev-ref", "claude/x@{upstream}") == "origin/dev"
     commit(work, "task")
     git(work, "push", "-q", "origin", "claude/x:claude/x")
-    git(work, "commit", "-q", "--amend", "-m", "task, after a rebase")
     git(work, "config", "push.default", "upstream")
     dev_before = git(work, "rev-parse", "origin/dev")
 
-    done = subprocess.run(["bash", "-e", "-c", command.replace("<head>", "claude/x")], cwd=work,
-                          capture_output=True, text=True)
+    def run_and_check():
+        done = subprocess.run(["bash", "-e", "-c", command], cwd=work, capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr
+        git(work, "fetch", "-q", "origin")
+        assert git(work, "rev-parse", "origin/dev") == dev_before
+        assert git(work, "rev-parse", "origin/claude/x") == git(work, "rev-parse", "HEAD")
 
-    assert done.returncode == 0, done.stderr
-    git(work, "fetch", "-q", "origin")
-    assert git(work, "rev-parse", "origin/dev") == dev_before
-    assert git(work, "rev-parse", "origin/claude/x") == git(work, "rev-parse", "HEAD")
+    git(work, "commit", "-q", "--amend", "-m", "task, after a rebase")   # the push after a rebase
+    run_and_check()
+    commit(work, "a fix for a failed check")                              # the push after a fix
+    run_and_check()
     said = flat(TEXT)
-    assert "`<head>` is the event's `head`" in said
     assert "Use `<integration>` only when it is a plain name" in said
+    # The trap is live: in this repo a push that names no branch does land on dev.
+    commit(work, "one more")
+    git(work, "push", "-q")
+    git(work, "fetch", "-q", "origin")
+    assert git(work, "rev-parse", "origin/dev") == git(work, "rev-parse", "HEAD") != dev_before
