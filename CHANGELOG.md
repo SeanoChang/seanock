@@ -50,6 +50,15 @@ Removed:
   that map. A copy that is already linked into `~/.claude/skills` is not
   removed by the installer.
 
+Fixed:
+
+- `floor-guard.py` no longer follows a `core.worktree` setting to another
+  folder. When that folder was another repo, the guard read it and printed
+  `floor-guard: clean` for a tree that had lost a test. Now the top of the
+  work tree that git names must be the folder that holds the `.git` of the
+  tree you named; anything else ends the run with exit 2. A submodule
+  checkout and a linked work tree are read as before.
+
 ## 0.2.0 (2026-11-14)
 
 Added:

@@ -1127,6 +1127,22 @@ changes it.
   every call, no change passes until that is fixed. The same holds for a repo
   that the guard cannot read but git can: one that works through `GIT_DIR`,
   or one whose `core.worktree` points elsewhere.
+- **The top of the work tree is checked, not taken from git.** git takes it
+  from a setting when there is one (`core.worktree`), and that setting can
+  name any folder. The guard ran every later call there. When the folder
+  was another repo, the guard read that repo: `floor-guard: clean` for a
+  tree that had lost a test. An adversary review of the comment check
+  found it on 2026-11-15, and it was there since the first version; the
+  sentence above said "did not run" for such a repo, and that was true only
+  when the other folder was no repo. Now the top that git names must be the
+  first folder at or above `--repo` that holds a `.git` entry (the same
+  folder, by device and inode). Anything else is exit 2. A submodule
+  checkout and a repo with its git dir kept elsewhere have the setting too,
+  and it names their own folder, so they are read as before.
+- **Who can write the repo's git settings can do more than that.** The same
+  person can move the base ref to the head commit, and the guard then
+  compares the change with itself. The guard reads a tree that an agent
+  changed; it is no protection against someone who edits `.git` by hand.
 - **The verifier skips the guard for a tree that is not under git, and only
   when the brief says so** and its own `git -C <tree> rev-parse` fails. The
   lead that writes the brief is trusted with that statement, as it is with

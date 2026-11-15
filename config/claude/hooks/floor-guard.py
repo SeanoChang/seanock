@@ -428,12 +428,31 @@ def check(base, new):
     return hits
 
 
+def holder_of_git(folder):
+    """The first folder at or above `folder` that holds a `.git` entry, or None."""
+    here = os.path.realpath(folder)
+    while not os.path.lexists(os.path.join(here, ".git")):
+        parent = os.path.dirname(here)
+        if parent == here:
+            return None
+        here = parent
+    return here
+
+
 def run(repo, base_ref):
     try:
         root = git(repo, "rev-parse", "--show-toplevel")
     except GuardError as e:
         raise GuardError(f"not a git work tree: {repo} ({e})")
     root = os.fsdecode(root[:-1] if root.endswith(b"\n") else root)
+    # git takes the top of the work tree from a setting when there is one
+    # (core.worktree), and that setting can name any folder, also another
+    # repo. Every later call runs in the top, so the top must be the folder
+    # that holds the `.git` of the tree that the caller named.
+    holder = holder_of_git(repo)
+    if holder is None or not os.path.samefile(root, holder):   # one folder, by device and inode
+        raise GuardError(f"git names another folder as its work tree than the one that holds {repo} "
+                         "(a core.worktree setting?)")
     if base_ref is not None:
         if base_ref.startswith("-"):
             raise GuardError(f"bad base ref: {base_ref}")
