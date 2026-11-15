@@ -1747,26 +1747,29 @@ has none.
 - **A line in which anything looks like a secret is held back whole,** and
   only its line number is printed. The forms are: keys of several vendors,
   GitHub, AWS and Slack tokens, a private key header, a JSON web token, a
-  `Bearer` value, a key word such as `password`, `token`, `secret` or
-  `api_key` that may have a value (the next point), a URL with a password
+  `Basic` value, a key word (the next point), a URL with a password
   (with or without a user name), a UUID, a run of 20 or more letters and
   digits that has both, and a run of 24 or more characters of letters,
   digits and `+ / _ = -` that has a small letter, a capital and a digit. No
   form asks what stands next to the secret. So a line with a commit id of
-  20 characters or more, a UUID or a long mixed path is held back too, and
-  so is "the token: 5".
-- **A key word asks for no neighbour.** Two rules. A key word, also inside
-  a longer word, with `:` or `=` anywhere after it in the text:
-  `password: x`, `SECRET_KEY=x`, `config["password"] = "x"`. Or a key word
-  with a dash before it in the same run of letters, digits, `_` and dashes,
-  with or without a value: `--password x`, `--db-password x`. The first
-  version wanted the key word to touch the `:` or `=`, and a flag to start
-  right at the key word. The adversary got a line past it two times
-  (`SECRET_KEY=x`, `--db-password x`), and the class was "the rule asks
-  what stands next to the key word". The cost of the new rule is a line
-  that holds no secret and is counted, not shown: "the per-token price",
-  "the author said: no", "why --no-auth again". On one real history the
-  candidates stayed at 42, and the lines held back went from 1 to 4.
+  20 characters or more, a UUID or a long mixed path is held back too.
+- **A line with a key word is held back, whatever stands next to the
+  word.** The key words, in any letter case and also inside a longer word:
+  `password`, `passwd`, `passphrase`, `passcode`, `pwd`, `secret`, `token`,
+  `api key`, `access key` and `private key` (with a space, `_`, `-` or
+  nothing between), `auth`, `credential`, `bearer`. `pass` alone is none:
+  "make the tests pass" is what a correction says. This is the fourth form
+  of the rule, and the class was "the rule asks what stands next to the
+  key word". The first wanted the key word to touch a `:` or `=`, or a
+  flag to start at the key word. The second took a `:` or `=` anywhere
+  after it, or a dash before it. The adversary got `SECRET_KEY=x` and
+  `--db-password x` past the first, and the verifier got "my password is
+  x" and `setdefault("PASSWORD", "x")` past the second: such a line has no
+  mark that a rule could ask for. The cost is a line that holds no secret
+  and is counted, not shown: "the per-token price", "the token count is
+  wrong", "the author said no". On one real history the rule cost one
+  candidate of 42, a line with the word `token`; 12 lines are held back
+  where the first form held back 1.
 - **A line with a character that is not printable is held back whole:** a
   control character, a zero-width character, a line or paragraph separator.
   Such a character can split a secret or join it to a word, and each way to
@@ -1788,7 +1791,7 @@ has none.
   kinds is held back, and a hex value of 32 characters from a random source
   has both kinds except in about one case in three million.
 - **A secret of a form that is not on the list is not seen.** Examples: a
-  value of fewer than 20 characters with no key word before it, a value of
+  value of fewer than 20 characters in a line with no key word, a value of
   small letters only, `Basic` with fewer than 16 characters after it. An
   automated security review asked to hold back every run of 20 or more
   characters that has two kinds of characters, separators included. That
@@ -1796,8 +1799,8 @@ has none.
   full rule would hold back ordinary paths such as
   `tests/test_runner_part2.py`, which corrections name often. A trial on
   one real history gave the same counts before and after the stricter
-  rules: 42 candidates, 1 line held back. (The key word rule of the
-  second review round changed that count; see the point on key words.)
+  rules: 42 candidates, 1 line held back. (The key word rule changed that
+  count later; see the point on key words.)
 - **`mine` reads git with its own format.** The `GIT_` variables of the
   caller are dropped, and no signature is checked, so that only the
   script's own format reaches it. Each commit starts with a mark that is
@@ -1847,6 +1850,13 @@ has none.
   (`{run: ...}`), is read wrongly.
 - **A path that a command names is not a path that the command runs.**
   `ls tests/`, `rm -r tests/` and `pytest --ignore tests/e2e` count.
+- **A path in quotes inside a longer word of the shell counts:**
+  `--ignore="tests/e2e"`, `PYTHONPATH="tests/" true`. A quote ends a word
+  for the script and not for the shell.
+- **Some right spellings give `not-in-ci`:** an enforcer path with a space
+  in it, a command whose path stands on the next line of a plain YAML
+  value, and a quoted key (`"run": ...`). A `run:` line inside the block
+  of another key (the `script: |` of an action) counts.
 - **Characters that print as nothing and are printable for Python pass:**
   U+3164, U+034F, U+2800, U+FE0F, U+115F, U+180B, U+E0101. One of them
   inside a secret splits it for the script and not for the eye. Found by
@@ -1887,9 +1897,9 @@ has none.
 ### Not tested
 
 - The live history of a second person. The trial ran on one history file
-  (2026-11-15): 42 candidates, 4 lines held back, 20 too long. Before the
-  key word rule it was 42, 1 and 23: the three lines are long ones, which
-  were left out before as well.
+  (2026-11-15): 41 candidates, 12 lines held back, 19 too long. With the
+  first form of the key word rule it was 42, 1 and 23. Only the summary
+  line of each run was read.
 - Signatures made with GnuPG. The test signs its commits with an SSH key.
 - A live session with the user in step 2. A fresh agent followed the text on
   a stand-in project with the user's answer given ahead; it built two rules

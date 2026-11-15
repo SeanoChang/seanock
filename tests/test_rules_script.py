@@ -110,6 +110,28 @@ def hostile_secrets():
         "flag with a long dash": ("mysql \u2014password " + "hunter2xyz", ["hunter2xyz"]),
         "bearer in quotes": ('"Bearer", "' + "abcdefghijklmnopqrstuv" + '"', ["abcdefghijklmnopqrstuv"]),
         "bearer with an equals sign": ("bearer=" + "abcdefghijklmnopqrstuv", ["abcdefghijklmnopqrstuv"]),
+        "basic and a value": ("Basic " + "abcdefghijklmnopqr==", ["abcdefghijklmnopqr"]),
+        "basic in quotes": ('"Basic", "' + "abcdefghijklmnopqr==" + '"', ["abcdefghijklmnopqr"]),
+        # a key word and its value with nothing between them that a rule could ask for
+        "key word, then is, then the value": ("my password is " + "hunter2zq" + ", ok", ["hunter2zq"]),
+        "key word and value as two arguments": ('os.environ.setdefault("PASSWORD", "' + "hunter2zq" + '")', ["hunter2zq"]),
+        "key word, a space, the value": ("write token " + "hunter2zq" + " in code", ["hunter2zq"]),
+        "key word, an arrow, the value": ("password -> " + "hunter2zq", ["hunter2zq"]),
+        "key word, a tab, the value": ("PASSWORD\t" + "hunter2zq", ["hunter2zq"]),
+        "key word in a command": ("gh secret set API --body " + "hunter2zq", ["hunter2zq"]),
+        "key word after a dot in a flag": ("--spring.datasource.password " + "hunter2zq", ["hunter2zq"]),
+        "key word and a letter that looks like a colon": ("password\ua789 " + "hunter2zq", ["hunter2zq"]),
+        "key word in a fish shell line": ("set -x DB_PASSWORD " + "hunter2zq", ["hunter2zq"]),
+        "key word after a slash": ("tool /password " + "hunter2zq", ["hunter2zq"]),
+        # one line for each key word that has none above
+        "passwd": ("passwd " + "hunter2zq", ["hunter2zq"]),
+        "passcode": ("the passcode " + "hunter2zq", ["hunter2zq"]),
+        "pwd": ("pwd " + "hunter2zq", ["hunter2zq"]),
+        "api key with a space": ("the api key " + "hunter2zq", ["hunter2zq"]),
+        "access key with a dash": ("access-key " + "hunter2zq", ["hunter2zq"]),
+        "private key with an underscore": ("private_key " + "hunter2zq", ["hunter2zq"]),
+        "auth": ("auth " + "hunter2zq", ["hunter2zq"]),
+        "credentials": ("the credentials " + "hunter2zq", ["hunter2zq"]),
     }
 
 
@@ -378,8 +400,8 @@ def test_on_random_lines_no_planted_secret_reaches_the_output(world, module):
                                   "again: fix tests/test_verify_runner_part2_more.py first",
                                   "never use Python 3 again in this repo, we are on 3.12",
                                   "don't touch config/claude/settings.json.tmpl or docs/known-limits.md",
-                                  "stop: the token count is wrong again", "the password field is wrong again",
-                                  "the price of a token is wrong again", "use the limit of 4096 tokens, don't guess",
+                                  "make the tests pass, don't skip them", "never bypass the gate",
+                                  "the compass icon is wrong again", "stop: the count is wrong again",
                                   "wrong branch, use claude/merge-follow-fixes-2 instead of dev",
                                   "不對，不要再改 CLAUDE.md 了", "again: commit 1a2b3c4 broke it",
                                   "I said 2026-11-14, not 2026-11-15", "why did you use http://localhost:8080/docs?"])
@@ -388,42 +410,61 @@ def test_an_ordinary_correction_is_not_taken_for_a_secret(module, text):
 
 
 @pytest.mark.parametrize("text", ["the per-token price is wrong again", "use the max-token limit, don't guess",
-                                  "stop using the token: it is the wrong one", "the author said: no emojis",
-                                  "never bypass the gate = always ask", "why --no-auth again"])
+                                  "stop: the token count is wrong again", "the password field is wrong again",
+                                  "the author said: no emojis", "why --no-auth again",
+                                  "use the limit of 4096 tokens, don't guess", "never commit a secret"])
 def test_the_cost_of_a_rule_with_no_neighbour_is_a_line_that_is_counted_and_not_shown(module, text):
-    """A key word counts inside a longer word, with `:` or `=` anywhere after it, or with a dash before it
-    in one run of letters. Such a line is held back also when it holds no secret."""
+    """A line with a key word is held back, whatever stands next to the word, also when the line
+    holds no secret. The rule cannot tell, and a rule that tried was broken three times."""
     assert module.looks_secret(text) is True and module.shown(text) is None
 
 
-def key_word_form_second_version(module, text):
-    """The two key word rules as two patterns that back up, written apart from the script's staged scan."""
-    dash = "[\\-\u2010-\u2015\u2212]"
-    return bool(re.search("(?is)" + module.WORD + ".*[:=]", text)
-                or re.search("(?i)" + dash + "(?:\\w|" + dash + ")*" + module.WORD, text))
+def key_word_second_version(text):
+    """The key words as plain text, looked for with `in`: no pattern."""
+    low = text.lower()
+    words = ["password", "passwd", "passphrase", "passcode", "pwd", "secret", "token", "auth", "credential", "bearer"]
+    words += [first + between + "key" for first in ("api", "access", "private") for between in ("", " ", "_", "-", "\t", "\n")]
+    return any(word in low for word in words)
 
 
-def test_on_random_lines_the_key_word_rules_agree_with_a_second_version(module):
+def test_on_random_lines_a_key_word_anywhere_holds_the_line_back(module):
     rng = random.Random(20261117)
-    pieces = ["password", "PASS", "Token", "api_key", "api-key", "secret", "auth", "pwd", "credentials", "bearer",
-              "pas", "tok", "key", "the", "v2", "x", "9", "_", "-", "--", "\u2014", ":", "=", " ", " ", "\t", "\n", ".",
-              "/", "[", "]", '"', "'", "(", "é", "字"]
+    pieces = ["password", "PASSWD", "Passphrase", "passcode", "pwd", "secret", "Token", "auth", "credentials", "bearer",
+              "api", "access", "private", "key", "KEY", "pass", "pas", "tok", "word", "the", "v2", "x", "9", "_", "-",
+              "--", ":", "=", " ", " ", "\t", "\n", ".", "/", "[", '"', "(", "é", "字"]
     seen = {True: 0, False: 0}
     for _ in range(30000):
-        text = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 9)))
-        want = key_word_form_second_version(module, text)
-        assert module.has_key_word_form(text) is want, repr(text)
+        text = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 6)))
+        want = key_word_second_version(text)
+        assert (re.search("(?i)" + module.WORD, text) is not None) is want, repr(text)
+        if want:
+            assert module.looks_secret("don't use " + text + " again") is True, repr(text)
         seen[want] += 1
-    assert min(seen.values()) > 3000, seen
+    assert min(seen.values()) > 5000, seen
 
 
-@pytest.mark.parametrize("text", ["-" * 1_000_000, "pas-" * 250_000, "a-" * 500_000 + "x", "pass" * 250_000,
-                                  "pass " * 200_000, "-pas" * 250_000 + " x"])
-def test_the_key_word_rules_read_a_long_line_in_linear_time(module, text):
+def closed_second_version(text):
+    """The first version of the step that closes line breaks: one pattern that backs up."""
+    return re.sub(r"\s*[\n\r]\s*", "", text)
+
+
+def test_on_random_lines_line_breaks_are_closed_as_the_first_version_closed_them(module):
+    rng = random.Random(20261119)
+    pieces = ["a", "b9", " ", "  ", "\t", "\n", "\r", "\r\n", "\u00a0", "\u3000", "x-y", "."]
+    for _ in range(20000):
+        text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 10)))
+        assert module.closed(text) == closed_second_version(text), repr(text)
+
+
+@pytest.mark.parametrize("text", ["x" + " " * 1_000_000 + "y", "-" * 1_000_000, "pas-" * 250_000, "a-" * 500_000 + "x",
+                                  " \t" * 500_000, "tok en " * 150_000])
+def test_a_long_line_is_checked_in_linear_time(module, text):
+    """Found in review: closing the line breaks took the square of the length on a long run of
+    spaces (20,000 spaces: 1.75 seconds)."""
     import time
     start = time.monotonic()
-    module.has_key_word_form(text)
-    assert time.monotonic() - start < 5
+    module.looks_secret(text)
+    assert time.monotonic() - start < 10
 
 
 # ── which lines of the history count ─────────────────────────────────────────

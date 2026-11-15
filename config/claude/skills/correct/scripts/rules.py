@@ -77,8 +77,13 @@ class Failed(Exception):
 # word is often part of a longer name (SECRET_KEY, --db-password). A rule that
 # asks for a neighbour does not see those.
 HEX = "0-9a-fA-F"   # a long hex value needs no rule of its own: it is a run of letters and digits (PLAIN_RUN)
-# Each key word counts inside a longer word, so `pass` is also password, passwd and passphrase.
-WORD = r"(?:pass|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth|credential|bearer)"
+# A line with a key word is held back, whatever stands next to the word and
+# also when it holds no secret: "my password is x" has no mark that a rule
+# could ask for. Three rules that asked for one (a `:` or `=` that touches
+# the word, one anywhere after it, a dash before it) each let a line pass.
+# `pass` alone is no key word: "make the tests pass" is what a correction says.
+WORD = (r"(?:pass(?:word|wd|phrase|code)|pwd|secret|token|api[\s_-]?key|access[\s_-]?key|private[\s_-]?key"
+        r"|auth|credential|bearer)")
 SECRETS = [re.compile(pattern) for pattern in (
     r"sk-[A-Za-z0-9_-]{16,}",                                   # API keys of several vendors
     r"gh[pousr]_[A-Za-z0-9]{20,}",
@@ -87,18 +92,24 @@ SECRETS = [re.compile(pattern) for pattern in (
     r"xox[abeprs]-[A-Za-z0-9-]{10,}",
     r"-----BEGIN [A-Z ]*PRIVATE KEY",
     r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}",  # a JSON web token
-    r"(?i)(?:bearer|basic)[\s\\\"',]+[A-Za-z0-9+/_.=-]{16,}",
+    r"(?i)basic[\s\\\"',]+[A-Za-z0-9+/_.=-]{16,}",
+    r"(?i)" + WORD,
     r"://[^\s/@]{0,4096}:[^\s@]{1,4096}@",                         # a URL with a password, with or without a user
     rf"[{HEX}]{{8}}-[{HEX}]{{4}}-[{HEX}]{{4}}-[{HEX}]{{4}}-[{HEX}]{{12}}",   # a UUID
 )]
 LONG_RUN = re.compile(r"[A-Za-z0-9+/_=-]{24,}")     # held back with a small letter, a capital and a digit
 PLAIN_RUN = re.compile(r"[A-Za-z0-9]{20,}")         # held back with a letter and a digit
-LINE_BREAK = re.compile(r"\s*[\n\r]\s*")
-KEY_WORD = re.compile(r"(?i)" + WORD)
-SEPARATOR = re.compile(r"[:=]")
-DASHES = r"\-\u2010-\u2015\u2212"                   # the hyphen, the dashes of a text program, the minus sign
-DASH = re.compile(f"[{DASHES}]")
-RUN = re.compile(rf"[\w{DASHES}]+")                 # letters, digits, "_" and dashes with nothing between them
+WHITE = re.compile(r"\s+")
+
+
+def closed(text):
+    """The text with each run of white space that holds a line break taken out.
+
+    A secret that was copied from a wrapped line has a break in it. One pass
+    over the runs: a pattern that looks for a break inside white space backs
+    up on a long run of spaces.
+    """
+    return WHITE.sub(lambda run: "" if "\n" in run.group() or "\r" in run.group() else run.group(), text)
 
 
 def visible(text):
@@ -107,29 +118,8 @@ def visible(text):
     return "".join(ch for ch in text if ch.isprintable() or ch.isspace())
 
 
-def has_key_word_form(text):
-    """True when a key word may have a value in the text. Two rules, and neither asks for a neighbour.
-
-    A key word, also inside a longer word, with `:` or `=` anywhere after it:
-    `password: x`, `SECRET_KEY=x`, `config["password"] = "x"`. Or a key word
-    with a dash before it in the same run of letters, digits, `_` and dashes:
-    `--password x`, `--db-password x`. The second rule asks for no value, so
-    "the per-token price" is held back too. Each step reads the text once.
-    """
-    word = KEY_WORD.search(text)
-    if not word:
-        return False
-    if SEPARATOR.search(text, word.end()):     # no key word holds another one, so the first one ends first
-        return True
-    for run in RUN.finditer(text):
-        dash = DASH.search(run.group())
-        if dash and KEY_WORD.search(run.group(), dash.end()):
-            return True
-    return False
-
-
 def has_secret_form(text):
-    if any(pattern.search(text) for pattern in SECRETS) or has_key_word_form(text):
+    if any(pattern.search(text) for pattern in SECRETS):
         return True
     for run in LONG_RUN.findall(text):
         if re.search(r"[a-z]", run) and re.search(r"[A-Z]", run) and re.search(r"[0-9]", run):
@@ -158,8 +148,8 @@ def looks_secret(text):
     if any(not ch.isprintable() and ch not in "\t\n\r" and unicodedata.category(ch) != "Zs" for ch in text):
         return True
     seen = visible(text)
-    closed = LINE_BREAK.sub("", seen)
-    return any(has_secret_form(form) for form in (seen, closed, printed(seen), printed(closed), printed(text)))
+    joined = closed(seen)
+    return any(has_secret_form(form) for form in (seen, joined, printed(seen), printed(joined), printed(text)))
 
 
 def printed(text):
