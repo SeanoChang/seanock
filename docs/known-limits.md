@@ -1759,16 +1759,28 @@ has none.
 - **`check` runs the app.** Without `--no-run` it starts the runner copy of
   the project (`verify run`), which builds the app and runs every step in
   temp folders. The project's own code runs, as in any verify run. With
-  `--no-run`, nothing of the app runs. Git is called to list the tracked
-  files, and the doctor of the runner asks git if the evidence folder is
-  ignored. Both calls get no `GIT_` variable of the caller, and the file
-  watcher of the repo's settings is off for them (an automated security
-  review asked for this, 2026-11-15; a test then showed that the doctor's
-  call started that program).
+  `--no-run`, nothing of the app runs: one file of the project is started,
+  the runner copy for its doctor, and only as the next two points say. Git
+  is called to list the tracked files, and the doctor of the runner asks
+  git if the evidence folder is ignored. Both calls get no `GIT_` variable
+  of the caller, and the file watcher of the repo's settings is off for
+  them (an automated security review asked for this, 2026-11-15; a test
+  then showed that the doctor's call started that program).
 - **The runner copy is started only when it is the current runner, byte for
   byte.** A copy that is behind, or that someone changed, is `runner-old`,
   and the doctor and the run are left out until `bump` brought it up. So
   `check` never runs a runner that the installed skills do not hold.
+- **The runner copy is started in Python's isolated mode (`-I`),** for the
+  doctor and for the run. A plain start puts the copy's own folder first on
+  the module path. The adversary's third round put a tracked `tempfile.py`
+  beside the copy: it ran as code of the project under `--no-run`, it left
+  a `__pycache__` folder, and the result was still `drift: clean`. With
+  `-I` the copy loads the modules of the Python that runs `drift.py` and
+  nothing from its own folder, from the project or from a `PYTHON`
+  variable. The steps of a full run still get the caller's variables: `-I`
+  changes how the runner starts, not what it hands on. The trust rule in
+  one sentence: under `--no-run`, the bytes that run are the installed
+  skills' and Python's own, and no file of the project is code.
 - **What the runner refuses before a run is a finding, and the runner itself
   is asked for it.** The map: `check` loads the text of the current runner
   as a module, from the bytes that it compares with the copy, and calls its
@@ -1844,6 +1856,15 @@ has none.
   result line. By the rule of the text, that is not a result.
 - **A locale that cannot print a character of a finding ends the script
   with a Python error** and no last line. That is not a result either.
+- **When git cannot list the tracked files, nothing else is printed.** The
+  run ends with `drift: error`, and a `failed-map` or `runner-old` that the
+  script already knew is not above it. Exit 2 means that the list is not
+  whole, so no wrong result follows.
+- **A build command that starts with a placeholder is not checked by the
+  doctor.** When a map names `{root}/scripts/build.sh` and the file has
+  moved, `--no-run` says `clean`, and a full run ends with `drift: error`
+  (the runner's exit 2), not with `failed-build`. The cause is in the
+  runner: its doctor passes over a tool with a placeholder.
 - **A file that changes while `check` runs** (the map or the copy, between
   the reading and the run) can give findings of two states. A copy that is
   swapped between the comparison and its start is started.

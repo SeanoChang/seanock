@@ -24,7 +24,10 @@ python3 ~/.claude/skills/maintain-verify-skill/scripts/drift.py check --project 
 `check` starts the runner, so it builds the app and runs every step, each in
 a fresh temp folder, as a verify run does. For a quick look, leave the run
 out with `--no-run`. The paths, the runner copy, the form of the map and
-the doctor of the runner are still checked, and nothing of the app runs:
+the doctor of the runner are still checked, and nothing of the app runs.
+For the doctor, the runner copy is started, only when it is the current
+runner byte for byte and in Python's isolated mode, so no file of the
+project is loaded as code:
 
 ```bash
 python3 ~/.claude/skills/maintain-verify-skill/scripts/drift.py check --project <project root> --no-run

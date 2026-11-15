@@ -35,9 +35,10 @@ nothing of the project. Then the run. Each step is left out when the one
 before it gave a finding.
 
 The runner copy is started only when it is the current runner, byte for
-byte. A copy that is behind, or that someone changed, is the finding
-runner-old, and the doctor and the run are left out until `bump` brought it
-up. So a runner that ends without a result (it was interrupted, it ended on
+byte, and in Python's isolated mode (-I), so no module beside the copy or in
+the project is loaded in place of a module of Python. A copy that is behind,
+or that someone changed, is the finding runner-old, and the doctor and the
+run are left out until `bump` brought it up. So a runner that ends without a result (it was interrupted, it ended on
 an error of its own) is always "drift: error", and never a finding.
 
 --no-run leaves out the run, and so failed-step and failed-build.
@@ -235,9 +236,14 @@ def path_findings(features, files):
 # ── the runner's run ─────────────────────────────────────────────────────────
 
 def ask_runner(project, skill, command, env, limit):
-    """(exit code, lines) of one command of the runner copy. The caller made sure that the copy is the current runner."""
+    """(exit code, lines) of one command of the runner copy. The caller made sure that the copy is the current runner.
+
+    The copy is started in Python's isolated mode (-I). A plain start puts the copy's own folder first on the
+    module path, so a file named `tempfile.py` beside the copy would be loaded in place of the real module:
+    code of the project, in a check that may say that nothing of the app runs. With -I the copy loads the
+    modules of this Python only, and no PYTHON variable is read."""
     try:
-        done = subprocess.run([sys.executable, str(skill / "verify"), command], cwd=str(project), env=env,
+        done = subprocess.run([sys.executable, "-I", str(skill / "verify"), command], cwd=str(project), env=env,
                               capture_output=True, timeout=limit, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         raise Failed(f"the runner did not end `{command}` within {limit} s")

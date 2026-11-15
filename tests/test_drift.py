@@ -250,6 +250,30 @@ def test_the_file_list_comes_from_the_project_whatever_the_caller_or_the_repo_se
     assert not marker.exists()
 
 
+@pytest.mark.parametrize("no_run", [True, False], ids=["no-run", "full run"])
+def test_a_module_beside_the_runner_copy_or_on_the_callers_path_is_never_loaded(project, tmp_path, no_run):
+    """Found in review: the copy was started as a plain script, so Python looked for the modules it imports
+    in the copy's own folder first. A tracked `tempfile.py` there ran as part of a check that says that
+    nothing of the app runs, and the result was still clean."""
+    marker = tmp_path / "ran"
+    trap = f"open({str(marker)!r}, 'a').write(__name__ + '\\n')\n"
+    for folder in (project.skill, project.root):   # the copy's own folder, and the folder the copy is started in
+        for name in ("argparse.py", "tempfile.py", "json.py", "shutil.py", "sitecustomize.py", "usercustomize.py"):
+            (folder / name).write_text(trap)
+    project.write_map([feature("greet", step("hi"))])
+    project.commit()
+
+    code, lines = project.drift("check", *(["--no-run"] if no_run else []))
+
+    assert not marker.exists(), marker.read_text()
+    assert not list(project.skill.rglob("__pycache__")), "the copy's folder got a cache folder"
+    if no_run:
+        assert (code, lines) == (0, ["drift: clean"])
+        assert project.runs() == []
+    else:
+        assert code == 1 and lines[-1] == "drift: summary stale=0 uncovered=0 failed=1", lines
+
+
 def test_no_run_does_not_start_the_runner(project):
     project.write_map([feature("greet", step("hi"))])
     project.commit()

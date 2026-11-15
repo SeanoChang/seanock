@@ -139,6 +139,9 @@ def test_what_the_runner_refuses_is_a_finding_and_the_text_says_what_to_do(tmp_p
     assert "The script starts the runner copy only when it is the current runner, byte for byte." in said
     assert "With a `runner-old` line, the doctor and the run are left out: bring the runner up first (below), then look again." in said
     assert "The paths, the runner copy, the form of the map and the doctor of the runner are still checked, and nothing of the app runs" in said
+    assert ("For the doctor, the runner copy is started, only when it is the current runner byte for byte and in "
+            "Python's isolated mode, so no file of the project is loaded as code") in said
+    assert '[sys.executable, "-I", str(skill / "verify"), command]' in SOURCE   # what the sentence stands on
     assert "The result is then never `drift: clean`." in said
 
     project = make_project(tmp_path / "proj")
