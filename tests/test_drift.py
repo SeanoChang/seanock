@@ -300,57 +300,76 @@ def test_with_no_current_runner_beside_it_the_runner_is_unknown_and_that_is_a_fi
 
 # ── the project's runner as a source of results ──────────────────────────────
 
-def test_a_runner_that_refuses_to_start_is_a_finding_and_the_other_findings_stay(project):
-    """The doctor of the runner finds a gap, so no step runs. That is about the skill, and it hides nothing."""
-    project.write_map([feature("greet", {"kind": "run", "argv": ["no-such-tool-xyz"], "expect": {"exit": 0}},
+MISSING = {"kind": "run", "argv": ["no-such-tool-xyz"], "expect": {"exit": 0}}
+
+
+@pytest.mark.parametrize("mode", [(), ("--no-run",)])
+def test_a_gap_of_the_runners_doctor_is_a_finding_with_and_without_the_run(project, mode):
+    """The doctor refuses the run, so no step runs. That is about the skill, and it hides nothing."""
+    project.write_map([feature("greet", MISSING, {"kind": "run", "argv": ["bin/gone"], "expect": {"exit": 0}},
                                paths=("src/app.py", "src/moved.py"))])
-    (project.skill / "verify").write_bytes(RUNNER.read_bytes() + b"\n# an older copy\n")
     project.commit()
 
-    code, lines = project.drift("check")
-
-    assert (code, lines) == (1, ["stale-path greet src/moved.py",
-                                 "failed-run the doctor found 1 gap(s): tool-missing no-such-tool-xyz",
-                                 "runner-old bytes differ, both runner 1",
-                                 "drift: summary stale=1 uncovered=0 failed=1 runner=old"])
+    assert project.drift("check", *mode) == (
+        1, ["stale-path greet src/moved.py", "failed-doctor tool-missing no-such-tool-xyz", "failed-doctor tool-missing bin/gone",
+            "drift: summary stale=1 uncovered=0 failed=2"])
     assert project.runs() == []
 
 
-def test_each_gap_of_the_doctor_is_named(project):
-    project.write_map([feature("greet", {"kind": "run", "argv": ["no-such-tool-xyz"], "expect": {"exit": 0}},
-                               {"kind": "run", "argv": ["bin/gone"], "expect": {"exit": 0}})])
+DOCTOR_GAPS = {
+    "a value of env outside the temp folder": (dict(env={"HOME": "/Users/x"}), "env-outside-tmp HOME"),
+    "a fixture folder that is not there": (dict(fixture="fx"), "fixture-missing fx"),
+    "a tool that is not there": (dict(build=["no-such-build-tool-xyz"]), "tool-missing no-such-build-tool-xyz"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(DOCTOR_GAPS))
+def test_what_the_doctor_reads_from_the_map_is_seen_without_the_run(project, name):
+    """The map has the right form, and the runner still refuses to run with it. A look without the run says so."""
+    top, gap = DOCTOR_GAPS[name]
+    project.write_map([GREET], **top)
+    project.commit()
+    assert project.verify("doctor") == (1, [gap, "verify-demo: summary gaps=1"])
+    expected = (1, [f"failed-doctor {gap}", "drift: summary stale=0 uncovered=0 failed=1"])
+
+    assert project.drift("check", "--no-run") == expected
+    assert project.drift("check") == expected
+    assert project.runs() == []
+
+
+def test_evidence_that_git_does_not_ignore_is_a_gap_of_the_doctor(project):
+    (project.root / ".gitignore").write_text("")
     project.commit()
 
-    assert project.drift("check") == (
-        1, ["failed-run the doctor found 2 gap(s): tool-missing no-such-tool-xyz; tool-missing bin/gone",
-            "drift: summary stale=0 uncovered=0 failed=1"])
-
-
-def test_an_old_copy_that_refuses_the_map_is_a_finding_beside_runner_old(project):
-    """The map has a key that the copy does not know. The line that leads to the fix, runner-old, must be there."""
-    old = RUNNER.read_text().replace('"fixture", "env", "timeout_s"', '"fixture", "timeout_s"')
-    assert old != RUNNER.read_text()
-    (project.skill / "verify").write_text(old)
-    project.write_map([GREET], env={"GREETING": "hello"})
-    project.commit()
-
-    assert project.drift("check") == (
-        1, ["failed-run the map has a key this runner does not know: env", "runner-old bytes differ, both runner 1",
-            "drift: summary stale=0 uncovered=0 failed=1 runner=old"])
     assert project.drift("check", "--no-run") == (
-        1, ["runner-old bytes differ, both runner 1", "drift: summary stale=0 uncovered=0 failed=0 runner=old"])
+        1, ["failed-doctor evidence-not-ignored .verify/", "drift: summary stale=0 uncovered=0 failed=1"])
 
 
-def test_the_runner_copy_is_read_before_it_runs(project):
-    """A copy that writes the current runner over itself while it runs is still old."""
+@pytest.mark.parametrize("mode", [(), ("--no-run",)])
+def test_a_copy_that_is_not_the_current_runner_is_never_started(project, mode):
+    """Only the bytes of the current runner are run. An old copy, or one that someone changed, is a finding."""
     copy = project.skill / "verify"
-    copy.write_text("import pathlib, sys\n"
-                    f"pathlib.Path(__file__).write_bytes(pathlib.Path({str(RUNNER)!r}).read_bytes())\n"
-                    "print('verify-demo: pass 1/1 abc')\n")
+    copy.write_text("import pathlib\npathlib.Path(__file__).with_name('ran').write_text('x')\nprint('verify-demo: pass 1/1 abc')\n")
+    project.write_map([feature("greet", MISSING, paths=("src/app.py", "src/moved.py"))])
+    project.commit()
 
-    assert project.drift("check") == (1, ["runner-old copy names no runner number, current runner 1",
-                                          "drift: summary stale=0 uncovered=0 failed=0 runner=old"])
-    assert copy.read_bytes() == RUNNER.read_bytes()
+    assert project.drift("check", *mode) == (
+        1, ["stale-path greet src/moved.py", "runner-old copy names no runner number, current runner 1",
+            "drift: summary stale=1 uncovered=0 failed=0 runner=old"])
+    assert not (project.skill / "ran").exists() and project.runs() == []
+
+
+def fake_current(project, tmp_path, run="print('verify-demo: pass 1/1 abc')", code=0,
+                 doctor="print('verify-demo: doctor clean')", doctor_code=0):
+    """A stand-in for the current runner, beside a copy of drift.py, and the same bytes as the copy of the
+    project. So drift starts it. Its doctor and its run print what the test gives."""
+    text = ("import sys\nRUNNER = 1\n\n\nclass MapError(Exception):\n    pass\n\n\ndef load_map(path=None):\n    return {}\n\n\n"
+            "if __name__ == '__main__':\n"
+            "    if sys.argv[1] == 'doctor':\n"
+            f"        {doctor}\n        sys.exit({doctor_code})\n"
+            f"    {run}\n    sys.exit({code})\n")
+    (project.skill / "verify").write_text(text)
+    return drift_elsewhere(tmp_path, text)
 
 
 FAKE_RUNNERS = {
@@ -358,15 +377,21 @@ FAKE_RUNNERS = {
     "exit 1 and a last line that is not its own": ("print('fail greet step 1: x'); print('done')", 1),
     "exit 1 and a summary with no failed step": ("print('verify-demo: summary pass=0 fail=1 unverified=0 abc')", 1),
     "exit 0 and a summary line": ("print('verify-demo: summary pass=1 fail=0 unverified=0 abc')", 0),
+    "exit 0 and a summary with a failed step": ("print('fail greet step 1: x'); "
+                                                "print('verify-demo: summary pass=0 fail=1 unverified=0 abc')", 0),
+    "exit 3 and a summary with a failed step": ("print('fail greet step 1: x'); "
+                                                "print('verify-demo: summary pass=0 fail=1 unverified=0 abc')", 3),
     "exit 1 and a pass line": ("print('fail greet step 1: x'); print('verify-demo: pass 1/1 abc')", 1),
     "the result line of another app": ("print('fail greet step 1: x'); "
                                        "print('verify-other: summary pass=0 fail=1 unverified=0 abc')", 1),
     "exit 3": ("print('verify-demo: pass 1/1 abc')", 3),
-    "exit 2 and no error line": ("print('oops')", 2),
     "exit 2 and no output": ("pass", 2),
-    "exit 2 and the error line of another app": ("print('verify-other: error the doctor found 1 gap(s)')", 2),
-    "exit 2 and an error line with no reason": ("print('verify-demo: error ')", 2),
     "exit 2 and a pass line": ("print('verify-demo: pass 1/1 abc')", 2),
+    # the runner's own words for a run that it could not finish: never a finding, never clean
+    "the run was interrupted": ("print('verify-demo: error the run was interrupted')", 2),
+    "the runner ended on an error of its own": ("print('verify-demo: error NotADirectoryError: x')", 2),
+    "the build could not start": ("print('verify-demo: error the build could not start: x')", 2),
+    "a gap that the doctor found only in the run": ("print('tool-missing x'); print('verify-demo: error the doctor found 1 gap(s)')", 2),
     "exit 0 and an error line": ("print('verify-demo: error x')", 0),
     "exit 1 and an error line": ("print('fail greet step 1: x'); print('verify-demo: error x')", 1),
     "killed by a signal": ("import os, signal; os.kill(os.getpid(), signal.SIGKILL)", None),
@@ -374,25 +399,91 @@ FAKE_RUNNERS = {
 
 
 @pytest.mark.parametrize("name", sorted(FAKE_RUNNERS))
-def test_runner_output_that_is_not_a_result_is_an_error(project, name):
+def test_runner_output_that_is_not_a_result_is_an_error(project, tmp_path, name):
     body, code = FAKE_RUNNERS[name]
-    (project.skill / "verify").write_text(f"import sys\n{body}\nsys.exit({code})\n")
+    script = fake_current(project, tmp_path, run=body, code=code)
 
-    code, lines = project.drift("check")
+    code, lines = project.drift("check", script=script)
 
-    assert code == 2 and len(lines) == 1 and lines[0].startswith("drift: error "), lines
+    assert code == 2 and len(lines) == 1 and lines[0].startswith("drift: error the runner ended with "), lines
+    assert project.drift("check", "--no-run", script=script) == (0, ["drift: clean"])
 
 
-def test_a_fake_runner_with_a_real_result_shape_is_read(project):
-    (project.skill / "verify").write_text("print('fail greet step 2: exit 1, expected 0')\n"
-                                          "print('not-removed /x')\nprint('evidence .verify/runs/x')\n"
-                                          "print('verify-demo: summary pass=0 fail=1 unverified=0 abc')\n"
-                                          "raise SystemExit(1)\n")
+FAKE_DOCTORS = {
+    "exit 0 and no result line": ("print('all good')", 0),
+    "exit 0 and a line above the clean line": ("print('tool-missing x'); print('verify-demo: doctor clean')", 0),
+    "exit 1 and a clean line": ("print('verify-demo: doctor clean')", 1),
+    "exit 1 and a summary with no gap line": ("print('verify-demo: summary gaps=1')", 1),
+    "exit 1 and fewer gap lines than the summary counts": ("print('tool-missing x'); print('verify-demo: summary gaps=2')", 1),
+    "exit 1 and more gap lines than the summary counts": ("print('a b'); print('c d'); print('verify-demo: summary gaps=1')", 1),
+    "exit 1 and a summary of no gap": ("print('verify-demo: summary gaps=0')", 1),
+    "exit 0 and a summary line": ("print('tool-missing x'); print('verify-demo: summary gaps=1')", 0),
+    "the summary line of another app": ("print('tool-missing x'); print('verify-other: summary gaps=1')", 1),
+    "the summary line of a run": ("print('fail greet step 1: x'); print('verify-demo: summary pass=0 fail=1 unverified=0 abc')", 1),
+    "exit 2 and an error line": ("print('verify-demo: error the map has no features')", 2),
+    "exit 3": ("print('verify-demo: doctor clean')", 3),
+    "killed by a signal": ("import os, signal; os.kill(os.getpid(), signal.SIGKILL)", None),
+}
 
-    code, lines = project.drift("check")
 
-    assert lines == ["failed-step greet step 2: exit 1, expected 0", "runner-old copy names no runner number, current runner 1",
-                     "drift: summary stale=0 uncovered=0 failed=1 runner=old"]
+@pytest.mark.parametrize("name", sorted(FAKE_DOCTORS))
+@pytest.mark.parametrize("mode", [(), ("--no-run",)])
+def test_doctor_output_that_is_not_a_result_is_an_error(project, tmp_path, name, mode):
+    body, code = FAKE_DOCTORS[name]
+    script = fake_current(project, tmp_path, doctor=body, doctor_code=code,
+                          run="import pathlib; pathlib.Path(__file__).with_name('ran').write_text('x')")
+
+    code, lines = project.drift("check", *mode, script=script)
+
+    assert code == 2 and len(lines) == 1 and lines[0].startswith("drift: error the doctor of the runner ended with "), lines
+    assert not (project.skill / "ran").exists()
+
+
+def test_a_fake_runner_with_a_real_result_shape_is_read(project, tmp_path):
+    script = fake_current(project, tmp_path, code=1, run=(
+        "print('fail greet step 2: exit 1, expected 0'); print('not-removed /x'); print('evidence .verify/runs/x'); "
+        "print('verify-demo: summary pass=0 fail=1 unverified=0 abc')"))
+
+    assert project.drift("check", script=script) == (
+        1, ["failed-step greet step 2: exit 1, expected 0", "drift: summary stale=0 uncovered=0 failed=1"])
+
+
+def test_a_fake_doctor_with_a_real_result_shape_is_read_and_then_nothing_runs(project, tmp_path):
+    script = fake_current(project, tmp_path, doctor_code=1,
+                          doctor="print('tool-missing a b'); print('env-outside-tmp X'); print('verify-demo: summary gaps=2')",
+                          run="import pathlib; pathlib.Path(__file__).with_name('ran').write_text('x')")
+
+    assert project.drift("check", script=script) == (
+        1, ["failed-doctor tool-missing a b", "failed-doctor env-outside-tmp X", "drift: summary stale=0 uncovered=0 failed=2"])
+    assert not (project.skill / "ran").exists()
+
+
+@pytest.mark.parametrize("stage", ["doctor", "run"])
+def test_a_check_that_could_not_finish_still_shows_the_findings_it_has(project, tmp_path, stage):
+    """Exit 2 is not a result, and the list is not complete. But a stale path that was found is not thrown away."""
+    broken = dict(doctor="print('oops')") if stage == "doctor" else dict(run="print('verify-demo: error the run was interrupted')", code=2)
+    script = fake_current(project, tmp_path, **broken)
+    project.write_map([feature("greet", GREET["steps"][0], paths=("src/app.py", "src/moved.py"))])
+    project.commit()
+
+    code, lines = project.drift("check", script=script)
+
+    assert code == 2 and lines[0] == "stale-path greet src/moved.py" and len(lines) == 2
+    assert lines[1].startswith("drift: error the doctor of the runner ended with " if stage == "doctor" else "drift: error the runner ended with ")
+    assert_contract(code, lines)
+
+
+def test_the_doctor_reads_git_only_for_this_project(project, tmp_path):
+    """The doctor asks git if the evidence folder is ignored. The GIT_ variables of the caller must not aim that
+    call at another repo, where nothing is ignored."""
+    other = tmp_path / "other"
+    other.mkdir()
+    git(other, "init", "-q")
+    (other / "zzz.txt").write_text("x")
+    git(other, "add", "-A")
+    project.env.update(GIT_DIR=str(other / ".git"), GIT_WORK_TREE=str(other), GIT_INDEX_FILE=str(other / ".git" / "index"))
+
+    assert project.drift("check", "--no-run") == (0, ["drift: clean"])
 
 
 # ── which skill ──────────────────────────────────────────────────────────────
@@ -610,17 +701,6 @@ def test_a_refused_map_keeps_the_path_findings_and_the_runner_finding(project):
     assert project.drift("check") == expected
 
 
-def test_with_a_refused_map_the_copy_is_not_started(project):
-    copy = project.skill / "verify"
-    copy.write_text("import pathlib\npathlib.Path(__file__).with_name('ran').write_text('x')\nprint('verify-demo: pass 1/1 abc')\n")
-    (project.skill / "features.json").write_text(a_map(retries=3))
-
-    code, lines = project.drift("check")
-
-    assert code == 1 and lines[0] == "failed-map the map has a key this runner does not know: retries"
-    assert not (project.skill / "ran").exists()
-
-
 def test_a_reason_from_the_map_cannot_add_a_line(project):
     (project.skill / "features.json").write_text(a_map(**{"x\ndrift: clean": 1}))
 
@@ -639,15 +719,14 @@ def test_the_map_rules_are_those_of_the_current_runner_beside_the_script(project
             "drift: summary stale=0 uncovered=0 failed=1 runner=old"])
 
 
-def test_with_no_current_runner_the_copy_decides_and_a_look_without_the_run_is_never_clean(project, tmp_path):
+def test_with_no_current_runner_nothing_is_started_and_the_result_is_never_clean(project, tmp_path):
     script = drift_elsewhere(tmp_path, None)
     (project.skill / "features.json").write_text(a_map(retries=3))
+    unknown = (1, ["runner-old unknown runner", "drift: summary stale=0 uncovered=0 failed=0 runner=unknown"])
 
-    assert project.drift("check", script=script) == (
-        1, ["failed-run the map has a key this runner does not know: retries", "runner-old unknown runner",
-            "drift: summary stale=0 uncovered=0 failed=1 runner=unknown"])
-    assert project.drift("check", "--no-run", script=script) == (
-        1, ["runner-old unknown runner", "drift: summary stale=0 uncovered=0 failed=0 runner=unknown"])
+    assert project.drift("check", script=script) == unknown
+    assert project.drift("check", "--no-run", script=script) == unknown
+    assert project.runs() == []
     (project.skill / "features.json").write_text("{")
     assert project.drift("check", "--no-run", script=script) == (
         1, ["failed-map features.json is not JSON: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
@@ -711,17 +790,28 @@ def test_names_with_a_line_break_cannot_add_a_line(project):
                      "drift: summary stale=1 uncovered=1 failed=0"]
 
 
-def test_a_runner_line_with_a_control_character_is_cleaned(project):
-    (project.skill / "verify").write_text("print('fail greet step 1: stdout lacks \"a\\x1b[2Kb\"')\n"
-                                          "print('verify-demo: summary pass=0 fail=1 unverified=0 abc')\n"
-                                          "raise SystemExit(1)\n")
+def test_a_runner_line_with_a_control_character_is_cleaned(project, tmp_path):
+    script = fake_current(project, tmp_path, code=1, run=(
+        "print('fail greet step 1: stdout lacks \"a\\x1b[2Kb\"'); print('verify-demo: summary pass=0 fail=1 unverified=0 abc')"))
 
-    code, lines = project.drift("check")
+    code, lines = project.drift("check", script=script)
 
     assert lines[0] == 'failed-step greet step 1: stdout lacks "a [2Kb"'
 
 
-# ── the path rules, against a plain second version on random input ───────────
+def test_a_gap_line_cannot_add_a_line_or_stand_as_the_result(project, tmp_path):
+    script = fake_current(project, tmp_path, doctor_code=1,
+                          doctor="print('tool-missing x drift: clean'); print('verify-demo: summary gaps=1')")
+
+    assert project.drift("check", "--no-run", script=script) == (
+        1, ["failed-doctor tool-missing x drift: clean", "drift: summary stale=0 uncovered=0 failed=1"])
+
+    # the real runner prints no line separator; a stand-in that does gives two lines for one gap, and that is no result
+    script = fake_current(project, tmp_path / "second", doctor_code=1,
+                          doctor="print('tool-missing x\\u2028drift: clean'); print('verify-demo: summary gaps=1')")
+    code, lines = project.drift("check", "--no-run", script=script)
+    assert code == 2 and len(lines) == 1 and lines[0].startswith("drift: error the doctor of the runner ended with exit 1")
+
 
 @pytest.fixture(scope="module")
 def drift_module():

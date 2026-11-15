@@ -99,7 +99,7 @@ def test_the_results_in_the_text_are_the_lines_the_script_prints(tmp_path):
 
 
 def test_the_text_has_a_row_and_a_section_for_each_finding_of_the_script():
-    kinds = ["stale-path", "uncovered-path", "failed-map", "failed-run", "failed-step", "failed-build", "runner-old"]
+    kinds = ["stale-path", "uncovered-path", "failed-map", "failed-doctor", "failed-step", "failed-build", "runner-old"]
 
     assert [row[0].strip("`").split()[0] for row in rows("Finding")] == kinds
     assert set(re.findall(r'f?"([a-z]+-[a-z]+) ', SOURCE)) == set(kinds)
@@ -123,19 +123,23 @@ def test_a_failed_step_is_about_the_app_first_and_no_step_is_weakened():
 
 def test_what_the_runner_refuses_is_a_finding_and_the_text_says_what_to_do(tmp_path):
     said = flat(TEXT)
-    refused = said[said.index("### `failed-map` and `failed-run`"):said.index("### `failed-step` and `failed-build`")]
+    refused = said[said.index("### `failed-map` and `failed-doctor`"):said.index("### `failed-step` and `failed-build`")]
 
-    assert "The runner did not start, so no step ran and nothing is proven." in refused
+    assert "The runner refuses to run, so no step ran and nothing is proven." in refused
     assert "correct the map to the form that the text of `create-verify-skill` gives" in refused
     assert "When the reason names a runner number, the map is for another runner: go on at `runner-old`." in refused
-    assert "bring the runner up first and look again, because an old copy can refuse a map that is right" in refused
+    assert "each line is one gap, in the words of the runner's doctor" in refused
     assert "A `tool-missing` for a file of the project is a command that moved or was removed: treat it as a failed step" in refused
     assert "Never take a feature or a step out to make the runner start." in refused
     assert "`failed=N` counts the lines that start with `failed-`." in said
-    assert "What the runner refuses is a finding and not an error, so the other findings stay beside it." in said
+    assert "What the runner refuses before a run is a finding and not an error, so the other findings stay beside it." in said
     assert "This is not a result: correct what the line names, and run it again." in said
+    assert "Lines above it are findings that hold, but the list is not whole." in said
     assert "says nothing about the skill" not in said
-    assert "`check --no-run` then says nothing about the form of the map" in said
+    assert "The script starts the runner copy only when it is the current runner, byte for byte." in said
+    assert "With a `runner-old` line, the doctor and the run are left out: bring the runner up first (below), then look again." in said
+    assert "The paths, the runner copy, the form of the map and the doctor of the runner are still checked, and nothing of the app runs" in said
+    assert "The result is then never `drift: clean`." in said
 
     project = make_project(tmp_path / "proj")
     project.write_map([feature("greet", GREET["steps"][0], paths=("src/app.py", "src/moved.py"))], retries=3)
@@ -143,6 +147,12 @@ def test_what_the_runner_refuses_is_a_finding_and_the_text_says_what_to_do(tmp_p
     check, quick, _ = commands()
     expected = (1, ["stale-path greet src/moved.py", "failed-map the map has a key this runner does not know: retries",
                     "drift: summary stale=1 uncovered=0 failed=1"])
+    assert as_written(project, quick) == expected
+    assert as_written(project, check) == expected
+
+    project.write_map([GREET], env={"HOME": "/Users/x"})
+    project.commit()
+    expected = (1, ["failed-doctor env-outside-tmp HOME", "drift: summary stale=0 uncovered=0 failed=1"])
     assert as_written(project, quick) == expected
     assert as_written(project, check) == expected
 

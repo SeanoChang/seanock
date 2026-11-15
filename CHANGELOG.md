@@ -53,10 +53,10 @@ Added:
   to the project. Its script `drift.py check` lists where the skill no
   longer fits: a path of the feature map that matches no tracked file,
   tracked files that no feature covers, a map that the current runner
-  refuses, a runner copy that refuses to start, a step or a build that fails
-  in a real run of the runner, and a runner copy that is not the current
-  runner. What the runner refuses is a finding, so the other findings stay
-  beside it.
+  refuses, a gap that the runner's doctor finds, a step or a build that
+  fails in a real run of the runner, and a runner copy that is not the
+  current runner. The runner itself is asked at each stage, and the copy is
+  started only when it is the current runner, byte for byte.
   `drift.py bump` replaces the runner copy, and refuses when the map is for
   another runner number. The skill text says what to do with each finding.
   A failed step is first a finding about the app: a step changes only when

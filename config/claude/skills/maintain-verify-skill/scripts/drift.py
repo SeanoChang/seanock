@@ -17,9 +17,8 @@ check prints one line per finding, then a last line:
                                              that some pattern reaches into
   failed-map <reason>                        the current runner refuses the
                                              map, for this reason
-  failed-run <reason>                        the runner copy ended before a
-                                             result: its own reason, then the
-                                             gaps of its doctor
+  failed-doctor <gap>                        a gap that the doctor of the runner
+                                             finds, so that it refuses to run
   failed-step <feature> step <n>: <reason>   a step of the runner's run that
                                              failed or could not start
   failed-build <reason>                      the runner's build failed
@@ -28,13 +27,20 @@ check prints one line per finding, then a last line:
                                              runner" when there is no current
                                              runner beside this script
 
-What the runner refuses is a finding, never an error, so the other findings
-stay beside it. The map is checked by the rules of the current runner: its
-text is loaded as a module, and none of its commands runs. With a failed-map
-the run is left out. --no-run leaves out the run, and so failed-run,
-failed-step and failed-build. With no current runner the map rules are not
-known: then the copy decides in its run, and the runner-old line keeps a
-look without the run from being clean.
+What the runner refuses before a run is a finding, never an error, and the
+runner itself is asked for it. The map is checked by the rules of the
+current runner: its text is loaded as a module, and none of its commands
+runs. Then the doctor of the runner is asked (`verify doctor`), which starts
+nothing of the project. Then the run. Each step is left out when the one
+before it gave a finding.
+
+The runner copy is started only when it is the current runner, byte for
+byte. A copy that is behind, or that someone changed, is the finding
+runner-old, and the doctor and the run are left out until `bump` brought it
+up. So a runner that ends without a result (it was interrupted, it ended on
+an error of its own) is always "drift: error", and never a finding.
+
+--no-run leaves out the run, and so failed-step and failed-build.
 
 A pattern matches a path as fnmatch does, case-sensitive: "*" takes any run
 of characters, "/" too, so "src/**" and "src/*" both take every file under
@@ -53,7 +59,8 @@ Read the exit code and the last line together:
   exit 1   "drift: summary stale=N uncovered=N failed=N"   (+ " runner=old" or
            " runner=unknown"); failed counts the failed-* lines
   exit 2   "drift: error ..."   this script could not finish, or the runner
-           gave nothing that it can read; this is not a result
+           gave nothing that it can read; this is not a result. The lines
+           above it, if any, are findings that hold; the list is not whole.
 """
 from __future__ import annotations
 
@@ -75,6 +82,7 @@ STEP_LINE = re.compile(r"(fail|unverified) (\S+) step ([1-9][0-9]*): (.+)\Z")
 BUILD_LINE = re.compile(r"fail build: (.+)\Z")
 TMP_NAME = "verify.drift-tmp"
 GIT_TIMEOUT_S = 60
+DOCTOR_TIMEOUT_S = 300
 RUN_TIMEOUT_S = 3 * 3600  # the runner bounds each step and the build; this only stops a runner that hangs
 
 
@@ -178,15 +186,21 @@ def runner_number(text):
 
 # ── the paths ────────────────────────────────────────────────────────────────
 
-def tracked_files(project):
-    """The files that git tracks in the project. The call only reads: the GIT_ variables of the caller
-    are dropped, so they cannot aim git at another repo, and a program that the repo's settings name
-    for watching files is not started."""
+def own_git_env():
+    """The environment for a git call that only reads this project: the GIT_ variables of the caller are
+    dropped, so they cannot aim git at another repo, and the program that the repo's settings name for
+    watching files is switched off, also for a git that another program starts."""
     env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
-    env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", LC_ALL="C")
+    env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", LC_ALL="C",
+               GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.fsmonitor", GIT_CONFIG_VALUE_0="false")
+    return env
+
+
+def tracked_files(project):
+    """The files that git tracks in the project. The call only reads (own_git_env)."""
     try:
-        done = subprocess.run(["git", "--no-pager", "-c", "core.fsmonitor=false", "-C", str(project), "ls-files", "-z"],
-                              capture_output=True, env=env, timeout=GIT_TIMEOUT_S, stdin=subprocess.DEVNULL)
+        done = subprocess.run(["git", "--no-pager", "-C", str(project), "ls-files", "-z"],
+                              capture_output=True, env=own_git_env(), timeout=GIT_TIMEOUT_S, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         done = None
     if done is None or done.returncode != 0:
@@ -220,39 +234,48 @@ def path_findings(features, files):
 
 # ── the runner's run ─────────────────────────────────────────────────────────
 
-def run_findings(project, skill, app):
+def ask_runner(project, skill, command, env, limit):
+    """(exit code, lines) of one command of the runner copy. The caller made sure that the copy is the current runner."""
     try:
-        done = subprocess.run([sys.executable, str(skill / "verify"), "run"], cwd=str(project),
-                              capture_output=True, timeout=RUN_TIMEOUT_S, stdin=subprocess.DEVNULL)
+        done = subprocess.run([sys.executable, str(skill / "verify"), command], cwd=str(project), env=env,
+                              capture_output=True, timeout=limit, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
-        raise Failed(f"the runner did not end within {RUN_TIMEOUT_S} s")
+        raise Failed(f"the runner did not end `{command}` within {limit} s")
     except OSError as exc:
         raise Failed(f"the runner could not start: {exc.strerror or exc}")
-    lines = done.stdout.decode("utf-8", errors="replace").splitlines()
+    return done.returncode, done.stdout.decode("utf-8", errors="replace").splitlines()
+
+
+def doctor_findings(project, skill, app):
+    """The gaps that the doctor of the runner finds: with one of them the runner refuses to run. The doctor
+    starts nothing of the project. Its one git call must read this project, so it gets no GIT_ variable."""
+    code, lines = ask_runner(project, skill, "doctor", own_git_env(), DOCTOR_TIMEOUT_S)
     last = lines[-1] if lines else ""
-    tag = re.escape(f"verify-{app}") if isinstance(app, str) else None
-    is_pass = bool(tag) and re.match(tag + r": pass \S", last) is not None
-    is_summary = bool(tag) and re.match(tag + r": summary \S", last) is not None
-    if done.returncode == 0 and is_pass:
+    if code == 0 and lines == [f"verify-{app}: doctor clean"]:
         return []
-    # a runner that refuses the map has no app name yet, and says "verify: error"
-    named = "(?:-" + re.escape(app) + ")?" if isinstance(app, str) else ""
-    refusal = re.match("verify" + named + r": error (\S.*)\Z", last)
-    if done.returncode == 2 and refusal:
-        gaps = [line.strip() for line in lines[:-1] if line.strip()]
-        return ["failed-run " + refusal.group(1) + (": " + "; ".join(gaps) if gaps else "")]
-    if done.returncode != 1 or not is_summary:
-        raise Failed(f"the runner ended with exit {done.returncode}: {last or '(no output)'}")
+    gaps = lines[:-1]
+    if code == 1 and last == f"verify-{app}: summary gaps={len(gaps)}" and gaps and all(gap.strip() for gap in gaps):
+        return [f"failed-doctor {gap}" for gap in gaps]
+    raise Failed(f"the doctor of the runner ended with exit {code}: {last or '(no output)'}")
+
+
+def run_findings(project, skill, app):
+    code, lines = ask_runner(project, skill, "run", None, RUN_TIMEOUT_S)
+    last = lines[-1] if lines else ""
+    tag = re.escape(f"verify-{app}")
+    if code == 0 and re.match(tag + r": pass \S", last):
+        return []
     found = []
-    for line in lines[:-1]:
-        step = STEP_LINE.match(line)
-        build = BUILD_LINE.match(line)
-        if step:
-            found.append(f"failed-step {step.group(2)} step {step.group(3)}: {step.group(4)}")
-        elif build:
-            found.append(f"failed-build {build.group(1)}")
+    if code == 1 and re.match(tag + r": summary \S", last):
+        for line in lines[:-1]:
+            step = STEP_LINE.match(line)
+            build = BUILD_LINE.match(line)
+            if step:
+                found.append(f"failed-step {step.group(2)} step {step.group(3)}: {step.group(4)}")
+            elif build:
+                found.append(f"failed-build {build.group(1)}")
     if not found:
-        raise Failed(f"the runner gave a summary with no failed step: {last}")
+        raise Failed(f"the runner ended with exit {code}: {last or '(no output)'}")
     return found
 
 
@@ -303,14 +326,18 @@ def check(project, app, no_run):
     except Refused as exc:
         raw, features, refusal = {}, [], refusal or str(exc)
     stale, uncovered = path_findings(features, tracked_files(project))
-    if refusal is not None:
-        failed = [f"failed-map {refusal}"]  # the copy would refuse it too, or it is a copy for another map
-    elif no_run:
-        failed = []
-    else:
-        failed = run_findings(project, skill, raw.get("app"))
     lines = [f"stale-path {fid} {pattern}" for fid, pattern in stale]
     lines += [f"uncovered-path {folder} {count}" for folder, count in uncovered]
+    failed = []
+    if refusal is not None:
+        failed = [f"failed-map {refusal}"]
+    elif runner_state is None:  # the copy is the current runner, and its rules took the map: only then is it started
+        try:
+            failed = doctor_findings(project, skill, raw["app"])
+            if not failed and not no_run:
+                failed = run_findings(project, skill, raw["app"])
+        except Failed as exc:
+            return 2, lines + [f"drift: error {exc}"]  # not a result; what was found stays above it
     lines += failed
     if runner_line:
         lines.append(runner_line)

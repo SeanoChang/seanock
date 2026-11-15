@@ -1748,37 +1748,48 @@ has none.
 - **`check` runs the app.** Without `--no-run` it starts the runner copy of
   the project (`verify run`), which builds the app and runs every step in
   temp folders. The project's own code runs, as in any verify run. With
-  `--no-run`, nothing of the project runs: git is called with `ls-files`
-  only, with the `GIT_` variables of the caller dropped and the file
-  watcher of the repo's settings off (an automated security review asked
-  for this, 2026-11-15).
-- **A runner result counts only in its full form.** Exit 0 needs the
-  runner's pass line, exit 1 needs its summary line with a failed line
-  above it, and exit 2 needs its error line with a reason (`verify: error`
-  or `verify-<app>: error`). Anything else (another exit code, a foreign
-  last line, a signal, a timeout of three hours) is `drift: error`, exit 2.
-- **What the runner refuses is a finding, not an error.** A map that the
-  runner does not take is `failed-map`, and a copy that ends before a result
-  (a gap of its doctor, an old copy that refuses the map) is `failed-run`.
-  Both count in `failed=`, and the path findings and the runner finding
-  stay beside them. An adversary review found that the first version said
-  `clean` without the run for a map that the runner refuses, and threw the
-  other findings away when the runner ended with exit 2 (2026-11-15).
-- **The map rules are those of the current runner, and `drift.py` has no
-  second copy of them.** `check` loads the text of the current runner as a
-  module, from the bytes that it compares with the copy, and calls its
-  `load_map`. None of the runner's commands runs, nothing of the project
-  runs, and no cache file is written. A current runner whose text cannot be
-  loaded, or has no `load_map` and `MapError`, is `drift: error`.
-- **With a `failed-map` the run is left out,** also when the copy is an old
-  one that would take the map. The map is corrected first.
-- **`failed-run` does not tell a refusal from a crash.** A copy that was
-  interrupted, or that ended on an error of its own, also prints its error
-  line with exit 2, and reads as `failed-run` with that reason.
-- **With no current runner the map rules are not known.** `check --no-run`
-  then says nothing about the form of the map; the line `runner-old unknown
-  runner` keeps the result from being clean. A full `check` lets the copy
-  decide.
+  `--no-run`, nothing of the app runs. Git is called to list the tracked
+  files, and the doctor of the runner asks git if the evidence folder is
+  ignored. Both calls get no `GIT_` variable of the caller, and the file
+  watcher of the repo's settings is off for them (an automated security
+  review asked for this, 2026-11-15; a test then showed that the doctor's
+  call started that program).
+- **The runner copy is started only when it is the current runner, byte for
+  byte.** A copy that is behind, or that someone changed, is `runner-old`,
+  and the doctor and the run are left out until `bump` brought it up. So
+  `check` never runs a runner that the installed skills do not hold.
+- **What the runner refuses before a run is a finding, and the runner itself
+  is asked for it.** The map: `check` loads the text of the current runner
+  as a module, from the bytes that it compares with the copy, and calls its
+  `load_map`; a refusal is `failed-map` with the runner's own reason. None
+  of the runner's commands runs for this, and no cache file is written. The
+  doctor: `check` runs `verify doctor`, also with `--no-run`; each gap is
+  `failed-doctor`. Each step is left out when the one before it gave a
+  finding. `drift.py` holds no copy of the runner's rules.
+- **This is the third form of the check.** An adversary review broke the
+  first two with one class, "drift.py does not see what the runner
+  refuses". The first said `clean` without the run for a map that the
+  runner does not take, and threw the other findings away when the runner
+  ended with exit 2. The second asked the runner's map rules only: a gap of
+  the doctor (a value of `env` outside the temp folder, a fixture folder
+  that is gone) was still `clean` without the run, and every exit 2 of the
+  runner became a finding, also "the run was interrupted". Now each stage
+  of the runner is asked through its own contract, and no reason text is
+  read to tell a refusal from a crash.
+- **A runner result counts only in its full form.** For the doctor: exit 0
+  with the one line `doctor clean`, or exit 1 with the summary line and as
+  many gap lines above it as it counts. For the run: exit 0 with the pass
+  line, or exit 1 with the summary line and a failed line above it.
+  Anything else (exit 2 with the runner's error line, another exit code, a
+  foreign last line, a signal, a timeout) is `drift: error`, exit 2.
+- **`drift: error` keeps the findings that were found before it.** They are
+  printed above the error line. Exit 2 still means that the list is not
+  whole.
+- **With no current runner beside the script nothing is started,** and the
+  form of the map is not checked by the runner's rules. The line
+  `runner-old unknown runner` keeps the result from being clean.
+- **A current runner whose text cannot be loaded,** or that has no
+  `load_map` and `MapError`, is `drift: error`.
 - **A pattern matches as `fnmatch` does, case-sensitive, and `*` also takes
   a `/`.** So `src/**/*.py` does not match `src/a.py`, and such a map shows
   a stale path. The runner itself has no rule for `paths`.
@@ -1806,8 +1817,8 @@ has none.
   whole; one of the two can fail.
 - **A `.claude` or `skills` folder that is itself a link is followed.** Only
   the `verify-<app>` folder and the copy are checked for links.
-- **The runner copy is started also when it is a link.** `check` reports it
-  as `runner-old copy is a link` in the same run.
+- **A `features.json` nested so deep that Python gives up on it** is
+  `drift: error RecursionError`, exit 2, and not `failed-map`.
 - **A `features.json` that is a link to a device or a pipe is read.** A link
   to `/dev/zero` makes `check` hang; the runner has the same limit.
 - **`bump` says `clean` for a copy with the right bytes that is not
@@ -1823,7 +1834,8 @@ has none.
 - **A locale that cannot print a character of a finding ends the script
   with a Python error** and no last line. That is not a result either.
 - **A file that changes while `check` runs** (the map or the copy, between
-  the reading and the run) can give findings of two states.
+  the reading and the run) can give findings of two states. A copy that is
+  swapped between the comparison and its start is started.
 
 ### Not tested
 
