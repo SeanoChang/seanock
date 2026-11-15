@@ -1793,22 +1793,32 @@ has none.
   as `<project>/bin`. In both, a tracked file named `git` in that place
   runs. The third is an empty or relative entry in `PYTHONPATH` while
   `drift.py` is started from inside the project: the copy of the runner is
-  started in isolated mode, but `drift.py` itself is a plain script, so a
-  tracked module in the current folder, such as `fnmatch.py`, loads in
-  place of Python's own. In all three the file runs also under `--no-run`,
-  and the result can still be `drift: clean`. The project alone cannot set
-  these variables of the caller. A tool that the caller set up to read
-  `PATH` entries from a file of the project can. With such a `PATH` every
-  `git` that is typed in that folder runs the same file, and with such a
-  `PYTHONPATH` every Python script that is started in that folder and
-  imports a module of that name loads the same file. The runner has the same lookups when it is started by
-  hand. The reviews of 2026-11-15 found the three ways one after the other
-  (rounds four, five and six), after the module path of the copy: it is one
-  class, a lookup path that leads into the project. It is not fixed. A fix
-  has to cover the class and not one variable: `drift.py` starts itself
-  again in isolated mode, finds git one time with the relative entries and
-  every folder inside the project left out, and gives the doctor a `PATH`
-  without them.
+  started in isolated mode, but `drift.py` itself is a plain script, so
+  files of the current folder load as modules. A tracked `fnmatch.py` loads
+  in place of Python's own. A tracked `__future__.py` loads at the first
+  import of `drift.py`. A tracked `sitecustomize.py` runs when Python
+  starts, before any line of `drift.py`. In all three ways the file runs
+  also under `--no-run`, and the result can still be `drift: clean`. The
+  project alone cannot set these variables of the caller. A tool that the
+  caller set up to read `PATH` entries from a file of the project can. With
+  such a `PATH` every `git` that is typed in that folder runs the same
+  file. With such a `PYTHONPATH` other Python scripts that are started in
+  that folder can load the same files. A script that is started in isolated
+  mode does not, and a module that Python holds from its start is not
+  looked up again (`os`, seen with Python 3.12). The runner has the same
+  lookups when it is started by hand. The reviews of 2026-11-15 found the
+  three ways one after the other (rounds four, five and six), after the
+  module path of the copy: it is one class, a lookup path that leads into
+  the project. It is not fixed. A fix has to cover the class and not one
+  variable. For the third way `drift.py` cannot help itself, because the
+  files above load before a line of it can act: the start has to be
+  isolated from outside, with `python3 -I` in the three commands of the
+  skill text. In a run of `check --no-run` that was started so, nothing of
+  the project loaded. For the first two ways `drift.py` finds git one time,
+  with the relative entries and every folder inside the project left out,
+  and gives the doctor a `PATH` without them. "Inside the project" has to
+  be tested after links are followed, and without regard to letter case on
+  a disk that ignores it.
 - **What the runner refuses before a run is a finding, and the runner itself
   is asked for it.** The map: `check` loads the text of the current runner
   as a module, from the bytes that it compares with the copy, and calls its
@@ -1904,6 +1914,10 @@ has none.
 - A file name that is not UTF-8.
 - No live session followed the skill text. The commands of the text run as
   written in a test, on a project that the real scaffold made.
+- Whether a variable that a project's own Claude Code settings set for a
+  session (`PATH`, `PYTHONPATH`) reaches `drift.py` as a lookup path into
+  the project.
+- `bump` and a full `check` with `drift.py` started in isolated mode.
 - Linux, except through CI.
 
 ## Correct (`config/claude/skills/correct`, 2026-11-15)

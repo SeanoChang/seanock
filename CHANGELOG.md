@@ -6,6 +6,19 @@ the tag `vX.Y.Z`. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says how it moves. The newest
 entry is first.
 
+## 0.7.0 (2026-11-15)
+
+Changed:
+
+- `docs/known-limits.md`, on `maintain-verify-skill`: the point on a lookup
+  path of the caller that leads into the project is corrected after the
+  last review round of 0.6.0. It names two more files that load through an
+  empty or relative entry of `PYTHONPATH` (`__future__.py` and
+  `sitecustomize.py`). It no longer says that every Python script in that
+  folder loads them. It says that only a start that is isolated from
+  outside (`python3 -I`) covers that way, and what the fix for `PATH` has
+  to test. No code changed.
+
 ## 0.6.0 (2026-11-15)
 
 Added:
