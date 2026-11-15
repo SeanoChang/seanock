@@ -1087,7 +1087,7 @@ changes it.
 - A session where `GIT_DIR` or `GIT_WORK_TREE` is set in the environment.
 - A config file, or a file it includes, that is a named pipe. Every git
   command would wait on it, the ones before this change too.
-- A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`.
+- A git older than 2.45, which does not know `GIT_NO_LAZY_FETCH`.
 
 ## Installer (`install.sh`, 2026-11-13)
 
@@ -1309,7 +1309,7 @@ changes it.
 - The comparison of two spellings of one folder on a disk that keeps
   letter case apart: the test for another letter case has nothing to run
   there, and it then passes with no assertion. The disk of CI ignores case.
-- A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`, and a real
+- A git older than 2.45, which does not know `GIT_NO_LAZY_FETCH`, and a real
   git older than 2.43 (the test uses a stand-in that rejects the option).
 - Refs kept in the reftable format, and a broken entry in `packed-refs`. The
   broken-ref tests write loose ref files. Both ended with exit 2 in a review
@@ -2022,9 +2022,14 @@ has none.
   binary file, a link, a submodule, a change of line ends alone, code under
   the comment that the change deleted in full, and a deletion right after
   the last code line.
-- **It reads the committed diff from the merge base to HEAD.** The working
-  tree and the index play no part. It needs `--base`; with no base in the
-  brief the verifier skips it and says so.
+- **It reads the committed diff from the merge base to HEAD.** The index
+  and the files of the working tree play no part, with one exception: git
+  reads `.gitattributes` from the working tree, also when the file is
+  untracked. The first text said that the working tree plays no part; the
+  adversary's third round showed the exception. An attribute there starts
+  no program. With `* -diff` it makes git print each file as binary, and the
+  run ends with exit 2 (the point on binary below). It needs `--base`; with
+  no base in the brief the verifier skips it and says so.
 - **Lint and tool markers are not comments for this check** (`noqa`,
   `type: ignore`, `pragma`, `eslint-disable`, `pylint:`, `@ts-`, `nolint`,
   `shellcheck`, `fmt:`, `isort:`, `mypy:`, `prettier-ignore`, `nosec`,
@@ -2112,10 +2117,21 @@ has none.
   does not name the comment check as an exception. Step 9 says that a
   comment check that did not run changes no verdict, and that rule is the
   specific one.
+- **The indent of a line counts form feed and vertical tab too,** one
+  column each, like a space or a tab. The text of the script names spaces
+  and tabs only.
+- **When the limit of the whole run ends inside a git call, the error line
+  names the wrong cause:** `not a git repo: ... (the check did not finish
+  in 2 s)` for a repo that is one. The exit code is 2 in both cases.
+- **Replace refs are followed.** `GIT_NO_REPLACE_OBJECTS=1` would switch
+  them off, and the check does not set it: a replace ref needs a person who
+  writes into `.git`, which the check trusts (see "By design").
 
 ### Not tested
 
-- A git older than 2.45, which does not know `GIT_NO_LAZY_FETCH`: in a
+- A git older than 2.45, which does not know `GIT_NO_LAZY_FETCH` (the
+  variable is in git's own manual from 2.45.0 on; two other sections of
+  this file said 2.44 until 2026-11-15): in a
   partial clone it could fetch through a program that the repo's settings
   name.
 - The time limit on a system with no alarm signal (Windows).

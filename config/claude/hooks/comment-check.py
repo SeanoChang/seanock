@@ -3,8 +3,11 @@
 
 It reads the committed diff from merge-base(<base>, HEAD) to HEAD. When the
 history has more than one best common ancestor (a criss-cross merge), it
-checks each and joins the hits. The working tree, the index and untracked
-files play no part.
+checks each and joins the hits. The index and the files of the working tree
+play no part, with one exception: git reads `.gitattributes` from the working
+tree, also when the file is untracked. An attribute there starts no program
+(see Safety). It can make git print a file as binary (`-diff`), and the run
+then ends with exit 2.
 
 A hit is advice for a reviewer, not a defect. A comment that still holds after
 the change is a fine answer; the point is that someone reads it again.
@@ -47,8 +50,10 @@ change deleted in full (so no code is left under the comment), gives no hit.
 Safety: it calls git with a fixed argument list and no shell. No program from
 the repo's config can run: no external diff (--no-ext-diff), no textconv
 (--no-textconv; git matches attributes such as `* diff=x` against the blob
-names of the two-blob diff, so a driver would apply), no filter (no file is
-read from the work tree), no fsmonitor (core.fsmonitor is switched off), no
+names of the two-blob diff, so a driver would apply), no filter (git runs a
+clean or smudge filter on a file of the work tree, and the check compares
+blobs; of the work tree git reads only `.gitattributes`, as text), no
+fsmonitor (core.fsmonitor is switched off), no
 pager (--no-pager), and it never fetches (GIT_NO_LAZY_FETCH): in a partial
 clone a missing object ends the run with exit 2. GIT_* variables from the
 caller's environment are dropped, so a hook's GIT_DIR cannot point it at

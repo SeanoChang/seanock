@@ -652,6 +652,25 @@ def test_an_attribute_that_makes_git_read_text_as_binary_is_an_error_not_clean(t
     assert_error(check(repo), "git diff")
 
 
+def test_an_untracked_attributes_file_in_the_work_tree_is_read_and_starts_no_program(tmp_path):
+    """Found in review: the text said that the work tree plays no part. git reads `.gitattributes`
+    there, also when it is untracked. `-diff` ends the run with exit 2, and a driver starts nothing."""
+    repo = geo_repo(tmp_path)
+    assert_hits(check(repo), GEO_HIT)
+    (repo / ".gitattributes").write_text("* -diff\n")
+    assert_error(check(repo), "git diff")
+    marker = tmp_path / "ran"
+    prog = tmp_path / "prog.sh"
+    prog.write_text(f"#!/bin/sh\ntouch '{marker}'\ncat\n")
+    prog.chmod(0o755)
+    with open(repo / ".git/config", "a") as f:
+        f.write(f"[diff \"x\"]\n\ttextconv = {prog}\n\tcommand = {prog}\n"
+                f"[filter \"x\"]\n\tclean = {prog}\n\tsmudge = {prog}\n\tprocess = {prog}\n")
+    (repo / ".gitattributes").write_text("* diff=x filter=x\n")
+    assert_hits(check(repo), GEO_HIT)
+    assert not marker.exists(), "a program named by an attribute of the work tree ran"
+
+
 def test_a_work_tree_setting_cannot_point_the_check_at_another_repo(tmp_path):
     """core.worktree names a folder that holds a clean repo of its own. The check reads the repo at --repo."""
     repo = geo_repo(tmp_path)
