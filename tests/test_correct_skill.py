@@ -131,7 +131,7 @@ def test_the_example_row_of_the_text_is_a_table_that_the_script_takes(tmp_path):
     (repo / "tests").mkdir()
     (repo / "tests" / "test_attribution.py").write_text("def test_it():\n    assert True\n")
     (repo / ".github" / "workflows").mkdir(parents=True)
-    (repo / ".github" / "workflows" / "ci.yml").write_text("run: python3 -m pytest tests -q\n")
+    (repo / ".github" / "workflows" / "ci.yml").write_text("run: python3 -m pytest tests/ -q\n")
     run = lambda command: subprocess.run([sys.executable, str(SCRIPT), command, "--repo", str(repo)],
                                          capture_output=True, text=True, timeout=60)
 

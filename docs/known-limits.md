@@ -1747,15 +1747,27 @@ has none.
 - **A line in which anything looks like a secret is held back whole,** and
   only its line number is printed. The forms are: keys of several vendors,
   GitHub, AWS and Slack tokens, a private key header, a JSON web token, a
-  `Bearer` value, a word such as `password`, `token`, `secret` or `api_key`
-  before a `:` or `=` or as a flag (`--password x`), a URL with a password
+  `Bearer` value, a key word such as `password`, `token`, `secret` or
+  `api_key` that may have a value (the next point), a URL with a password
   (with or without a user name), a UUID, a run of 20 or more letters and
   digits that has both, and a run of 24 or more characters of letters,
   digits and `+ / _ = -` that has a small letter, a capital and a digit. No
   form asks what stands next to the secret. So a line with a commit id of
   20 characters or more, a UUID or a long mixed path is held back too, and
   so is "the token: 5".
-- **A line with a character that does not show is held back whole:** a
+- **A key word asks for no neighbour.** Two rules. A key word, also inside
+  a longer word, with `:` or `=` anywhere after it in the text:
+  `password: x`, `SECRET_KEY=x`, `config["password"] = "x"`. Or a key word
+  with a dash before it in the same run of letters, digits, `_` and dashes,
+  with or without a value: `--password x`, `--db-password x`. The first
+  version wanted the key word to touch the `:` or `=`, and a flag to start
+  right at the key word. The adversary got a line past it two times
+  (`SECRET_KEY=x`, `--db-password x`), and the class was "the rule asks
+  what stands next to the key word". The cost of the new rule is a line
+  that holds no secret and is counted, not shown: "the per-token price",
+  "the author said: no", "why --no-auth again". On one real history the
+  candidates stayed at 42, and the lines held back went from 1 to 4.
+- **A line with a character that is not printable is held back whole:** a
   control character, a zero-width character, a line or paragraph separator.
   Such a character can split a secret or join it to a word, and each way to
   print the line guesses which. The first fix took these characters out
@@ -1784,7 +1796,8 @@ has none.
   full rule would hold back ordinary paths such as
   `tests/test_runner_part2.py`, which corrections name often. A trial on
   one real history gave the same counts before and after the stricter
-  rules: 42 candidates, 1 line held back.
+  rules: 42 candidates, 1 line held back. (The key word rule of the
+  second review round changed that count; see the point on key words.)
 - **`mine` reads git with its own format.** The `GIT_` variables of the
   caller are dropped, and no signature is checked, so that only the
   script's own format reaches it. Each commit starts with a mark that is
@@ -1814,12 +1827,37 @@ has none.
 ### Minor
 
 - **`not-in-ci` reads the `run:` commands of the workflow files as text.**
-  It counts when a command names the enforcer path, or a folder above it,
-  as a whole word (`./` before it is fine). A job name, a step name, an
-  input of an action and a comment do not count. A workflow that runs every
-  test with no path named (`pytest`) does not count. The block of a `run:`
-  is found by its indent, with no YAML parser: a `run:` key inside a quoted
-  string, or a command in a flow mapping (`{run: ...}`), is read wrongly.
+  A command names the enforcer when one of its words is the enforcer path,
+  or a folder above it, written as a path: with a slash in it (`tests/`,
+  `./tests`, `config/hooks`, `./lint.sh`). A word is what stands between
+  spaces, quotes and the marks `; & | ( ) < >`. The first version took a
+  bare folder name as a whole word, and the adversary showed `npm test`,
+  `make test` and `echo "no tests yet"` counting for a folder; the class
+  was "a word of a command is taken for a path". So a bare `tests` no
+  longer counts, and `pytest tests` gives `not-in-ci`: the cost is one
+  slash in the workflow. A path inside a longer word does not count either
+  (`--ignore=tests/`, `PYTHONPATH=tests/`, `tests/*.py`), and a file at the
+  top of the repo needs `./` before it. A job name, a step name, an input
+  of an action and a comment do not count. A workflow that runs every test
+  with no path named (`pytest`) does not count. A `run:` with nothing after
+  it on its line is not a step (the `defaults` of a workflow have such a
+  key); a command that starts on the line below it is so not read. The
+  block of a `run:` is found by its indent, with no YAML parser: a `run:`
+  key inside a quoted string, or a command in a flow mapping
+  (`{run: ...}`), is read wrongly.
+- **A path that a command names is not a path that the command runs.**
+  `ls tests/`, `rm -r tests/` and `pytest --ignore tests/e2e` count.
+- **Characters that print as nothing and are printable for Python pass:**
+  U+3164, U+034F, U+2800, U+FE0F, U+115F, U+180B, U+E0101. One of them
+  inside a secret splits it for the script and not for the eye. Found by
+  the adversary's second round, as are the next three points.
+- **A wrapped secret with a mark at the start of the next line is not
+  joined** (`> `, `│`, a backslash at the line end), and a tab or a
+  no-break space inside a secret prints as a space.
+- **The URL rule is slow on a line with `://` and thousands of colons:**
+  about 0.6 seconds for 4 KB.
+- **A key word in letters of another script that look the same** (a
+  Cyrillic `а` in `pаssword`) is not a key word.
 - **One history line that is JSON nested very deep stops `mine`** with exit
   2 (`RecursionError`); other broken lines are skipped. Found by both
   reviewers, 2026-11-15. It prints nothing from the file.
@@ -1846,7 +1884,9 @@ has none.
 ### Not tested
 
 - The live history of a second person. The trial ran on one history file
-  (2026-11-15): 42 candidates, 1 line held back, 23 too long.
+  (2026-11-15): 42 candidates, 4 lines held back, 20 too long. Before the
+  key word rule it was 42, 1 and 23: the three lines are long ones, which
+  were left out before as well.
 - Signatures made with GnuPG. The test signs its commits with an SSH key.
 - A live session with the user in step 2. A fresh agent followed the text on
   a stand-in project with the user's answer given ahead; it built two rules

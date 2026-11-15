@@ -137,7 +137,7 @@ python3 ~/.claude/skills/correct/scripts/rules.py table --repo <project root>
 | Gap | Meaning | What to do |
 | --- | --- | --- |
 | `missing-enforcer` | The enforcer file is not there. | Write it, or correct the path. |
-| `not-in-ci` | `runs_in` is `ci`, and no `run:` command of a workflow names the file or a folder above it. | Add it to a workflow. |
+| `not-in-ci` | `runs_in` is `ci`, and no `run:` command of a workflow names the file, or a folder above it, as a path. | Add it to a workflow, written as a path: `pytest tests/`, not `pytest tests`. |
 | `docs-only` | A `docs` rule with no `accepted` line. | Move it to a stronger layer, or say why none works. |
 | `table-stale` | `.claude/rules.md` is not what `table` writes. | Run `table`. |
 
@@ -163,10 +163,15 @@ work of the highest tier in most projects.
   Grouping by meaning is your work.
 - A line can be held back although it holds no secret: a full commit id, a
   UUID, a long word of letters and digits, a long path with capitals and
-  digits, or a word such as `password` or `token` before a `:` or `=`.
+  digits, a word such as `password` or `token` with a `:` or `=` anywhere
+  after it, or such a word after a dash (`per-token`).
 - `not-in-ci` reads the `run:` commands of the workflow files as text. A
-  workflow that runs every test with no path named counts as not naming the
-  file, and so does a path that only an input of an action names.
+  name counts only as a word of its own with a slash in it: `tests/`,
+  `./tests`, `config/hooks`, `./lint.sh`. A bare `tests` is a word like any
+  other (`npm test` names no folder), so `pytest tests` does not count, and
+  neither does `--ignore=tests/` or `tests/*.py`. A workflow that runs every
+  test with no path named counts as not naming the file, and so does a path
+  that only an input of an action names.
 - `check` does not run a workflow. It shows that CI names the enforcer, not
   that the workflow passes.
 - This skill adds rows. It does not rewrite `CLAUDE.md`.

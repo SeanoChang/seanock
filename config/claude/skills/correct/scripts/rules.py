@@ -72,12 +72,13 @@ class Failed(Exception):
 
 # ── secrets: a line with any of these is held back whole ─────────────────────
 
-# No pattern asks what stands next to the secret. A word boundary (\b) is not
-# there when the secret touches a letter, a digit or "_", and a pattern that
-# asks for one does not see such a secret.
+# No rule asks what stands next to the thing it looks for. A word boundary
+# (\b) is not there when a secret touches a letter, a digit or "_", and a key
+# word is often part of a longer name (SECRET_KEY, --db-password). A rule that
+# asks for a neighbour does not see those.
 HEX = "0-9a-fA-F"   # a long hex value needs no rule of its own: it is a run of letters and digits (PLAIN_RUN)
 WORD = (r"(?:pass(?:word|wd|phrase|code)?|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key"
-        r"|auth(?:orization)?|credential)s?")
+        r"|auth(?:orization)?|credential|bearer)s?")
 SECRETS = [re.compile(pattern) for pattern in (
     r"sk-[A-Za-z0-9_-]{16,}",                                   # API keys of several vendors
     r"gh[pousr]_[A-Za-z0-9]{20,}",
@@ -86,15 +87,18 @@ SECRETS = [re.compile(pattern) for pattern in (
     r"xox[abeprs]-[A-Za-z0-9-]{10,}",
     r"-----BEGIN [A-Z ]*PRIVATE KEY",
     r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}",  # a JSON web token
-    r"(?i)(?:bearer|basic)\s+[A-Za-z0-9+/_.=-]{16,}",
-    r"(?i)" + WORD + r"[\\\"'\s]{0,8}[:=][\\\"'\s]{0,8}[^\s\\\"']",    # password: x, "password": "x", \"password\": \"x\"
-    r"(?i)(?:^|[\s\"'`=(\[])--?" + WORD + r"\s+[\\\"']{0,4}[^\s\\\"'-]",   # --password x, but not "per-token cost"
+    r"(?i)(?:bearer|basic)[\s\\\"',]+[A-Za-z0-9+/_.=-]{16,}",
     r"://[^\s/@]{0,4096}:[^\s@]{1,4096}@",                         # a URL with a password, with or without a user
     rf"[{HEX}]{{8}}-[{HEX}]{{4}}-[{HEX}]{{4}}-[{HEX}]{{4}}-[{HEX}]{{12}}",   # a UUID
 )]
 LONG_RUN = re.compile(r"[A-Za-z0-9+/_=-]{24,}")     # held back with a small letter, a capital and a digit
 PLAIN_RUN = re.compile(r"[A-Za-z0-9]{20,}")         # held back with a letter and a digit
 LINE_BREAK = re.compile(r"\s*[\n\r]\s*")
+KEY_WORD = re.compile(r"(?i)" + WORD)
+SEPARATOR = re.compile(r"[:=]")
+DASHES = r"\-\u2010-\u2015\u2212"                   # the hyphen, the dashes of a text program, the minus sign
+DASH = re.compile(f"[{DASHES}]")
+RUN = re.compile(rf"[\w{DASHES}]+")                 # letters, digits, "_" and dashes with nothing between them
 
 
 def visible(text):
@@ -103,8 +107,29 @@ def visible(text):
     return "".join(ch for ch in text if ch.isprintable() or ch.isspace())
 
 
+def has_key_word_form(text):
+    """True when a key word may have a value in the text. Two rules, and neither asks for a neighbour.
+
+    A key word, also inside a longer word, with `:` or `=` anywhere after it:
+    `password: x`, `SECRET_KEY=x`, `config["password"] = "x"`. Or a key word
+    with a dash before it in the same run of letters, digits, `_` and dashes:
+    `--password x`, `--db-password x`. The second rule asks for no value, so
+    "the per-token price" is held back too. Each step reads the text once.
+    """
+    word = KEY_WORD.search(text)
+    if not word:
+        return False
+    if SEPARATOR.search(text, word.end()):     # no key word holds another one, so the first one ends first
+        return True
+    for run in RUN.finditer(text):
+        dash = DASH.search(run.group())
+        if dash and KEY_WORD.search(run.group(), dash.end()):
+            return True
+    return False
+
+
 def has_secret_form(text):
-    if any(pattern.search(text) for pattern in SECRETS):
+    if any(pattern.search(text) for pattern in SECRETS) or has_key_word_form(text):
         return True
     for run in LONG_RUN.findall(text):
         if re.search(r"[a-z]", run) and re.search(r"[A-Z]", run) and re.search(r"[0-9]", run):
@@ -376,6 +401,7 @@ def workflow_texts(repo):
 
 RUN_KEY = re.compile(r"^(\s*(?:-\s+)?)run:(?:\s+(.*))?$")
 BLOCK = re.compile(r"[|>][+-]?[1-9]?[+-]?\Z")
+WORD_EDGE = re.compile(r"[\s\"'`;&|()<>]+")        # what stands between two words of a command line
 
 
 def without_comment(line):
@@ -387,7 +413,9 @@ def commands(text):
     """The command lines of the `run:` steps of a workflow file, read as text.
 
     Only these lines can name an enforcer. A job name, a step name or an
-    input of an action cannot: "Run the tests" runs nothing.
+    input of an action cannot: "Run the tests" runs nothing. A `run:` with
+    nothing after it is not a step: it is a key with keys below it, as in the
+    `defaults` of a workflow.
     """
     found, lines, at = [], text.splitlines(), 0
     while at < len(lines):
@@ -397,7 +425,9 @@ def commands(text):
             continue
         column = len(key.group(1))            # where `run:` starts; the lines of its block start further right
         value = without_comment(key.group(2) or "").strip()
-        if value and not BLOCK.match(value):
+        if not value:
+            continue
+        if not BLOCK.match(value):
             found.append(value)
             continue
         while at < len(lines):
@@ -410,15 +440,21 @@ def commands(text):
 
 
 def named_in(texts, rel):
-    """True when a command of a workflow names the path, or a folder above it, as a whole word."""
-    lines = [line for text in texts for line in commands(text)]
-    parts = rel.split("/")
-    for depth in range(len(parts), 0, -1):
+    """True when a word of a workflow command is the path, or a folder above it, written as a path.
+
+    A word is what stands between spaces, quotes and the marks of the shell.
+    It is a path only with a slash in it: `tests/`, `./tests`, `config/hooks`.
+    A bare `tests` is a word like any other (`npm test`, `echo "no tests"`),
+    so it does not count, and neither does a path inside a longer word
+    (`--ignore=tests/`, `tests/*.py`).
+    """
+    spellings, parts = set(), rel.split("/")
+    for depth in range(1, len(parts) + 1):
         name = "/".join(parts[:depth])
-        pattern = re.compile(r"(?<![\w./-])(?:\./)?" + re.escape(name) + r"/?(?![\w.-]|/\w)")
-        if any(pattern.search(line) for line in lines):
-            return True
-    return False
+        spellings.update({name + "/", "./" + name, "./" + name + "/"})
+        if depth > 1:
+            spellings.add(name)
+    return any(word in spellings for text in texts for line in commands(text) for word in WORD_EDGE.split(line))
 
 
 def cell(text):

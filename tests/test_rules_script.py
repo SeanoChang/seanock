@@ -90,6 +90,26 @@ def hostile_secrets():
         "bearer and token joined by a control character": ("Bearer" + "\x01" + "abcdefgh.ijklmnop", ["abcdefgh.ijklmnop"]),
         "many spaces before the equals sign": ("password" + " " * 12 + "= " + "hunter2xyz", ["hunter2xyz"]),
         "url with a very long password": ("https://sean:" + "pw-" * 100 + "@host.invalid", ["pw-pw-pw-"]),
+        # a key word that touches other characters: the rule asks for no neighbour
+        "key word inside a longer name": ("SECRET_" + "KEY=" + "hunter2xyz", ["hunter2xyz"]),
+        "key word in the middle of a name": ("JWT_SECRET_" + "KEY: " + "hunter2xyz", ["hunter2xyz"]),
+        "key word as an index": ('config["password"] = "' + "hunter2xyz" + '"', ["hunter2xyz"]),
+        "key word in a call": ("os.environ['API_KEY'] = '" + "hunter2xyz" + "'", ["hunter2xyz"]),
+        "key word in a code span": ("`token`: " + "hunter2xyz", ["hunter2xyz"]),
+        "key word before a digit": ("PASSWORD1=" + "hunter2xyz", ["hunter2xyz"]),
+        "key word before a bracket": ("password[0]=" + "hunter2xyz", ["hunter2xyz"]),
+        "key word before a name": ("API_KEY_PROD=" + "hunter2xyz", ["hunter2xyz"]),
+        "key word before a version": ("TOKEN_V2=" + "hunter2xyz", ["hunter2xyz"]),
+        "key word, then words, then the value": ("the password for the db is: " + "hunter2xyz", ["hunter2xyz"]),
+        "flag with a name before the key word": ("tool --db-password " + "hunter2xyz", ["hunter2xyz"]),
+        "flag with two key words": ("tool --auth-token " + "hunter2xyz", ["hunter2xyz"]),
+        "flag with a name after the key word": ("tool --password-file-value " + "hunter2xyz", ["hunter2xyz"]),
+        "flag glued to a word": ("tool x--password " + "hunter2xyz", ["hunter2xyz"]),
+        "flag in a list of arguments": ('["--password", "' + "hunter2xyz" + '"]', ["hunter2xyz"]),
+        "flag and a value that starts with a dash": ("mysql --password " + "-hunter2xyz", ["hunter2xyz"]),
+        "flag with a long dash": ("mysql \u2014password " + "hunter2xyz", ["hunter2xyz"]),
+        "bearer in quotes": ('"Bearer", "' + "abcdefghijklmnopqrstuv" + '"', ["abcdefghijklmnopqrstuv"]),
+        "bearer with an equals sign": ("bearer=" + "abcdefghijklmnopqrstuv", ["abcdefghijklmnopqrstuv"]),
     }
 
 
@@ -197,7 +217,7 @@ def test_a_rule_is_a_gap_until_its_enforcer_is_there_ci_names_it_and_the_table_i
     world.file("tests/test_no_emojis.py", "def test_no_emojis():\n    assert True\n")
     assert world.run("check")[1][0] == "not-in-ci no-emojis tests/test_no_emojis.py"
 
-    world.file(".github/workflows/ci.yml", "jobs:\n  t:\n    steps:\n      - run: python3 -m pytest tests -q\n")
+    world.file(".github/workflows/ci.yml", "jobs:\n  t:\n    steps:\n      - run: python3 -m pytest tests/ -q\n")
     assert world.run("check")[:3] == (1, ["table-stale - .claude/rules.md"], "rules: summary gaps=1")
 
     assert world.run("table")[::2] == (0, "rules: wrote .claude/rules.md")
@@ -352,12 +372,51 @@ def test_on_random_lines_no_planted_secret_reaches_the_output(world, module):
                                   "never use Python 3 again in this repo, we are on 3.12",
                                   "don't touch config/claude/settings.json.tmpl or docs/known-limits.md",
                                   "stop: the token count is wrong again", "the password field is wrong again",
-                                  "the per-token price is wrong again", "use the max-token limit, don't guess",
+                                  "the price of a token is wrong again", "use the limit of 4096 tokens, don't guess",
                                   "wrong branch, use claude/merge-follow-fixes-2 instead of dev",
                                   "不對，不要再改 CLAUDE.md 了", "again: commit 1a2b3c4 broke it",
                                   "I said 2026-11-14, not 2026-11-15", "why did you use http://localhost:8080/docs?"])
 def test_an_ordinary_correction_is_not_taken_for_a_secret(module, text):
     assert module.looks_secret(text) is False and module.shown(text) == text
+
+
+@pytest.mark.parametrize("text", ["the per-token price is wrong again", "use the max-token limit, don't guess",
+                                  "stop using the token: it is the wrong one", "the author said: no emojis",
+                                  "never bypass the gate = always ask", "why --no-auth again"])
+def test_the_cost_of_a_rule_with_no_neighbour_is_a_line_that_is_counted_and_not_shown(module, text):
+    """A key word counts inside a longer word, with `:` or `=` anywhere after it, or with a dash before it
+    in one run of letters. Such a line is held back also when it holds no secret."""
+    assert module.looks_secret(text) is True and module.shown(text) is None
+
+
+def key_word_form_second_version(module, text):
+    """The two key word rules as two patterns that back up, written apart from the script's staged scan."""
+    dash = "[\\-\u2010-\u2015\u2212]"
+    return bool(re.search("(?is)" + module.WORD + ".*[:=]", text)
+                or re.search("(?i)" + dash + "(?:\\w|" + dash + ")*" + module.WORD, text))
+
+
+def test_on_random_lines_the_key_word_rules_agree_with_a_second_version(module):
+    rng = random.Random(20261117)
+    pieces = ["password", "PASS", "Token", "api_key", "api-key", "secret", "auth", "pwd", "credentials", "bearer",
+              "pas", "tok", "key", "the", "v2", "x", "9", "_", "-", "--", "\u2014", ":", "=", " ", " ", "\t", "\n", ".",
+              "/", "[", "]", '"', "'", "(", "é", "字"]
+    seen = {True: 0, False: 0}
+    for _ in range(30000):
+        text = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 9)))
+        want = key_word_form_second_version(module, text)
+        assert module.has_key_word_form(text) is want, repr(text)
+        seen[want] += 1
+    assert min(seen.values()) > 3000, seen
+
+
+@pytest.mark.parametrize("text", ["-" * 1_000_000, "pas-" * 250_000, "a-" * 500_000 + "x", "pass" * 250_000,
+                                  "pass " * 200_000, "-pas" * 250_000 + " x"])
+def test_the_key_word_rules_read_a_long_line_in_linear_time(module, text):
+    import time
+    start = time.monotonic()
+    module.has_key_word_form(text)
+    assert time.monotonic() - start < 5
 
 
 # ── which lines of the history count ─────────────────────────────────────────
@@ -684,39 +743,132 @@ def test_an_enforcer_that_is_a_folder_is_missing_and_a_hook_needs_no_workflow(wo
 
 @pytest.mark.parametrize("workflow, named", [
     ("run: pytest tests/test_no_emojis.py", True),
-    ("run: python3 -m pytest tests -q", True),
+    ("run: python3 -m pytest tests/ -q", True),
     ("run: pytest tests/", True),
     ("run: pytest ./tests", True),
+    ("run: pytest ./tests/", True),
     ("run: pytest ./tests/test_no_emojis.py", True),
-    ("run: pytest ../tests", False),
-    ("run: 'pytest tests -q'", True),
-    ("run: echo done  # pytest tests", False),
-    ("name: Lint shell scripts, no tests here", False),
-    ("name: tests\n        run: shellcheck x.sh", False),
-    ("uses: some/action@v1\n        with:\n          args: tests", False),
-    ("run: |\n          echo start\n          pytest tests -q", True),
+    ("run: 'pytest tests/ -q'", True),
+    ('run: "pytest tests/"', True),
+    ("run: (cd tests/ && pytest)", True),
+    ("run: pytest tests/; echo done", True),
+    ("run: |\n          echo start\n          pytest tests/ -q", True),
     ("run: >-\n          python3 -m pytest\n          tests/test_no_emojis.py", True),
-    ("run: |\n          echo start\n          # pytest tests\n      - name: the tests of another day", False),
-    ("run: |\n          echo start\n        env:\n          WHERE: tests", False),
-    ("# run: pytest tests", False),
-    ("run: pytest mytests", False),
-    ("run: pytest tests_old -q", False),
+    # a folder as a bare word is not a path: the word can be anything
+    ("run: python3 -m pytest tests -q", False),
+    ("run: 'pytest tests -q'", False),
+    ("run: make tests", False),
+    ("run: npm run tests", False),
+    ('run: echo "no tests yet"', False),
+    ("run: |\n          echo start\n          pytest tests -q", False),
+    # a path inside a longer word is not the path
+    ("run: pytest --ignore=tests/", False),
+    ("run: PYTHONPATH=tests/ pytest", False),
+    ("run: pytest tests/*.py", False),
+    ("run: pytest ../tests", False),
+    ("run: pytest ../tests/", False),
+    ("run: pytest mytests/", False),
+    ("run: pytest tests_old/ -q", False),
     ("run: pytest tests/unit", False),
+    ("run: pytest tests/unit/", False),
     ("run: pytest tests/test_no_emojis.py.bak", False),
-    ("run: pytest other/tests", False),
+    ("run: pytest other/tests/", False),
+    ("run: pytest /tests/", False),
+    ("run: pytest tests//", False),
+    # what is not a command
+    ("run: echo done  # pytest tests/", False),
+    ("name: Lint shell scripts, no tests/ here", False),
+    ("name: tests/\n        run: shellcheck x.sh", False),
+    ("uses: some/action@v1\n        with:\n          args: tests/", False),
+    ("run: |\n          echo start\n          # pytest tests/\n      - name: the tests/ of another day", False),
+    ("run: |\n          echo start\n        env:\n          WHERE: tests/", False),
+    ("# run: pytest tests/", False),
+    # `run:` with nothing after it is a key with keys below it (the `defaults` of a workflow), not a command
+    ("run:\n          working-directory: tests/", False),
+    ("run:\n          pytest tests/", False),
+    ("run: \n          working-directory: tests/", False),
+    ("run: # the steps\n          pytest tests/", False),
     ("run: pytest", False),
     ("", False),
 ])
-def test_ci_counts_when_a_workflow_names_the_enforcer_or_a_folder_above_it_as_a_whole_word(world, workflow, named):
+def test_ci_counts_when_a_command_names_the_enforcer_or_a_folder_above_it_as_a_path(world, workflow, named):
     world.file("tests/test_no_emojis.py")
     world.file(".github/workflows/ci.yml", f"jobs:\n  t:\n    steps:\n      - {workflow}\n")
-    world.file(".github/workflows/notes.txt", "run: pytest tests")
+    world.file(".github/workflows/notes.txt", "run: pytest tests/")
     world.table(row())
     world.run("table")
 
     code, lines, _, _ = world.run("check")
 
     assert (code, lines) == ((0, []) if named else (1, ["not-in-ci no-emojis tests/test_no_emojis.py"]))
+
+
+@pytest.mark.parametrize("path, command, named", [
+    # a folder named like a command word: the cases of the review
+    ("test/unit.js", "npm test", False),
+    ("test/unit.js", "make test", False),
+    ("test/unit.js", "go test ./...", False),
+    ("test/unit.js", "npx mocha test/", True),
+    ("test/unit.js", "npx mocha test/unit.js", True),
+    # a file at the top of the repo is a path only with ./ before it
+    ("lint.sh", "./lint.sh", True),
+    ("lint.sh", "bash ./lint.sh", True),
+    ("lint.sh", "bash lint.sh", False),
+    ("check", "make check", False),
+    ("check", "./check", True),
+    # a folder two levels down has a slash in its own name
+    ("config/hooks/tests/test_gate.py", "pytest config/hooks/tests", True),
+    ("config/hooks/tests/test_gate.py", "pytest config/hooks", True),
+    ("config/hooks/tests/test_gate.py", "pytest ./config/hooks/tests/", True),
+    ("config/hooks/tests/test_gate.py", "pytest config/", True),
+    ("config/hooks/tests/test_gate.py", "pytest config", False),
+    ("config/hooks/tests/test_gate.py", "pytest hooks/tests", False),
+    ("config/hooks/tests/test_gate.py", "pytest tests/", False),
+    ("config/hooks/tests/test_gate.py", "pytest config/hooks/tests/test_gate.py::test_one", False),
+])
+def test_a_name_counts_only_when_it_is_written_as_a_path_from_the_top_of_the_repo(world, path, command, named):
+    world.file(path)
+    world.file(".github/workflows/ci.yml", f"jobs:\n  t:\n    steps:\n      - run: {command}\n")
+    world.table(row(path=path))
+    world.run("table")
+
+    code, lines, _, _ = world.run("check")
+
+    assert (code, lines) == ((0, []) if named else (1, [f"not-in-ci no-emojis {path}"]))
+
+
+def named_in_second_version(lines, rel):
+    """One pattern for each spelling, where the script splits each line into words."""
+    edge = "\\s\"'`;&|()<>"
+    parts = rel.split("/")
+    for depth in range(1, len(parts) + 1):
+        name = re.escape("/".join(parts[:depth]))
+        spellings = [f"\\./{name}/?", f"{name}/"] + ([f"{name}"] if depth > 1 else [])
+        for spelling in spellings:
+            if any(re.search(f"(?:^|[{edge}])(?:{spelling})(?=$|[{edge}])", line) for line in lines):
+                return True
+    return False
+
+
+def test_on_random_commands_the_path_rule_agrees_with_a_second_version(module):
+    rng = random.Random(20261118)
+    words = ["tests", "tests/", "./tests", "./tests/", "test", "test/", "./test", "test/unit", "test/unit/x", "config",
+             "config/", "config/hooks", "./config/hooks/", "config/hooks/tests", "hooks/tests", "tests/test_gate.py",
+             "config/hooks/tests/test_gate.py", "lint.sh", "./lint.sh", "mytests/", "pytest", "-q", "x"]
+    joins = [" ", " ", " ", " ", "  ", "\t", '"', "'", "`", ";", " && ", "|", "(", ")", "<", ">",
+             "", "/", "=", "*", ".", "-", "../", "\\", ","]
+    paths = ["tests/test_gate.py", "config/hooks/tests/test_gate.py", "lint.sh", "test/unit/x"]
+    seen = {True: 0, False: 0}
+    for _ in range(30000):
+        line = "pytest"
+        for _ in range(rng.randint(1, 5)):
+            line += rng.choice(joins) + rng.choice(words)
+        line += rng.choice(["", "", " ", ";", '"', "/", "."])
+        rel = rng.choice(paths)
+        want = named_in_second_version([line], rel)
+        assert module.named_in([f"      - run: {line}\n"], rel) is want, (line, rel)
+        seen[want] += 1
+    assert min(seen.values()) > 5000, seen
 
 
 def test_a_job_that_is_named_like_the_folder_does_not_name_the_enforcer(world):
@@ -732,7 +884,7 @@ def test_a_job_that_is_named_like_the_folder_does_not_name_the_enforcer(world):
 
 def test_a_table_that_someone_edited_by_hand_is_stale(world):
     world.file("tests/test_no_emojis.py")
-    world.file(".github/workflows/ci.yaml", "run: pytest tests\n")
+    world.file(".github/workflows/ci.yaml", "run: pytest tests/\n")
     world.table(row())
     world.run("table")
     assert world.run("check")[0] == 0
