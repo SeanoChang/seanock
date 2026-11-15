@@ -24,10 +24,11 @@ here.
 | Status line | `config/claude/statusline-command.sh` | Three lines under the prompt                    |
 | Tests       | `tests/`, and beside each hook and skill | Run by `.github/workflows/ci.yml`            |
 
-The harness has one version, in [`VERSION`](VERSION). A release is a tag
-`vX.Y.Z` on `main`, and [CHANGELOG.md](CHANGELOG.md) has one entry for each.
-[docs/architecture.md](docs/architecture.md) says how the parts meet and what
-the three numbers mean. [docs/decisions/](docs/decisions/) holds one short
+The harness has one version, in [`VERSION`](VERSION). Each pull request into
+`dev` raises its middle number by one (or, when you name it a major step, the
+first number) and adds an entry to [CHANGELOG.md](CHANGELOG.md). A release is a tag `vX.Y.Z` on `main`.
+[docs/architecture.md](docs/architecture.md) says how the parts meet and how
+the number moves. [docs/decisions/](docs/decisions/) holds one short
 record for each choice that is hard to reverse. Minor findings that were
 logged and not fixed are in [docs/known-limits.md](docs/known-limits.md).
 

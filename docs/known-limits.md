@@ -1941,3 +1941,58 @@ has none.
   and showed each enforcer fail on the old mistake. Its findings about the
   text were taken.
 - Linux.
+
+## Versions (`tests/test_harness_version.py`, 2026-11-15)
+
+### By design
+
+- **No test reads a pull request.** That a title starts with the number, and
+  that one pull request holds exactly one number, is a rule for the agent
+  that opens it. A check for both needs a workflow that reads the base
+  branch and the title.
+- **The middle number does not say how large a change is.** It counts pull
+  requests into `dev` (decision record 0008). The changelog entry says what
+  a version holds.
+
+### Minor
+
+- **The tests and Markdown do not agree on what a heading is.** The tests
+  take a line that starts with `## ` and has the form `## X.Y.Z (date)`. A
+  heading with a tab after the hashes, with spaces before them, an
+  underlined heading or an `<h2>` is a heading on the page and none for
+  the tests; a `## ` line inside a comment or a code block is the other way
+  round. So a changelog written in such a form can show another top entry
+  than `VERSION` and pass. The pattern is older than the rule of 0.4.0. An
+  adversary review found it on 2026-11-15; no pull request that follows
+  the text writes such a heading.
+- **A date is checked for its form only.** `2026-13-45` and `0000-00-00`
+  pass, and so does a date that is older than the date of the entry below
+  it.
+- **The oldest entry is not checked against a rule.** Each entry is held
+  against the one below it, and the oldest has none: a changelog that
+  starts at `0.1.1` passes.
+- **A digit of another script passes as a digit** (the patterns use `\d`):
+  in a number of `VERSION` or of a heading after its first character, and
+  at every place of a date.
+- **The check of the major in `docs/architecture.md` reads one phrase,**
+  also inside a comment.
+- **Two open pull requests that take the same number are caught only when
+  their entries have different dates.** Both make the same change to
+  `VERSION`, so that file does not conflict in the rebase of the later
+  one. The changelog does. With different dates the two heading lines
+  differ: keeping both sides gives the number two times, and two tests
+  fail. With the same date, which is the usual case, git takes the heading
+  line as common to both: keeping both sides gives one entry with the text
+  of both pull requests, and every test passes. Taking one side loses the
+  entry of the other pull request, and every test passes too. Both
+  reviewers and the author ran this with git on 2026-11-15; the first text
+  of this point said that the tests catch it, from reading alone. So the
+  rule is one for the agent that rebases: every entry that `dev` holds is
+  still there afterwards, and the pull request's own entry is a new one on
+  top, with the next number.
+
+### Not tested
+
+- How GitHub draws the changelog. The points on headings follow the
+  CommonMark rules.
+

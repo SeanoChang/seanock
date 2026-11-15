@@ -84,33 +84,46 @@ record each. Minor findings that were logged and not fixed are in
 
 ### Versions
 
-The number in `VERSION` follows semantic versioning, read as a contract with
-the person who uses the harness.
+The number in `VERSION` has three parts
+(see [decision 0008](decisions/0008-a-version-per-pull-request.md)).
 
 | Part  | It changes when                                    | Example                 |
 | ----- | -------------------------------------------------- | ----------------------- |
 | MAJOR | The architecture changes, or a habit stops working | The rule root moves     |
-| MINOR | Something is added, and nothing old changes        | A new skill or hook     |
-| PATCH | Something is fixed                                 | A bug in a hook         |
+| MINOR | A pull request merges into `dev`: one step each    | 0.4.0 comes after 0.3.0 |
+| PATCH | No step of this flow changes it; it stays 0        | 0.4.0, never 0.4.1      |
 
-These also count as MAJOR: a worker or a skill that is removed, a skill that is
-renamed, and a short prompt that changes its meaning. A clearer sentence and a
-stronger test are PATCH.
+The middle number counts pull requests. It does not say how large a change is;
+the changelog entry of the version says what it holds.
 
-While the major is 0, the harness is still taking shape. A change that would
-be MAJOR goes into a MINOR release, and its changelog entry lists it under
-"Changed". Version 1.0.0 is the first release whose habits are meant to stay.
+These count as MAJOR: a worker or a skill that is removed, a skill that is
+renamed, and a short prompt that changes its meaning. While the major is 0,
+the harness is still taking shape. A change that would be MAJOR takes the next
+MINOR number like every other pull request, and its changelog entry lists it
+under "Changed". Version 1.0.0 is the first version whose habits are meant to
+stay.
 
 ### Releases
 
-1. Work merges into `dev` through task pull requests.
-2. The release pull request from `dev` to `main` sets `VERSION` and dates the
-   top entry of [CHANGELOG.md](../CHANGELOG.md).
-3. After the merge, the tag `vX.Y.Z` goes on `main`.
-4. On a MAJOR release, this document is rewritten for the new major.
+1. Work merges into `dev` through task pull requests. Each one raises MINOR by
+   one in `VERSION`, adds the top entry of [CHANGELOG.md](../CHANGELOG.md) with
+   its date, and has a title that starts with its number, such as
+   `0.4.0: One version per pull request`. One pull request can take the next
+   MAJOR in place of the next MINOR (1.0.0 after 0.9.0): the one that you
+   name for it.
+2. Two open pull requests cannot both hold the next number. The one that
+   merges later is rebased onto `dev` and takes the number after it.
+3. The release pull request from `dev` to `main` changes no number. `main`
+   gets the number that `dev` holds.
+4. After the merge, the tag `vX.Y.Z` goes on `main` for that number. The
+   numbers between two releases have a changelog entry and no tag.
+5. On a MAJOR version, this document is rewritten for the new major.
 
-A test fails when `VERSION` and the top changelog entry differ, when the
-changelog is out of order, or when this document names another major.
+A test fails when `VERSION` and the top changelog entry differ, when an entry
+has no date, when an entry is not the next number after the one below it, or
+when this document names another major. No test reads a pull request: that a
+title starts with the number, and that one pull request holds one number, is a
+rule for the agent that opens it.
 
 ### Decision records
 

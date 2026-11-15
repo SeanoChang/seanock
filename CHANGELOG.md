@@ -1,10 +1,26 @@
 # Changelog
 
-One entry per release of the harness. The number is in `VERSION`, and
-[docs/architecture.md](docs/architecture.md) says what MAJOR, MINOR and PATCH
-mean. The newest entry is first.
+One entry per version of the harness. Each pull request into `dev` is one
+version, with the date of the pull request. A version that reached `main` has
+the tag `vX.Y.Z`. The number is in `VERSION`, and
+[docs/architecture.md](docs/architecture.md) says how it moves. The newest
+entry is first.
 
-## 0.3.0 (unreleased)
+## 0.4.0 (2026-11-15)
+
+Changed:
+
+- Every pull request into `dev` is a version of its own. It raises the middle
+  number of `VERSION` by one, adds its entry here with its date, and has a
+  title that starts with the number, such as `0.4.0: One version per pull
+  request`. Before, the number changed once per release, and the pull
+  requests of a release shared one entry; 0.3.0 below is the last entry of
+  that kind. A release to `main` changes no number: `main` gets the number
+  that `dev` holds, and that number gets the tag. Two tests hold the
+  changelog to the rule: each entry has a date, and each entry is the next
+  number after the one below it.
+
+## 0.3.0 (2026-11-15)
 
 Added:
 
