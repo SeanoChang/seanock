@@ -108,7 +108,9 @@ stay.
 1. Work merges into `dev` through task pull requests. Each one raises MINOR by
    one in `VERSION`, adds the top entry of [CHANGELOG.md](../CHANGELOG.md) with
    its date, and has a title that starts with its number, such as
-   `0.4.0: One version per pull request`.
+   `0.4.0: One version per pull request`. One pull request can take the next
+   MAJOR in place of the next MINOR (1.0.0 after 0.9.0): the one that you
+   name for it.
 2. Two open pull requests cannot both hold the next number. The one that
    merges later is rebased onto `dev` and takes the number after it.
 3. The release pull request from `dev` to `main` changes no number. `main`

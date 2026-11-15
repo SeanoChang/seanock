@@ -10,12 +10,16 @@ status: current
 Each pull request into `dev` raises the middle number of `VERSION` by one and
 sets the last number to 0. It adds its own entry at the top of the changelog,
 with its date, and its title starts with the number: `0.4.0: One version per
-pull request`. You chose this on 2026-11-15.
+pull request`. You chose this on 2026-11-15. A pull request that you name as
+a major step takes the next first number in place of the next middle one
+(1.0.0 after 0.9.0).
 
-This replaces one part of [record 0006](0006-versions.md): the middle number
-no longer means "something was added". It counts pull requests, and the
-changelog entry of a version says what it holds. The rest of 0006 stands: one
-number for the whole harness, the tag `vX.Y.Z` on `main`, and
+This replaces two parts of [record 0006](0006-versions.md). The middle number
+no longer means "something was added": it counts pull requests, and the
+changelog entry of a version says what it holds. And the last number no
+longer means "a fix": a fix is a pull request like any other and takes the
+next middle number. The rest of 0006 stands: one number for the whole
+harness, what counts as a major step, the tag `vX.Y.Z` on `main`, and
 `metadata.version` on a skill that leaves the machine as a copy.
 
 A release pull request from `dev` to `main` changes no number. `main` gets the

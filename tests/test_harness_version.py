@@ -3,7 +3,7 @@
 The harness has one version, in VERSION at the repo root. Three things can
 drift from it with no error:
 
-- the changelog, when a release changes the number and adds no entry;
+- the changelog, when a pull request changes the number and adds no entry;
 - the architecture document, when a major release keeps the old description;
 - the decision records, when a file is added out of order or without a number.
 
@@ -97,8 +97,9 @@ def next_numbers(old):
 
 
 def test_each_changelog_entry_is_the_next_number_after_the_one_below_it():
-    """One pull request raises the middle number by one. A number that is left out, a middle number
-    raised two times in one pull request, and a last number other than 0 all fail here."""
+    """One pull request raises the middle number by one, or takes the next major. Above the oldest
+    entry, a number that is left out, a middle number raised two times in one pull request, and a last
+    number other than 0 all fail here. The oldest entry has none below it and is not checked."""
     found = [as_numbers(v) for v, _ in entries(CHANGELOG.read_text(encoding="utf-8"))]
     for new, old in zip(found, found[1:]):
         assert new in next_numbers(old), (
