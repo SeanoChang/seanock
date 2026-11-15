@@ -84,17 +84,17 @@ SECRETS = [re.compile(pattern) for pattern in (
     r"github_pat_[A-Za-z0-9_]{20,}",
     r"A[KS]IA[0-9A-Z]{16}",
     r"xox[abeprs]-[A-Za-z0-9-]{10,}",
-    r"-----BEGIN[A-Z\s]*PRIVATE\s*KEY",
+    r"-----BEGIN [A-Z ]*PRIVATE KEY",
     r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}",  # a JSON web token
     r"(?i)(?:bearer|basic)\s+[A-Za-z0-9+/_.=-]{16,}",
     r"(?i)" + WORD + r"[\\\"'\s]{0,8}[:=][\\\"'\s]{0,8}[^\s\\\"']",    # password: x, "password": "x", \"password\": \"x\"
     r"(?i)(?:^|[\s\"'`=(\[])--?" + WORD + r"\s+[\\\"']{0,4}[^\s\\\"'-]",   # --password x, but not "per-token cost"
-    r"://[^\s/@]{0,256}:[^\s@]{1,256}@",                         # a URL with a password, with or without a user
+    r"://[^\s/@]{0,4096}:[^\s@]{1,4096}@",                         # a URL with a password, with or without a user
     rf"[{HEX}]{{8}}-[{HEX}]{{4}}-[{HEX}]{{4}}-[{HEX}]{{4}}-[{HEX}]{{12}}",   # a UUID
 )]
 LONG_RUN = re.compile(r"[A-Za-z0-9+/_=-]{24,}")     # held back with a small letter, a capital and a digit
 PLAIN_RUN = re.compile(r"[A-Za-z0-9]{20,}")         # held back with a letter and a digit
-LINE_BREAK = re.compile(r"\s*[\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]\s*")
+LINE_BREAK = re.compile(r"\s*[\n\r]\s*")
 
 
 def visible(text):
@@ -118,22 +118,35 @@ def has_secret_form(text):
 def looks_secret(text):
     """True when any part of the text has the form of a secret.
 
-    The text is looked at in two forms: as it shows (invisible characters and
-    control characters taken out, so they cannot split a secret), and with
-    each line break closed (a secret copied from a wrapped line). It errs to
-    the safe side: a full commit id, a UUID, or a long path with capitals
-    and digits is held back too.
+    A line with a character that does not show (a control character, a
+    zero-width character, a line separator) is held back whole: such a
+    character can split a secret or join it to a word, and every way to print
+    the line would guess. Tab, LF, CR and the space characters of other
+    scripts (a no-break space, the wide space of Chinese text) pass, and
+    count as spaces. The rest is looked at as
+    typed and with each line break closed (a secret copied from a wrapped
+    line), each of the two also with its spaces joined, and as `shown` prints
+    it. So no line is printed in a form that was not checked. It errs to the
+    safe side: a full commit id, a UUID, or a long path with capitals and
+    digits is held back too.
     """
-    text = visible(text)
-    return has_secret_form(text) or has_secret_form(LINE_BREAK.sub("", text))
+    if any(not ch.isprintable() and ch not in "\t\n\r" and unicodedata.category(ch) != "Zs" for ch in text):
+        return True
+    seen = visible(text)
+    closed = LINE_BREAK.sub("", seen)
+    return any(has_secret_form(form) for form in (seen, closed, printed(seen), printed(closed), printed(text)))
+
+
+def printed(text):
+    """The text as one line: each character that does not print is a space, and spaces are joined."""
+    return " ".join("".join(ch if ch.isprintable() else " " for ch in text).split())
 
 
 def shown(text):
     """One printable line of at most SHOWN characters, or None when it must be held back."""
     if looks_secret(text):
         return None
-    flat = " ".join("".join(ch if ch.isprintable() else " " for ch in text).split())
-    return flat[:SHOWN]
+    return printed(text)[:SHOWN]
 
 
 # ── mine: the repo ───────────────────────────────────────────────────────────

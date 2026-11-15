@@ -82,7 +82,14 @@ def hostile_secrets():
         "token split by a wrapped line": (token[:20] + "\r\n    " + token[20:], [token[:20], token[20:]]),
         "token split by a zero-width space": (token[:20] + "\u200b" + token[20:], [token[:20], token[20:]]),
         "token split by a control character": (token[:20] + "\x01" + token[20:], [token[:20], token[20:]]),
+        "token split by a bare carriage return": (token[:20] + "\r" + token[20:], [token[:20], token[20:]]),
+        "token split by a unit separator": (token[:20] + "\x1f" + token[20:], [token[:20], token[20:]]),
         "mixed run split in two halves": (mixed[:20] + "\n" + mixed[20:], [mixed[:20], mixed[20:]]),
+        # the printed line has a space where a character does not print: that form is checked too
+        "flag and value joined by a control character": ("mysql --password" + "\x01" + "hunter2xyz", ["hunter2xyz"]),
+        "bearer and token joined by a control character": ("Bearer" + "\x01" + "abcdefgh.ijklmnop", ["abcdefgh.ijklmnop"]),
+        "many spaces before the equals sign": ("password" + " " * 12 + "= " + "hunter2xyz", ["hunter2xyz"]),
+        "url with a very long password": ("https://sean:" + "pw-" * 100 + "@host.invalid", ["pw-pw-pw-"]),
     }
 
 
@@ -238,7 +245,7 @@ def test_a_secret_with_any_neighbour_and_any_split_is_held_back(module):
     rng = random.Random(20261116)
     secrets = list(made_up_secrets().values()) + [secret for secret, _ in hostile_secrets().values()]
     near = list("_azGZ09fFxX\"'\\/:=.,-+()[]{}<>|@#%&*!? \t") + ["0x", "key_", "_id", "\u200b", "\n", ""]
-    breaks = ["\n", "\r\n", "\n  ", "\u200b", "\u2060", "\ufeff", "\x00", "\x7f", "\u2028"]
+    breaks = ["\n", "\r\n", "\n  ", "\r", "\u200b", "\u2060", "\ufeff", "\x00", "\x7f", "\u2028", "\x1f", "\x0b", "\x85"]
     words = ["don't", "never", "use", "again", "the", "v2", "path/to/file.py", "ok?"]
     for _ in range(20000):
         secret = rng.choice(secrets)
@@ -248,6 +255,22 @@ def test_a_secret_with_any_neighbour_and_any_split_is_held_back(module):
         line = " ".join([rng.choice(words), rng.choice(near) + secret + rng.choice(near), rng.choice(words)])
         assert module.looks_secret(line) is True, repr(line)
         assert module.shown(line) is None, repr(line)
+
+
+def test_a_line_with_a_character_that_does_not_show_is_held_back_and_a_space_of_another_script_is_not(module):
+    """A control or zero-width character can split a secret or join it to a word, so such a line is never
+    printed. The wide space of Chinese text and a no-break space are spaces: they hold no line back."""
+    for odd in ("\x00", "\x01", "\x1b", "\x7f", "\x0b", "\x0c", "\x1f", "\x85", "\u200b", "\u200d", "\u2060", "\ufeff",
+                "\u2028", "\u2029", "\u202e"):
+        line = f"never use{odd}mocks here"
+        assert module.looks_secret(line) is True and module.shown(line) is None, repr(line)
+    for space in ("\t", "\n", "\r\n", " ", "\u00a0", "\u3000", "\u2009"):
+        line = f"不要用{space}mock，never use{space}mocks here"
+        assert module.looks_secret(line) is False, repr(line)
+        assert module.shown(line) == "不要用 mock，never use mocks here", repr(line)
+    for space in ("\u00a0", "\u3000", "\u2009"):
+        assert module.looks_secret(f"password:{space}hunter2xyz") is True
+        assert module.looks_secret(f"mysql --password{space}hunter2xyz") is True
 
 
 def test_a_secret_is_held_back_also_in_a_line_that_is_no_correction_or_is_too_long(world):
@@ -511,8 +534,7 @@ def test_a_commit_subject_cannot_forge_a_commit_and_a_path_keeps_its_first_chara
 
 def test_the_git_settings_of_the_user_and_of_the_repo_do_not_change_what_is_read(world, tmp_path):
     """log.showSignature puts the text of a signature check on stdout, between the commits."""
-    if not shutil.which("ssh-keygen"):
-        pytest.skip("ssh-keygen is needed to sign the commits of this test")
+    assert shutil.which("ssh-keygen"), "ssh-keygen is needed to sign the commits of this test"
     key = tmp_path / "key"
     subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "made-up", "-f", str(key)], check=True, timeout=60)
     signed = ("-c", "gpg.format=ssh", "-c", f"user.signingkey={key}.pub", "-c", "commit.gpgsign=true")

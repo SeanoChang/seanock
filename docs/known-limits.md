@@ -1755,10 +1755,26 @@ has none.
   form asks what stands next to the secret. So a line with a commit id of
   20 characters or more, a UUID or a long mixed path is held back too, and
   so is "the token: 5".
-- **The text is checked in two forms:** as it shows (full-width characters
-  made plain, invisible and control characters taken out), and again with
-  each line break closed, because a secret that was copied from a wrapped
-  line has a break in it. A secret that a plain space splits is not seen.
+- **A line with a character that does not show is held back whole:** a
+  control character, a zero-width character, a line or paragraph separator.
+  Such a character can split a secret or join it to a word, and each way to
+  print the line guesses which. The first fix took these characters out
+  before the check and printed a space for them; an automated security
+  review showed that the printed form was then one that nobody had checked
+  (`--password`, a control character, the value). Tab, LF, CR and the space
+  characters of other scripts (a no-break space, the wide space of Chinese
+  text) pass and count as spaces. A line with an emoji that is joined from
+  several (a zero-width joiner) is held back too.
+- **No line is printed in a form that was not checked.** The text is
+  checked as typed with full-width characters made plain, again with each
+  line break closed (a secret that was copied from a wrapped line has a
+  break in it), each of the two also with its spaces joined, and in the
+  form that is printed. A secret that a plain space splits is not seen.
+- **The same review asked for two more things.** A URL password can now be
+  4,096 characters long (it was 256). A rule for a long run of hex digits
+  alone was not put back: a run of 20 or more letters and digits with both
+  kinds is held back, and a hex value of 32 characters from a random source
+  has both kinds except in about one case in three million.
 - **A secret of a form that is not on the list is not seen.** Examples: a
   value of fewer than 20 characters with no key word before it, a value of
   small letters only, `Basic` with fewer than 16 characters after it. An
