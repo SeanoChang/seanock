@@ -90,11 +90,11 @@ one does not.
 
 1. Write the enforcer: the test, the lint rule, the hook, the type, the
    setting and its test.
-2. **Show it fail on the old mistake.** Put the mistake back, on a copy or
-   in a test fixture, and run the enforcer. Keep the output. An enforcer
-   that never failed proves nothing. If you put the mistake back in the
-   working tree itself, restore the file (`git checkout -- <file>`) before
-   you do anything else, and commit nothing in between.
+2. **Show it fail on the old mistake.** Put the mistake back on a copy: a
+   test fixture, or a copy of the project in a temp folder. Run the enforcer
+   on the copy and keep the output. An enforcer that never failed proves
+   nothing. Never put the mistake back in the working tree: a restore would
+   also delete the work there that is not committed.
 3. Show it pass on the code as it is now. If the code still has the mistake,
    fix it in the same change.
 4. Make sure it runs without anyone thinking of it: in a CI workflow, or as
@@ -137,7 +137,7 @@ python3 ~/.claude/skills/correct/scripts/rules.py table --repo <project root>
 | Gap | Meaning | What to do |
 | --- | --- | --- |
 | `missing-enforcer` | The enforcer file is not there. | Write it, or correct the path. |
-| `not-in-ci` | `runs_in` is `ci`, and no workflow names the file or a folder above it. | Add it to a workflow. |
+| `not-in-ci` | `runs_in` is `ci`, and no `run:` command of a workflow names the file or a folder above it. | Add it to a workflow. |
 | `docs-only` | A `docs` rule with no `accepted` line. | Move it to a stronger layer, or say why none works. |
 | `table-stale` | `.claude/rules.md` is not what `table` writes. | Run `table`. |
 
@@ -161,10 +161,12 @@ work of the highest tier in most projects.
   ...). A correction in other words is not listed.
 - It counts two lines as one when they differ only in case and punctuation.
   Grouping by meaning is your work.
-- A line with a long path, a commit id or a long mixed word can be held back
-  although it holds no secret.
-- `not-in-ci` reads the workflow files as text. A workflow that runs every
-  test with no path named counts as not naming the file.
+- A line can be held back although it holds no secret: a full commit id, a
+  UUID, a long word of letters and digits, a long path with capitals and
+  digits, or a word such as `password` or `token` before a `:` or `=`.
+- `not-in-ci` reads the `run:` commands of the workflow files as text. A
+  workflow that runs every test with no path named counts as not naming the
+  file, and so does a path that only an input of an action names.
 - `check` does not run a workflow. It shows that CI names the enforcer, not
   that the workflow passes.
 - This skill adds rows. It does not rewrite `CLAUDE.md`.

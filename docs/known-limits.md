@@ -1747,12 +1747,36 @@ has none.
 - **A line in which anything looks like a secret is held back whole,** and
   only its line number is printed. The forms are: keys of several vendors,
   GitHub, AWS and Slack tokens, a private key header, a JSON web token, a
-  `Bearer` value, `password=` and the like, a URL with a password, 32 or
-  more hex digits, and any run of 24 or more characters of letters, digits
-  and `+ / _ = -` that has a small letter, a capital and a digit. So a line
-  with a full commit id or a long mixed path is held back too. A secret of
-  a form that is not on this list, and shorter than 24 characters or with
-  no capital, is not seen.
+  `Bearer` value, a word such as `password`, `token`, `secret` or `api_key`
+  before a `:` or `=` or as a flag (`--password x`), a URL with a password
+  (with or without a user name), a UUID, a run of 20 or more letters and
+  digits that has both, and a run of 24 or more characters of letters,
+  digits and `+ / _ = -` that has a small letter, a capital and a digit. No
+  form asks what stands next to the secret. So a line with a commit id of
+  20 characters or more, a UUID or a long mixed path is held back too, and
+  so is "the token: 5".
+- **The text is checked in two forms:** as it shows (full-width characters
+  made plain, invisible and control characters taken out), and again with
+  each line break closed, because a secret that was copied from a wrapped
+  line has a break in it. A secret that a plain space splits is not seen.
+- **A secret of a form that is not on the list is not seen.** Examples: a
+  value of fewer than 20 characters with no key word before it, a value of
+  small letters only, `Basic` with fewer than 16 characters after it. An
+  automated security review asked to hold back every run of 20 or more
+  characters that has two kinds of characters, separators included. That
+  was taken in part (letters and digits with no separator, from 20): the
+  full rule would hold back ordinary paths such as
+  `tests/test_runner_part2.py`, which corrections name often. A trial on
+  one real history gave the same counts before and after the stricter
+  rules: 42 candidates, 1 line held back.
+- **`mine` reads git with its own format.** The `GIT_` variables of the
+  caller are dropped, and no signature is checked, so that only the
+  script's own format reaches it. Each commit starts with a mark that is
+  made for the run. The git settings of the user and of the repo are read.
+  A test sets `log.showSignature`, `format.pretty` and `color.ui`, and the
+  result does not change; other settings are not tested.
+- **Two typed lines are one candidate when they differ only in case, marks
+  and spaces,** in any script. Accents count: `écrire` and `ecrire` are two.
 - **Only the text that was typed is read.** The pasted content of a prompt
   is never opened.
 - **A line of more than 400 characters is left out** (and counted): it is a
@@ -1773,10 +1797,25 @@ has none.
 
 ### Minor
 
-- **`not-in-ci` reads the workflow files as text.** It counts when a file
-  under `.github/workflows/` names the enforcer path, or a folder above it,
-  as a whole word. A workflow that runs every test with no path named
-  (`pytest`) does not count, and a path in a comment does.
+- **`not-in-ci` reads the `run:` commands of the workflow files as text.**
+  It counts when a command names the enforcer path, or a folder above it,
+  as a whole word (`./` before it is fine). A job name, a step name, an
+  input of an action and a comment do not count. A workflow that runs every
+  test with no path named (`pytest`) does not count. The block of a `run:`
+  is found by its indent, with no YAML parser: a `run:` key inside a quoted
+  string, or a command in a flow mapping (`{run: ...}`), is read wrongly.
+- **One history line that is JSON nested very deep stops `mine`** with exit
+  2 (`RecursionError`); other broken lines are skipped. Found by both
+  reviewers, 2026-11-15. It prints nothing from the file.
+- **A `.claude/rules.md` that is not UTF-8 gives exit 2,** where
+  `table-stale` would be the better answer.
+- **When the rename of `table` fails** (`.claude/rules.md` is a folder),
+  `.claude/rules.md.part` stays on disk.
+- **A usage error** (`rules.py chek`) ends with exit 2 and the line of
+  `argparse` on stderr, not with `rules: error ...`. It is not a result, and
+  the text says so.
+- **A typed line that starts with `/` is left out** as a slash command, also
+  when it is a correction that starts with a path.
 - **`check` does not run a workflow or a hook.** It shows that the enforcer
   file is there and that CI names it, not that the check passes or that the
   hook is installed.
@@ -1792,6 +1831,7 @@ has none.
 
 - The live history of a second person. The trial ran on one history file
   (2026-11-15): 42 candidates, 1 line held back, 23 too long.
+- Signatures made with GnuPG. The test signs its commits with an SSH key.
 - A live session with the user in step 2. A fresh agent followed the text on
   a stand-in project with the user's answer given ahead; it built two rules
   and showed each enforcer fail on the old mistake. Its findings about the

@@ -16,7 +16,8 @@ mine   lists candidates for a rule, one JSON object per line:
 check  reads <repo>/.claude/rules.json and lists each rule that nothing holds up:
          missing-enforcer  the file that enforces the rule is not there
          docs-only         the rule lives in text only, and no reason is given
-         not-in-ci         the enforcer says it runs in CI, and no workflow names it
+         not-in-ci         the enforcer says it runs in CI, and no `run:` command of a
+                           workflow names it
          table-stale       .claude/rules.md is not what `table` writes
 table  writes <repo>/.claude/rules.md, the table that a person reads.
 
@@ -47,8 +48,10 @@ import datetime
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 LAYERS = ("architecture", "types", "config", "lint", "test", "hook", "docs")
@@ -69,34 +72,60 @@ class Failed(Exception):
 
 # ── secrets: a line with any of these is held back whole ─────────────────────
 
+# No pattern asks what stands next to the secret. A word boundary (\b) is not
+# there when the secret touches a letter, a digit or "_", and a pattern that
+# asks for one does not see such a secret.
+HEX = "0-9a-fA-F"   # a long hex value needs no rule of its own: it is a run of letters and digits (PLAIN_RUN)
+WORD = (r"(?:pass(?:word|wd|phrase|code)?|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key"
+        r"|auth(?:orization)?|credential)s?")
 SECRETS = [re.compile(pattern) for pattern in (
     r"sk-[A-Za-z0-9_-]{16,}",                                   # API keys of several vendors
     r"gh[pousr]_[A-Za-z0-9]{20,}",
     r"github_pat_[A-Za-z0-9_]{20,}",
     r"A[KS]IA[0-9A-Z]{16}",
     r"xox[abeprs]-[A-Za-z0-9-]{10,}",
-    r"-----BEGIN [A-Z ]*PRIVATE KEY",
+    r"-----BEGIN[A-Z\s]*PRIVATE\s*KEY",
     r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}",  # a JSON web token
-    r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9+/_.=-]{16,}",
-    r"(?i)(?:pass(?:word|wd)?|secret|token|api[_-]?key|access[_-]?key|credential)s?[\"']?\s*[:=]\s*[\"']?[^\s\"']{6,}",
-    r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@",           # a URL with a name and a password
-    r"\b[0-9a-fA-F]{32,}\b",                                    # a long hex value
+    r"(?i)(?:bearer|basic)\s+[A-Za-z0-9+/_.=-]{16,}",
+    r"(?i)" + WORD + r"[\\\"'\s]{0,8}[:=][\\\"'\s]{0,8}[^\s\\\"']",    # password: x, "password": "x", \"password\": \"x\"
+    r"(?i)(?:^|[\s\"'`=(\[])--?" + WORD + r"\s+[\\\"']{0,4}[^\s\\\"'-]",   # --password x, but not "per-token cost"
+    r"://[^\s/@]{0,256}:[^\s@]{1,256}@",                         # a URL with a password, with or without a user
+    rf"[{HEX}]{{8}}-[{HEX}]{{4}}-[{HEX}]{{4}}-[{HEX}]{{4}}-[{HEX}]{{12}}",   # a UUID
 )]
-LONG_RUN = re.compile(r"[A-Za-z0-9+/_=-]{24,}")
+LONG_RUN = re.compile(r"[A-Za-z0-9+/_=-]{24,}")     # held back with a small letter, a capital and a digit
+PLAIN_RUN = re.compile(r"[A-Za-z0-9]{20,}")         # held back with a letter and a digit
+LINE_BREAK = re.compile(r"\s*[\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]\s*")
 
 
-def looks_secret(text):
-    """True when any part of the text has the form of a secret.
+def visible(text):
+    """The text with full-width forms made plain, and without the characters that do not show."""
+    text = unicodedata.normalize("NFKC", text)
+    return "".join(ch for ch in text if ch.isprintable() or ch.isspace())
 
-    It errs to the safe side: a long path with capitals and digits, or a full
-    commit id, is held back too.
-    """
+
+def has_secret_form(text):
     if any(pattern.search(text) for pattern in SECRETS):
         return True
     for run in LONG_RUN.findall(text):
         if re.search(r"[a-z]", run) and re.search(r"[A-Z]", run) and re.search(r"[0-9]", run):
             return True
+    for run in PLAIN_RUN.findall(text):
+        if re.search(r"[A-Za-z]", run) and re.search(r"[0-9]", run):
+            return True
     return False
+
+
+def looks_secret(text):
+    """True when any part of the text has the form of a secret.
+
+    The text is looked at in two forms: as it shows (invisible characters and
+    control characters taken out, so they cannot split a secret), and with
+    each line break closed (a secret copied from a wrapped line). It errs to
+    the safe side: a full commit id, a UUID, or a long path with capitals
+    and digits is held back too.
+    """
+    text = visible(text)
+    return has_secret_form(text) or has_secret_form(LINE_BREAK.sub("", text))
 
 
 def shown(text):
@@ -114,13 +143,21 @@ FIX = re.compile(r"(?i)^(?:fix|fixup!|hotfix|bugfix)\b|\bfix(?:es|ed)?\b")
 
 
 def git_log(repo):
-    """[(sha, unix time, subject, [paths])] of the newest commits. Git lists no paths for a merge."""
+    """[(sha, unix time, subject, [paths])] of the newest commits. Git lists no paths for a merge.
+
+    No signature is checked and the GIT_ variables of the caller are dropped,
+    so that nothing but the format below reaches stdout. Each commit starts
+    with a mark that is made for this run, and the fields end with a NUL: a
+    commit subject can hold neither, so it cannot stand as a commit.
+    """
+    mark = secrets.token_hex(16)
+    env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", LC_ALL="C")
     try:
         done = subprocess.run(
-            ["git", "--no-pager", "-C", str(repo), "log", "-n", str(MAX_COMMITS), "--name-only", "-z",
-             "--format=%x1e%H%x1f%ct%x1f%s%x1f"],
-            capture_output=True, text=True, timeout=120, errors="replace",
-            env=dict(os.environ, GIT_OPTIONAL_LOCKS="0", LC_ALL="C"))
+            ["git", "--no-pager", "-C", str(repo), "log", "-n", str(MAX_COMMITS), "--no-show-signature",
+             "--name-only", "-z", f"--format={mark}%H%x00%ct%x00%s%x00"],
+            capture_output=True, text=True, timeout=120, errors="replace", env=env, stdin=subprocess.DEVNULL)
     except FileNotFoundError:
         raise Failed("git is not installed")
     except subprocess.TimeoutExpired:
@@ -129,14 +166,24 @@ def git_log(repo):
         reason = (done.stderr.strip().splitlines() or ["no message"])[-1]
         if "does not have any commits" in reason:
             return []
-        raise Failed(f"git log failed: {reason}")
+        raise Failed("git log failed" + (": not a git repository" if "not a git repository" in reason else ""))
+    blocks = done.stdout.split(mark)
+    if blocks[0] != "":
+        raise Failed("git log gave a shape this script does not know")
     commits = []
-    for block in done.stdout.split("\x1e")[1:]:
-        parts = block.split("\x1f")
-        if len(parts) != 4 or not parts[1].isdigit():
+    for block in blocks[1:]:
+        parts = block.split("\x00")
+        # sha, time, subject, the end of the format, then "\n" and the paths, each with a NUL after it
+        if len(parts) < 5 or not parts[1].isdigit() or parts[3] != "" or parts[-1] != "":
             raise Failed("git log gave a shape this script does not know")
-        paths = [path for path in parts[3].strip("\n\x00").split("\x00") if path.strip("\n")]
-        commits.append((parts[0], int(parts[1]), parts[2], [path.lstrip("\n") for path in paths]))
+        paths = parts[4:-1]
+        if paths:
+            if not paths[0].startswith("\n"):
+                raise Failed("git log gave a shape this script does not know")
+            paths[0] = paths[0][1:]
+        if any(path == "" for path in paths):
+            raise Failed("git log gave a shape this script does not know")
+        commits.append((parts[0], int(parts[1]), parts[2], paths))
     return commits
 
 
@@ -164,8 +211,8 @@ CORRECTION = re.compile(
 
 
 def normal(text):
-    """The text as it is compared: lower case, letters and digits only, single spaces."""
-    return " ".join(re.sub(r"[^a-z0-9']+", " ", text.lower()).split())
+    """The text as it is compared: no case, the letters and digits of any script, single spaces."""
+    return " ".join("".join(ch if ch.isalnum() or ch == "'" else " " for ch in visible(text).casefold()).split())
 
 
 def in_project(project, roots):
@@ -310,17 +357,53 @@ def workflow_texts(repo):
                 try:
                     texts.append(path.read_text(encoding="utf-8", errors="replace"))
                 except OSError:
-                    raise Failed(f"a workflow file cannot be read: {path.name}")
+                    raise Failed("a workflow file cannot be read")
     return texts
 
 
+RUN_KEY = re.compile(r"^(\s*(?:-\s+)?)run:(?:\s+(.*))?$")
+BLOCK = re.compile(r"[|>][+-]?[1-9]?[+-]?\Z")
+
+
+def without_comment(line):
+    """The line up to a `#` that starts it or follows a space."""
+    return re.sub(r"(?:^|\s)#.*$", "", line)
+
+
+def commands(text):
+    """The command lines of the `run:` steps of a workflow file, read as text.
+
+    Only these lines can name an enforcer. A job name, a step name or an
+    input of an action cannot: "Run the tests" runs nothing.
+    """
+    found, lines, at = [], text.splitlines(), 0
+    while at < len(lines):
+        key = RUN_KEY.match(lines[at])
+        at += 1
+        if not key:
+            continue
+        column = len(key.group(1))            # where `run:` starts; the lines of its block start further right
+        value = without_comment(key.group(2) or "").strip()
+        if value and not BLOCK.match(value):
+            found.append(value)
+            continue
+        while at < len(lines):
+            line = lines[at]
+            if line.strip() and len(line) - len(line.lstrip(" ")) <= column:
+                break
+            found.append(without_comment(line))
+            at += 1
+    return found
+
+
 def named_in(texts, rel):
-    """True when a workflow names the path, or a folder above it, as a whole word."""
+    """True when a command of a workflow names the path, or a folder above it, as a whole word."""
+    lines = [line for text in texts for line in commands(text)]
     parts = rel.split("/")
     for depth in range(len(parts), 0, -1):
         name = "/".join(parts[:depth])
-        pattern = re.compile(r"(?<![\w./-])" + re.escape(name) + r"/?(?![\w.-]|/\w)")
-        if any(pattern.search(text) for text in texts):
+        pattern = re.compile(r"(?<![\w./-])(?:\./)?" + re.escape(name) + r"/?(?![\w.-]|/\w)")
+        if any(pattern.search(line) for line in lines):
             return True
     return False
 

@@ -13,6 +13,7 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -42,11 +43,46 @@ def made_up_secrets():
         "url with a password": "https://sean:" + "pw12345" + "@example.invalid/x",
         "long hex": "0123456789abcdef" * 2,
         "long mixed run": "Qw3rTy" * 5,
-        # the same forms with no capital letter, so that only the rule for that form can catch them
-        "vendor key, lower case": "sk-" + "q7w8r9t0" * 3,
-        "github token, lower case": "ghp_" + "q7w8r9t0z1" * 3,
-        "github fine token, lower case": "github_pat_" + "q7w8r9t0z1_" * 3,
-        "slack token, lower case": "xoxb-" + "123456789012-qwertyqwerty",
+        "long mixed run with signs": "Qw3r/Ty9+" * 3,
+        # the same forms as letters only, so that only the rule for that form can catch them
+        "vendor key, its own rule": "sk-" + "abcd-efgh-ijkl-mnop",
+        "github token, its own rule": "ghp_" + "abcdefghijklmnopqrstuv",
+        "github fine token, its own rule": "github_pat_" + "abcdefghi_" * 3,
+        "aws key id, its own rule": "AKIA" + "QZMKPXWVBNHTRDLS",
+        "slack token, its own rule": "xoxb-" + "abcdefghij-klmnop",
+        "web token, its own rule": "eyJ" + "abcdefgh" + "." + "abcdefgh" + "." + "abcd",
+        "bearer, its own rule": "Bearer " + "abcdefgh.ijklmnop",
+        "uuid": "123e4567-e89b-42d3-a456-" + "426614174000",
+        "long run of small letters and digits": "q7w8r9t0z1" * 2,
+    }
+
+
+def hostile_secrets():
+    """Made-up secrets in the forms that slipped past a first version: each touches a character that
+    hides a word boundary, or has a part left out, or is split by a break or an invisible character."""
+    hex64 = "0123456789abcdef" * 4
+    token = made_up_secrets()["github token"]
+    mixed = "wJalrXUtnFEMIK7MDENG" + "bPxRfiCYEXAMPLEKEY12"
+    return {
+        "hex after 0x": ("0x" + hex64, [hex64]),
+        "hex after a name and _": ("key_" + hex64, [hex64]),
+        "hex before _ and a name": (hex64 + "_prod", [hex64]),
+        "hex after a vendor prefix": ("dop_v1_" + hex64, [hex64]),
+        "hex inside letters": ("zz" + hex64[:32] + "zz", [hex64[:32]]),
+        "url with a password and no user": ("redis://:" + "hunter2x" + "@db.invalid:6379", ["hunter2x"]),
+        "url with a token and no user": ("https://:" + "tok3nvalue" + "@git.example.invalid/x", ["tok3nvalue"]),
+        "url with a slash in the password": ("https://sean:" + "ab/cd12" + "@host.invalid", ["ab/cd12"]),
+        "password in escaped json": ('{\\"password\\": \\"' + "hunter2xyz" + '\\"}', ["hunter2xyz"]),
+        "password in quotes with a space": ('password: "my ' + "hunter2 pass" + '"', ["hunter2 pass"]),
+        "passphrase": ("passphrase: " + "hunter2xyz", ["hunter2xyz"]),
+        "password as a flag": ("mysql --password " + "hunter2xyz", ["hunter2xyz"]),
+        "token as a short flag": ("tool -token '" + "hunter2xyz" + "'", ["hunter2xyz"]),
+        "password after a wide colon": ("password\uff1a" + "hunter2xyz", ["hunter2xyz"]),
+        "token split by a line break": (token[:20] + "\n" + token[20:], [token[:20], token[20:]]),
+        "token split by a wrapped line": (token[:20] + "\r\n    " + token[20:], [token[:20], token[20:]]),
+        "token split by a zero-width space": (token[:20] + "\u200b" + token[20:], [token[:20], token[20:]]),
+        "token split by a control character": (token[:20] + "\x01" + token[20:], [token[:20], token[20:]]),
+        "mixed run split in two halves": (mixed[:20] + "\n" + mixed[20:], [mixed[:20], mixed[20:]]),
     }
 
 
@@ -179,6 +215,41 @@ def test_a_typed_line_with_a_secret_is_held_back_whole(world, name):
                      {"kind": "held-back", "count": 1, "lines": [number]}]
 
 
+@pytest.mark.parametrize("name", sorted(hostile_secrets()))
+def test_a_secret_in_a_hostile_form_is_held_back_whole(world, name):
+    secret, parts = hostile_secrets()[name]
+    number = world.typed(f"don't use {secret} again")
+    world.typed("don't add emojis")
+
+    code, found, last, out = world.mine()
+
+    for part in parts:
+        assert part not in out, part
+    assert "again" not in out
+    assert code == 1 and last == "rules: summary candidates=1 held_back=1"
+    assert found[-1] == {"kind": "held-back", "count": 1, "lines": [number]}
+
+
+def test_a_secret_with_any_neighbour_and_any_split_is_held_back(module):
+    """The secret is planted, so what must be held back is known without asking the script.
+
+    Each made-up secret gets random characters right before and after it, and in some cases a line
+    break or an invisible character inside it."""
+    rng = random.Random(20261116)
+    secrets = list(made_up_secrets().values()) + [secret for secret, _ in hostile_secrets().values()]
+    near = list("_azGZ09fFxX\"'\\/:=.,-+()[]{}<>|@#%&*!? \t") + ["0x", "key_", "_id", "\u200b", "\n", ""]
+    breaks = ["\n", "\r\n", "\n  ", "\u200b", "\u2060", "\ufeff", "\x00", "\x7f", "\u2028"]
+    words = ["don't", "never", "use", "again", "the", "v2", "path/to/file.py", "ok?"]
+    for _ in range(20000):
+        secret = rng.choice(secrets)
+        if rng.random() < 0.4 and len(secret) > 8:
+            at = rng.randint(3, len(secret) - 3)
+            secret = secret[:at] + rng.choice(breaks) + secret[at:]
+        line = " ".join([rng.choice(words), rng.choice(near) + secret + rng.choice(near), rng.choice(words)])
+        assert module.looks_secret(line) is True, repr(line)
+        assert module.shown(line) is None, repr(line)
+
+
 def test_a_secret_is_held_back_also_in_a_line_that_is_no_correction_or_is_too_long(world):
     secret = made_up_secrets()["github token"]
     first = world.typed(f"here is the value {secret}")
@@ -254,7 +325,14 @@ def test_on_random_lines_no_planted_secret_reaches_the_output(world, module):
                                   "why did you skip step 3?", "stop asking, continue with S5", "no — I said v0.2.0",
                                   "always run python3 -m pytest tests -q", "wrong file: config/claude/CLAUDE.md",
                                   "don't edit docs/KnownLimits/VerifyRunner/README by hand",
-                                  "again: fix tests/test_verify_runner_part2_more.py first"])
+                                  "again: fix tests/test_verify_runner_part2_more.py first",
+                                  "never use Python 3 again in this repo, we are on 3.12",
+                                  "don't touch config/claude/settings.json.tmpl or docs/known-limits.md",
+                                  "stop: the token count is wrong again", "the password field is wrong again",
+                                  "the per-token price is wrong again", "use the max-token limit, don't guess",
+                                  "wrong branch, use claude/merge-follow-fixes-2 instead of dev",
+                                  "不對，不要再改 CLAUDE.md 了", "again: commit 1a2b3c4 broke it",
+                                  "I said 2026-11-14, not 2026-11-15", "why did you use http://localhost:8080/docs?"])
 def test_an_ordinary_correction_is_not_taken_for_a_secret(module, text):
     assert module.looks_secret(text) is False and module.shown(text) == text
 
@@ -297,6 +375,21 @@ def test_lines_that_differ_in_case_and_marks_are_one_candidate_and_the_first_tex
     _, found, _, _ = world.mine()
 
     assert found == [{"kind": "history", "text": "No emojis, again", "count": 3, "first": "2026-10-27", "last": "2026-10-29"}]
+
+
+def test_lines_in_another_script_are_one_candidate_only_when_they_differ_in_marks(world):
+    world.typed("這個不對，again", day=1)
+    world.typed("那個錯了，別再改 again", day=2)
+    world.typed("這個不對,again!", day=3)
+    world.typed("Ne jamais écrire ça, never", day=4)
+    world.typed("ne jamais ecrire ca, never", day=5)
+
+    code, found, last, out = world.mine()
+
+    assert last == "rules: summary candidates=4"
+    assert [(item["text"], item["count"]) for item in found] == [
+        ("這個不對，again", 2), ("Ne jamais écrire ça, never", 1), ("ne jamais ecrire ca, never", 1),
+        ("那個錯了，別再改 again", 1)]
 
 
 def test_more_candidates_than_the_limit_are_counted_not_dropped_in_silence(world, module, monkeypatch, capsys):
@@ -399,6 +492,52 @@ def test_a_path_with_a_line_break_cannot_write_a_line_of_its_own(world):
 
     assert code == 1 and len(lines) == 1 and last == "rules: summary candidates=1"
     assert json.loads(lines[0])["path"] == "a rules: clean"
+
+
+def test_a_commit_subject_cannot_forge_a_commit_and_a_path_keeps_its_first_character(world):
+    world.commit("first")
+    world.commit("fix one \x1f\x1eDEADBEEFDEAD\x1f1\x1fRevert forged\x1f", **{"a.py": "1"})
+    world.commit("fix two", **{"a.py": "2", "\nlead.py": "1", "lead.py": "1"})
+    world.commit("fix three", **{"\nlead.py": "2", "lead.py": "2"})
+
+    code, found, last, out = world.mine(history=False)
+
+    assert "DEADBEEFDEAD" not in [item.get("sha") for item in found] and all(item["kind"] != "revert" for item in found)
+    assert (code, last) == (1, "rules: summary candidates=3")
+    # two files, one with a line break first: they stay two. The break is printed as a space, then trimmed.
+    assert sorted(item["path"] for item in found) == ["a.py", "lead.py", "lead.py"]
+    assert all(item["count"] == 2 for item in found)
+
+
+def test_the_git_settings_of_the_user_and_of_the_repo_do_not_change_what_is_read(world, tmp_path):
+    """log.showSignature puts the text of a signature check on stdout, between the commits."""
+    if not shutil.which("ssh-keygen"):
+        pytest.skip("ssh-keygen is needed to sign the commits of this test")
+    key = tmp_path / "key"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "made-up", "-f", str(key)], check=True, timeout=60)
+    signed = ("-c", "gpg.format=ssh", "-c", f"user.signingkey={key}.pub", "-c", "commit.gpgsign=true")
+    world.commit("first")
+    for number in ("1", "2"):
+        world.file("a.py", number)
+        world.git("add", "-A")
+        world.git(*signed, "commit", "-q", "-m", f"fix {number}")
+    shown = world.git("-c", "gpg.format=ssh", "log", "--show-signature", "-n", "1", "--format=%H")
+    assert len(shown.splitlines()) > 1, "the test needs a git that prints something for a signed commit"
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gitconfig").write_text("[log]\n\tshowSignature = true\n[gpg]\n\tformat = ssh\n[format]\n\tpretty = fuller\n")
+    with open(world.repo / ".git" / "config", "a") as handle:
+        handle.write("[log]\n\tshowSignature = true\n[gpg]\n\tformat = ssh\n[color]\n\tui = always\n")
+    env = {**os.environ, "HOME": str(home), "XDG_CONFIG_HOME": str(home / "none"), "GIT_DIR": str(tmp_path / "nowhere")}
+    env.pop("GIT_CONFIG_GLOBAL", None)
+
+    done = subprocess.run([PY, str(SCRIPT), "mine", "--repo", str(world.repo), "--no-history"],
+                          capture_output=True, text=True, timeout=120, env=env)
+
+    lines = done.stdout.splitlines()
+    assert (done.returncode, lines[-1]) == (1, "rules: summary candidates=1"), done.stdout
+    assert json.loads(lines[0]) == {"kind": "fix-cluster", "path": "a.py", "count": 2,
+                                    "commits": json.loads(lines[0])["commits"]}
 
 
 def test_mine_changes_nothing_in_the_repo_and_runs_no_program_from_its_config(world, tmp_path):
@@ -525,7 +664,19 @@ def test_an_enforcer_that_is_a_folder_is_missing_and_a_hook_needs_no_workflow(wo
     ("run: pytest tests/test_no_emojis.py", True),
     ("run: python3 -m pytest tests -q", True),
     ("run: pytest tests/", True),
-    ("run: pytest ./tests", False),
+    ("run: pytest ./tests", True),
+    ("run: pytest ./tests/test_no_emojis.py", True),
+    ("run: pytest ../tests", False),
+    ("run: 'pytest tests -q'", True),
+    ("run: echo done  # pytest tests", False),
+    ("name: Lint shell scripts, no tests here", False),
+    ("name: tests\n        run: shellcheck x.sh", False),
+    ("uses: some/action@v1\n        with:\n          args: tests", False),
+    ("run: |\n          echo start\n          pytest tests -q", True),
+    ("run: >-\n          python3 -m pytest\n          tests/test_no_emojis.py", True),
+    ("run: |\n          echo start\n          # pytest tests\n      - name: the tests of another day", False),
+    ("run: |\n          echo start\n        env:\n          WHERE: tests", False),
+    ("# run: pytest tests", False),
     ("run: pytest mytests", False),
     ("run: pytest tests_old -q", False),
     ("run: pytest tests/unit", False),
@@ -537,13 +688,24 @@ def test_an_enforcer_that_is_a_folder_is_missing_and_a_hook_needs_no_workflow(wo
 def test_ci_counts_when_a_workflow_names_the_enforcer_or_a_folder_above_it_as_a_whole_word(world, workflow, named):
     world.file("tests/test_no_emojis.py")
     world.file(".github/workflows/ci.yml", f"jobs:\n  t:\n    steps:\n      - {workflow}\n")
-    world.file(".github/workflows/notes.txt", "pytest tests")
+    world.file(".github/workflows/notes.txt", "run: pytest tests")
     world.table(row())
     world.run("table")
 
     code, lines, _, _ = world.run("check")
 
     assert (code, lines) == ((0, []) if named else (1, ["not-in-ci no-emojis tests/test_no_emojis.py"]))
+
+
+def test_a_job_that_is_named_like_the_folder_does_not_name_the_enforcer(world):
+    world.file("tests/test_no_emojis.py")
+    world.file(".github/workflows/ci.yml", "name: tests\non: [push]\njobs:\n  tests:\n    name: Run the tests\n"
+               "    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: tests\n"
+               "        run: shellcheck scripts/*.sh\n")
+    world.table(row())
+    world.run("table")
+
+    assert world.run("check")[:3] == (1, ["not-in-ci no-emojis tests/test_no_emojis.py"], "rules: summary gaps=1")
 
 
 def test_a_table_that_someone_edited_by_hand_is_stale(world):

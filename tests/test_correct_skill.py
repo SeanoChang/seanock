@@ -107,7 +107,10 @@ def test_the_text_asks_for_an_enforcer_that_failed_on_the_old_mistake_before_the
     assert "An enforcer that never failed proves nothing." in said
     assert "Ask one time which ones to build. Build only those." in said
     assert "Such a row needs `accepted`" in said
-    assert "restore the file (`git checkout -- <file>`) before you do anything else" in said
+    assert "Put the mistake back on a copy: a test fixture, or a copy of the project in a temp folder." in said
+    assert "Never put the mistake back in the working tree" in said
+    for command in ("git checkout", "git restore", "git stash", "git reset", "git clean"):
+        assert command not in TEXT, command
 
 
 def test_the_text_names_the_keys_of_a_row_as_the_script_takes_them(module):
