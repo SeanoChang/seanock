@@ -1472,7 +1472,10 @@ has none.
   local time, and `clean` from a session in another time zone took a live
   run for a cut-off one and removed its temp folder (found by the
   adversary). A run that an older copy of the runner recorded in local time
-  has the same problem until it ends.
+  has the same problem until it ends. The reverse is possible at long odds
+  too: within the hours of the zone's offset, a new process that got the
+  recorded pid at the one second that reads the same in UTC would count as
+  the recorded one, and `clean` would stop it.
 
 ## Merge follow-up (`config/claude/skills/merge-follow-up`, 2026-11-14)
 
@@ -1491,11 +1494,15 @@ has none.
 - **A head that takes pull requests is marked `shared_head`,** and the text
   forbids a rebase of it or a push to it. The mark comes from the branch
   names of the merge gate (`main`, `master`, `trunk`, `dev`, `develop`,
-  `development`, `integration`, in any case) and from the bases of the
-  listed pull requests. A branch that is the base of another of your pull
-  requests (a stack) is marked too. An integration branch with another name
-  that has not yet taken one of your pull requests is not marked; for that
-  one the rule holds in text only.
+  `development`, `integration`), from the branch that `$MERGE_GATE_BASE`
+  names, and from the bases of the listed pull requests, all compared
+  without regard to case. A head with no name is marked. A branch that is
+  the base of another of your pull requests (a stack) is marked too. An
+  integration branch with another name is not marked when none of your 100
+  newest pull requests has it as its base; for that one the rule holds in
+  text only. The script does not ask GitHub whether a pull request of
+  another author targets a head: that is one more call for each event, for
+  a rare case.
 - **A branch name or commit id that is not of the plain form is given as
   `null`.** A plain name is letters, digits and `. _ / -`, at most 200, with
   no `..`. Git allows more; a branch with such a name gets its events with no

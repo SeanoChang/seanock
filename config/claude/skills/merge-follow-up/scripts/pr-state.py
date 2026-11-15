@@ -33,9 +33,11 @@ Events:
   behind-base   an open pull request whose base branch just took a merge.
 
 `checks-failed` and `behind-base` carry `shared_head`: true when the head of
-the pull request is a branch that takes pull requests itself (a release
-branch, an integration branch, or the base of a listed pull request). Such a
-branch is never rebased and never pushed to by an agent.
+the pull request is a branch that takes pull requests itself: a release
+branch or an integration branch by name, the branch that $MERGE_GATE_BASE
+names, or the base of a listed pull request. Names are compared without
+regard to case. Such a branch is never rebased and never pushed to by an
+agent. This script reads $MERGE_GATE_BASE and never sets it.
 
 Branch names and commit ids come from GitHub, and an agent puts them into
 commands. One that is not of the plain form (a name of letters, digits and
@@ -159,23 +161,28 @@ def snapshot(pr):
     return {"state": state, "failed_sha": failed}
 
 
-def events(prs, seen, parents):
+def events(prs, seen, parents, also_shared=()):
     """The events between a cursor and the pull requests as they are now.
 
     seen: {number as text: snapshot} from this session's last look.
     parents: a function from a merge commit to its number of parents; it is
     called once for each newly merged pull request.
+    also_shared: more names of branches that take pull requests.
     A pull request that the cursor does not hold was opened after that look,
     so its merge or its close is news too. (The first look of a session has
     no cursor and never comes here: it records what is there.)
     """
     found = []
     merged_bases = {}
-    bases = {pr.get("baseRefName") for pr in prs}
+    takes = {name.casefold() for name in [*RELEASE, *INTEGRATION, *also_shared, *(pr.get("baseRefName") for pr in prs)]
+             if isinstance(name, str)}
 
     def shared(head):
-        """True when the head takes pull requests itself, so no agent rebases it or pushes to it."""
-        return is_release(head) or (isinstance(head, str) and head.casefold() in INTEGRATION) or head in bases
+        """True when the head takes pull requests itself, so no agent rebases it or pushes to it.
+
+        A head with no name counts as shared: what is not known is not an agent's to push.
+        """
+        return not (isinstance(head, str) and head) or head.casefold() in takes
 
     for pr in sorted(prs, key=lambda pr: pr["number"]):
         number, state = pr["number"], pr.get("state")
@@ -274,7 +281,8 @@ def look(repo, session, state_dir):
         sessions = state.data["sessions"]
         cursor = sessions.get(session)
         first = not isinstance(cursor, dict) or not isinstance(cursor.get("prs"), dict)
-        found = [] if first else events(prs, cursor["prs"], lambda sha: parents_of(nwo, sha, repo))
+        found = [] if first else events(prs, cursor["prs"], lambda sha: parents_of(nwo, sha, repo),
+                                        also_shared=[os.environ.get("MERGE_GATE_BASE", "")])
         forget_old(sessions, "looked", now())
         forget_old(state.data["claims"], "at", now())
         sessions[session] = {"looked": now().isoformat(timespec="seconds"),

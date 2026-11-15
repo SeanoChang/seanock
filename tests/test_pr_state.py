@@ -68,6 +68,7 @@ class World:
         self.env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                         FAKE_GH=str(self.scenario), FAKE_GH_LOG=str(self.log))
         self.env.pop("CLAUDE_CODE_SESSION_ID", None)
+        self.env.pop("MERGE_GATE_BASE", None)
         self.set([])
 
     def set(self, prs, **more):
@@ -200,6 +201,8 @@ def test_failed_checks_are_reported_once_for_each_head_commit(world):
     ("dev", "dev", True), ("Dev", "dev", True), ("develop", "dev", True), ("development", "dev", True),
     ("integration", "dev", True), ("main", "dev", True), ("MASTER", "dev", True), ("trunk", "dev", True),
     ("next", "next", True),   # no known name, but another pull request has it as its base
+    ("Next", "next", True),   # ... and that also holds for the name in another case,
+    ("next", "Next", True),   # whichever of the two has the capital
     ("next", "dev", False),
 ])
 def test_a_head_that_takes_pull_requests_is_marked_as_shared(world, head, other_base, shared):
@@ -213,6 +216,32 @@ def test_a_head_that_takes_pull_requests_is_marked_as_shared(world, head, other_
 
     assert {e["kind"]: e["shared_head"] for e in events if e["pr"] == 4} == {"checks-failed": shared,
                                                                             "behind-base": shared}
+
+
+@pytest.mark.parametrize("named, head, shared", [("staging", "staging", True), ("staging", "Staging", True),
+                                                 ("Staging", "staging", True), ("staging", "claude/b4", False),
+                                                 ("", "staging", False)])
+def test_the_branch_that_the_merge_gate_was_told_to_take_is_shared_too(world, named, head, shared):
+    env = dict(world.env, MERGE_GATE_BASE=named)
+    world.set([pr(4, base="main", head=head), pr(5, base="main")])
+    world.run(env=env)
+    world.set([pr(4, base="main", head=head, checks=[("ci", "FAILURE")]), pr(5, "MERGED", base="main", merge=SHA_B)],
+              parents={SHA_B: 2})
+
+    _, events, _ = world.run(env=env)
+
+    assert {e["kind"]: e["shared_head"] for e in events if e["pr"] == 4} == {"checks-failed": shared,
+                                                                            "behind-base": shared}
+
+
+@pytest.mark.parametrize("head", [None, "", 7])
+def test_a_head_with_no_name_counts_as_shared(module, head):
+    listed = [{"number": 1, "state": "OPEN", "baseRefName": "dev", "headRefName": head, "headRefOid": SHA_A,
+               "statusCheckRollup": [{"name": "ci", "conclusion": "FAILURE"}]}]
+
+    found = module.events(listed, {"1": {"state": "OPEN"}}, lambda sha: 2)
+
+    assert [(event["kind"], event["shared_head"]) for event in found] == [("checks-failed", True)]
 
 
 @pytest.mark.parametrize("base", ["Main", "MASTER", "Trunk"])

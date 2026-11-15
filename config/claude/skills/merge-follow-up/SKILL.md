@@ -105,9 +105,11 @@ The user merged a release. Fetch, then read `squashed_release`.
 - `true`: the release was merged with one parent, so the release branch and
   the integration branch share no history after it, and the next release
   will conflict. Prepare the repair and **hand the push to the user**. In
-  the commands, each name is a field of the event: `<release>` is `base`,
-  `<integration>` is `head`, and `<head_sha>` is `head_sha`, the last commit
-  of the release pull request. `<version>` is the version that was released.
+  the commands, `<release>` is the event's `base` and `<head_sha>` is its
+  `head_sha`, the last commit of the release pull request. `<integration>`
+  is the integration branch of the repo, as `CLAUDE.md` picks it; it is not
+  always the event's `head`, because a release can come from a branch such
+  as `release/1.2.0`. `<version>` is the version that was released.
 
   ```bash
   git rev-parse "origin/<release>^{tree}" "<head_sha>^{tree}"
