@@ -1732,6 +1732,17 @@ has none.
 - **A file that is swapped between the check and the read is not handled.**
 - **On a disk that ignores case, `claude.md` is read as `CLAUDE.md`.**
 - **A whitespace-only `REVIEW.md` is a gap** ("is empty").
+- **Fences that the root map rule does not see as fences** (the adversary's
+  third round, 2026-11-15). A label inside such a block counts as a label:
+  a fence that is indented four spaces in a list item, a fence in a
+  blockquote, a backtick fence that a `~~~` line seems to close, and a line
+  such as ```` ```bash``` text ````.
+- **Marks in the map that give a gap where a reader sees the form:** a line
+  that a U+2028 or a form feed splits (Python's `splitlines()` splits
+  there), a command in a span of two backticks, and a byte order mark before
+  the first line. All three fail safe: a gap, never `ok`.
+- **The reference test of the label rule uses ASCII lines only.** A line
+  with Unicode whitespace or a long s (`ſ`) is not in it.
 
 ### Not tested
 
