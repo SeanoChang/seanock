@@ -112,6 +112,14 @@ def hostile_secrets():
         "bearer with an equals sign": ("bearer=" + "abcdefghijklmnopqrstuv", ["abcdefghijklmnopqrstuv"]),
         "basic and a value": ("Basic " + "abcdefghijklmnopqr==", ["abcdefghijklmnopqr"]),
         "basic in quotes": ('"Basic", "' + "abcdefghijklmnopqr==" + '"', ["abcdefghijklmnopqr"]),
+        "pass in a name with =": ("DB_PASS=" + "hunter2zq", ["hunter2zq"]),
+        "pass in a name with a colon": ("MYSQL_PASS: " + "hunter2zq", ["hunter2zq"]),
+        "pass as a flag": ("mysql --pass " + "hunter2zq", ["hunter2zq"]),
+        "pass as a word": ("my pass is " + "hunter2zq", ["hunter2zq"]),
+        "passkey": ("PASSKEY=" + "hunter2zq", ["hunter2zq"]),
+        "pw in a name": ("db_pw=" + "hunter2zq", ["hunter2zq"]),
+        "pw as a word": ("the pw is " + "hunter2zq", ["hunter2zq"]),
+        "creds": ("creds: admin " + "hunter2zq", ["hunter2zq"]),
         # a key word and its value with nothing between them that a rule could ask for
         "key word, then is, then the value": ("my password is " + "hunter2zq" + ", ok", ["hunter2zq"]),
         "key word and value as two arguments": ('os.environ.setdefault("PASSWORD", "' + "hunter2zq" + '")', ["hunter2zq"]),
@@ -400,8 +408,8 @@ def test_on_random_lines_no_planted_secret_reaches_the_output(world, module):
                                   "again: fix tests/test_verify_runner_part2_more.py first",
                                   "never use Python 3 again in this repo, we are on 3.12",
                                   "don't touch config/claude/settings.json.tmpl or docs/known-limits.md",
-                                  "make the tests pass, don't skip them", "never bypass the gate",
-                                  "the compass icon is wrong again", "stop: the count is wrong again",
+                                  "make the tests green, don't skip them", "never go around the gate",
+                                  "the map icon is wrong again", "stop: the count is wrong again",
                                   "wrong branch, use claude/merge-follow-fixes-2 instead of dev",
                                   "不對，不要再改 CLAUDE.md 了", "again: commit 1a2b3c4 broke it",
                                   "I said 2026-11-14, not 2026-11-15", "why did you use http://localhost:8080/docs?"])
@@ -412,7 +420,10 @@ def test_an_ordinary_correction_is_not_taken_for_a_secret(module, text):
 @pytest.mark.parametrize("text", ["the per-token price is wrong again", "use the max-token limit, don't guess",
                                   "stop: the token count is wrong again", "the password field is wrong again",
                                   "the author said: no emojis", "why --no-auth again",
-                                  "use the limit of 4096 tokens, don't guess", "never commit a secret"])
+                                  "use the limit of 4096 tokens, don't guess", "never commit a secret",
+                                  "make the tests pass, don't skip them", "never bypass the gate",
+                                  "the compass icon is wrong again", "round upward, not down, I said",
+                                  "the credit line is wrong again"])
 def test_the_cost_of_a_rule_with_no_neighbour_is_a_line_that_is_counted_and_not_shown(module, text):
     """A line with a key word is held back, whatever stands next to the word, also when the line
     holds no secret. The rule cannot tell, and a rule that tried was broken three times."""
@@ -422,7 +433,7 @@ def test_the_cost_of_a_rule_with_no_neighbour_is_a_line_that_is_counted_and_not_
 def key_word_second_version(text):
     """The key words as plain text, looked for with `in`: no pattern."""
     low = text.lower()
-    words = ["password", "passwd", "passphrase", "passcode", "pwd", "secret", "token", "auth", "credential", "bearer"]
+    words = ["pass", "pw", "secret", "token", "auth", "cred", "bearer"]
     words += [first + between + "key" for first in ("api", "access", "private") for between in ("", " ", "_", "-", "\t", "\n")]
     return any(word in low for word in words)
 
@@ -430,7 +441,8 @@ def key_word_second_version(text):
 def test_on_random_lines_a_key_word_anywhere_holds_the_line_back(module):
     rng = random.Random(20261117)
     pieces = ["password", "PASSWD", "Passphrase", "passcode", "pwd", "secret", "Token", "auth", "credentials", "bearer",
-              "api", "access", "private", "key", "KEY", "pass", "pas", "tok", "word", "the", "v2", "x", "9", "_", "-",
+              "api", "access", "private", "key", "KEY", "pass", "PASS", "pw", "Pw", "creds", "pas", "tok", "cre", "p",
+              "word", "the", "v2", "x", "9", "_", "-",
               "--", ":", "=", " ", " ", "\t", "\n", ".", "/", "[", '"', "(", "é", "字"]
     seen = {True: 0, False: 0}
     for _ in range(30000):
@@ -441,6 +453,31 @@ def test_on_random_lines_a_key_word_anywhere_holds_the_line_back(module):
             assert module.looks_secret("don't use " + text + " again") is True, repr(text)
         seen[want] += 1
     assert min(seen.values()) > 5000, seen
+
+
+def key_word_rule_of_the_fifth_commit(text):
+    """The rule that this one replaced, with its own list of key words: a key word with `:` or `=`
+    anywhere after it, or with a dash before it in one run of letters, digits, `_` and dashes."""
+    word = r"(?:pass|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth|credential|bearer)"
+    dash = "[\\-\u2010-\u2015\u2212]"
+    return bool(re.search("(?is)" + word + ".*[:=]", text)
+                or re.search("(?i)" + dash + "(?:\\w|" + dash + ")*" + word, text))
+
+
+def test_on_random_lines_no_line_that_the_rule_before_held_back_is_printed(module):
+    """Found in review: the list of key words lost `pass` when the rule changed, so `DB_PASS=x` and
+    `--pass x`, which the rule before held back, were printed. A new rule may hold back more, never less."""
+    rng = random.Random(20261121)
+    pieces = ["password", "PASS", "pass", "Token", "api_key", "api-key", "access_key", "private-key", "secret", "auth",
+              "pwd", "credentials", "bearer", "pas", "tok", "key", "the", "v2", "x", "9", "_", "-", "--", "\u2014", ":",
+              "=", " ", " ", "\t", "\n", ".", "/", "[", "]", '"', "'", "(", "é", "字"]
+    held = 0
+    for _ in range(30000):
+        text = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 9)))
+        if key_word_rule_of_the_fifth_commit(text):
+            held += 1
+            assert module.looks_secret(text) is True, repr(text)
+    assert held > 3000, held
 
 
 def closed_second_version(text):

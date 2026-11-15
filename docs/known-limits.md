@@ -1755,10 +1755,11 @@ has none.
   20 characters or more, a UUID or a long mixed path is held back too.
 - **A line with a key word is held back, whatever stands next to the
   word.** The key words, in any letter case and also inside a longer word:
-  `password`, `passwd`, `passphrase`, `passcode`, `pwd`, `secret`, `token`,
-  `api key`, `access key` and `private key` (with a space, `_`, `-` or
-  nothing between), `auth`, `credential`, `bearer`. `pass` alone is none:
-  "make the tests pass" is what a correction says. This is the fourth form
+  `pass` (so also `password`, `passwd`, `passphrase`, `passcode`,
+  `passkey`, `DB_PASS`), `pw` (so also `pwd`), `secret`, `token`, `api key`,
+  `access key` and `private key` (with a space, `_`, `-` or nothing
+  between), `auth`, `cred` (so also `credential`, `creds`), `bearer`. This
+  is the fourth form
   of the rule, and the class was "the rule asks what stands next to the
   key word". The first wanted the key word to touch a `:` or `=`, or a
   flag to start at the key word. The second took a `:` or `=` anywhere
@@ -1767,9 +1768,24 @@ has none.
   x" and `setdefault("PASSWORD", "x")` past the second: such a line has no
   mark that a rule could ask for. The cost is a line that holds no secret
   and is counted, not shown: "the per-token price", "the token count is
-  wrong", "the author said no". On one real history the rule cost one
-  candidate of 42, a line with the word `token`; 12 lines are held back
-  where the first form held back 1.
+  wrong", "the author said no", "make the tests pass", "never bypass the
+  gate", "round upward". On one real history the rule cost one candidate
+  of 42, a line with the word `token`; 14 lines are held back where the
+  first form held back 1.
+- **The list of key words only grows.** The first list of the fourth form
+  left `pass` out, because "make the tests pass" is what a correction
+  says. Two automated security reviews of that commit showed the price:
+  `DB_PASS=x` and `--pass x`, which the form before held back, were
+  printed. So `pass` is on the list again, with `pw` and `cred`, and a
+  test holds the rule against the one before on random lines: a line that
+  the form before held back is never printed. On the real history the
+  three short words cost no candidate (2 more lines held back). The same
+  reviews asked for a `pass` that counts only with a `:`, `=`, `_` or dash
+  beside it; that is the class above, and it was not taken. One of them
+  asked for one shared list with the secret check of the visual-artifacts
+  skill (`assemble.py`): not taken, because that check reads source files
+  for another purpose, lets a placeholder pass, and ships in another skill
+  folder.
 - **A line with a character that is not printable is held back whole:** a
   control character, a zero-width character, a line or paragraph separator.
   Such a character can split a secret or join it to a word, and each way to
@@ -1897,7 +1913,7 @@ has none.
 ### Not tested
 
 - The live history of a second person. The trial ran on one history file
-  (2026-11-15): 41 candidates, 12 lines held back, 19 too long. With the
+  (2026-11-15): 41 candidates, 14 lines held back, 19 too long. With the
   first form of the key word rule it was 42, 1 and 23. Only the summary
   line of each run was read.
 - Signatures made with GnuPG. The test signs its commits with an SSH key.

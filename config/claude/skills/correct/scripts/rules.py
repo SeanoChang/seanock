@@ -81,9 +81,10 @@ HEX = "0-9a-fA-F"   # a long hex value needs no rule of its own: it is a run of 
 # also when it holds no secret: "my password is x" has no mark that a rule
 # could ask for. Three rules that asked for one (a `:` or `=` that touches
 # the word, one anywhere after it, a dash before it) each let a line pass.
-# `pass` alone is no key word: "make the tests pass" is what a correction says.
-WORD = (r"(?:pass(?:word|wd|phrase|code)|pwd|secret|token|api[\s_-]?key|access[\s_-]?key|private[\s_-]?key"
-        r"|auth|credential|bearer)")
+# The short forms count too, also inside a longer word: `pass` (DB_PASS=x,
+# --pass x), `pw`, `cred`. So "make the tests pass" is held back as well. A
+# list that left `pass` out printed lines that the rule before held back.
+WORD = r"(?:pass|pw|secret|token|api[\s_-]?key|access[\s_-]?key|private[\s_-]?key|auth|cred|bearer)"
 SECRETS = [re.compile(pattern) for pattern in (
     r"sk-[A-Za-z0-9_-]{16,}",                                   # API keys of several vendors
     r"gh[pousr]_[A-Za-z0-9]{20,}",

@@ -163,9 +163,9 @@ work of the highest tier in most projects.
   Grouping by meaning is your work.
 - A line can be held back although it holds no secret: a full commit id, a
   UUID, a long word of letters and digits, a long path with capitals and
-  digits, or any line with a word such as `password`, `token`, `secret` or
-  `auth` in it ("the per-token price"). You get its line number, not its
-  text.
+  digits, or any line with a word such as `pass`, `token`, `secret` or
+  `auth` in it ("the per-token price", "make the tests pass"). You get its
+  line number, not its text.
 - `not-in-ci` reads the `run:` commands of the workflow files as text. A
   name counts only as a word of its own with a slash in it: `tests/`,
   `./tests`, `config/hooks`, `./lint.sh`. A bare `tests` is a word like any
