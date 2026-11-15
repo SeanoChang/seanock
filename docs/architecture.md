@@ -71,10 +71,10 @@ program named by a repo's config. Lines 2 and 3 are not tested.
 
 Three hooks are wired in the settings template: `merge-gate.py` on
 `gh pr merge`, `visual-artifacts-route.sh` on the Artifact tool, and
-`second-brain-log-prompt.sh` on each prompt. `second-brain-sweep.sh` and
-`floor-guard.py` run on demand. The floor guard reads a repo it does not
-trust, so it calls git plumbing only and treats every git warning as a
-failure.
+`second-brain-log-prompt.sh` on each prompt. `second-brain-sweep.sh`,
+`floor-guard.py` and `comment-check.py` run on demand. The floor guard and
+the comment check read a repo they do not trust, so they call git plumbing
+only and treat every git warning as a failure.
 
 The reasons for the main choices are in [decisions/](decisions/), one short
 record each. Minor findings that were logged and not fixed are in

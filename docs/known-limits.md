@@ -1996,3 +1996,61 @@ has none.
 - How GitHub draws the changelog. The points on headings follow the
   CommonMark rules.
 
+## Comment check (`config/claude/hooks/comment-check.py`, 2026-11-15)
+
+### By design
+
+- **A hit is advice.** The check lists a comment block whose code changed
+  while no line of the block did. Whether the comment is now false is a
+  judgement, and the verifier makes it (step 9 of its text): a comment that
+  still holds is no finding, a false one is a Nit, and it is Important only
+  when a reader who trusts it would use the code wrongly.
+- **A check that did not run changes no verdict.** It goes under "Not
+  covered". The review line needs a floor guard result and does not need
+  this one. So a broken comment check cannot block a merge, and it cannot
+  open one.
+- **It sits beside the floor guard,** in `config/claude/hooks/`, and not in
+  a skill folder as the design page of 2026-11-14 had it. The verifier runs
+  both in the same way, and both read a repo they do not trust.
+- **It reads lines, not the language.** Line comments only (`#` and `//`),
+  by file extension. Block comments and docstrings are not read. A line
+  inside a multi-line string that starts with `#` or `//` reads as a
+  comment.
+- **The code under a comment** is the lines after the block up to a blank
+  line, the next comment block or a line indented less, at most 20 lines.
+- **No hit for:** a file that the diff adds as a whole, a deleted file, a
+  binary file, a link, a submodule, a change of line ends alone, code under
+  the comment that the change deleted in full, and a deletion right after
+  the last code line.
+- **It reads the committed diff from the merge base to HEAD.** The working
+  tree and the index play no part. It needs `--base`; with no base in the
+  brief the verifier skips it and says so.
+- **Lint and tool markers are not comments for this check** (`noqa`,
+  `type: ignore`, `pragma`, `eslint-disable`, `pylint:`, `@ts-`, `nolint`,
+  `shellcheck`, `fmt:`, `isort:`, `mypy:`, `prettier-ignore`, `nosec`,
+  `nosemgrep`).
+- **A repo attribute that marks every file `-diff` hides all hits.** The
+  script does not override attributes.
+- **Only the Claude verifier runs it.** The Codex verifier has no step for
+  it, as it has none for the floor guard.
+
+### Minor
+
+- **A usage error** (no `--base`) ends with exit 2 and the lines of
+  `argparse` on stderr, not with `comment-check: error ...`. The verifier
+  reads that as "did not run".
+- **Nine mutations of the builder's run changed no output,** so no test can
+  fail on them: five are equal code, and four are protections that these
+  commands do not reach in a test (`--no-pager`, `--no-textconv` on the raw
+  diff, `GIT_OPTIONAL_LOCKS`, the "Binary files" line).
+
+### Not tested
+
+- Very large diffs: there is one git call for each changed file, and the
+  speed was not measured.
+- Repeated lines such as `}`: the random test uses files with no duplicate
+  lines, so it does not check how git lines them up.
+- Git versions other than the local one, and Linux except through CI.
+- No live verifier followed step 9 yet. The first reviews after this change
+  are that test.
+
