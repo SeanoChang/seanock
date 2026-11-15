@@ -1753,9 +1753,32 @@ has none.
   watcher of the repo's settings off (an automated security review asked
   for this, 2026-11-15).
 - **A runner result counts only in its full form.** Exit 0 needs the
-  runner's pass line, and exit 1 needs its summary line with a failed line
-  above it. Anything else (another exit code, a foreign last line, a
-  signal, a timeout of three hours) is `drift: error`, exit 2.
+  runner's pass line, exit 1 needs its summary line with a failed line
+  above it, and exit 2 needs its error line with a reason (`verify: error`
+  or `verify-<app>: error`). Anything else (another exit code, a foreign
+  last line, a signal, a timeout of three hours) is `drift: error`, exit 2.
+- **What the runner refuses is a finding, not an error.** A map that the
+  runner does not take is `failed-map`, and a copy that ends before a result
+  (a gap of its doctor, an old copy that refuses the map) is `failed-run`.
+  Both count in `failed=`, and the path findings and the runner finding
+  stay beside them. An adversary review found that the first version said
+  `clean` without the run for a map that the runner refuses, and threw the
+  other findings away when the runner ended with exit 2 (2026-11-15).
+- **The map rules are those of the current runner, and `drift.py` has no
+  second copy of them.** `check` loads the text of the current runner as a
+  module, from the bytes that it compares with the copy, and calls its
+  `load_map`. None of the runner's commands runs, nothing of the project
+  runs, and no cache file is written. A current runner whose text cannot be
+  loaded, or has no `load_map` and `MapError`, is `drift: error`.
+- **With a `failed-map` the run is left out,** also when the copy is an old
+  one that would take the map. The map is corrected first.
+- **`failed-run` does not tell a refusal from a crash.** A copy that was
+  interrupted, or that ended on an error of its own, also prints its error
+  line with exit 2, and reads as `failed-run` with that reason.
+- **With no current runner the map rules are not known.** `check --no-run`
+  then says nothing about the form of the map; the line `runner-old unknown
+  runner` keeps the result from being clean. A full `check` lets the copy
+  decide.
 - **A pattern matches as `fnmatch` does, case-sensitive, and `*` also takes
   a `/`.** So `src/**/*.py` does not match `src/a.py`, and such a map shows
   a stale path. The runner itself has no rule for `paths`.
@@ -1765,7 +1788,7 @@ has none.
   The design gave no line for it; without one a failed build would read as
   no failed step.
 - **`bump` reads the runner number from the text of the runner** (`RUNNER =
-  N`, exactly one such line) and never runs or imports the file. It writes
+  N`, exactly one such line) and never runs or loads the file. It writes
   a new file beside the copy and renames it, so it does not write through
   a link, and it keeps the mode of the copy, with execute added.
 - **`runner=unknown`** in the last line when no current runner is beside
@@ -1785,6 +1808,22 @@ has none.
   the `verify-<app>` folder and the copy are checked for links.
 - **The runner copy is started also when it is a link.** `check` reports it
   as `runner-old copy is a link` in the same run.
+- **A `features.json` that is a link to a device or a pipe is read.** A link
+  to `/dev/zero` makes `check` hang; the runner has the same limit.
+- **`bump` says `clean` for a copy with the right bytes that is not
+  executable.** It compares bytes only. A copy with mode `000` is replaced
+  by one with mode `100`, which Python cannot read: set the mode by hand.
+- **A `[` in a pattern starts a set, as in a shell.** A map that names a
+  path such as `app/[slug]/page.tsx` shows a stale path. Write `[[]slug]`.
+- **The `app` of the map is not compared with the name of the skill
+  folder.** A map with another valid `app` in `verify-<app>/` gives no
+  finding.
+- **`--help` prints the usage with exit 0,** and its last line is not a
+  result line. By the rule of the text, that is not a result.
+- **A locale that cannot print a character of a finding ends the script
+  with a Python error** and no last line. That is not a result either.
+- **A file that changes while `check` runs** (the map or the copy, between
+  the reading and the run) can give findings of two states.
 
 ### Not tested
 

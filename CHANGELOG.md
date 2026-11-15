@@ -52,8 +52,11 @@ Added:
 - `maintain-verify-skill`, a skill that keeps a project's verify skill true
   to the project. Its script `drift.py check` lists where the skill no
   longer fits: a path of the feature map that matches no tracked file,
-  tracked files that no feature covers, a step or a build that fails in a
-  real run of the runner, and a runner copy that is not the current runner.
+  tracked files that no feature covers, a map that the current runner
+  refuses, a runner copy that refuses to start, a step or a build that fails
+  in a real run of the runner, and a runner copy that is not the current
+  runner. What the runner refuses is a finding, so the other findings stay
+  beside it.
   `drift.py bump` replaces the runner copy, and refuses when the map is for
   another runner number. The skill text says what to do with each finding.
   A failed step is first a finding about the app: a step changes only when

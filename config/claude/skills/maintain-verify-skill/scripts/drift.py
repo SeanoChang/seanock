@@ -15,6 +15,11 @@ check prints one line per finding, then a last line:
   uncovered-path <folder>/ <n>               n tracked files in that folder that
                                              no pattern matches, in a top folder
                                              that some pattern reaches into
+  failed-map <reason>                        the current runner refuses the
+                                             map, for this reason
+  failed-run <reason>                        the runner copy ended before a
+                                             result: its own reason, then the
+                                             gaps of its doctor
   failed-step <feature> step <n>: <reason>   a step of the runner's run that
                                              failed or could not start
   failed-build <reason>                      the runner's build failed
@@ -23,7 +28,13 @@ check prints one line per finding, then a last line:
                                              runner" when there is no current
                                              runner beside this script
 
---no-run leaves out the runner's run and so the failed-* findings.
+What the runner refuses is a finding, never an error, so the other findings
+stay beside it. The map is checked by the rules of the current runner: its
+text is loaded as a module, and none of its commands runs. With a failed-map
+the run is left out. --no-run leaves out the run, and so failed-run,
+failed-step and failed-build. With no current runner the map rules are not
+known: then the copy decides in its run, and the runner-old line keeps a
+look without the run from being clean.
 
 A pattern matches a path as fnmatch does, case-sensitive: "*" takes any run
 of characters, "/" too, so "src/**" and "src/*" both take every file under
@@ -40,8 +51,9 @@ Read the exit code and the last line together:
 
   exit 0   "drift: clean"  or  "drift: bumped <path>"
   exit 1   "drift: summary stale=N uncovered=N failed=N"   (+ " runner=old" or
-           " runner=unknown")
-  exit 2   "drift: error ..."   it could not finish; this is not a result
+           " runner=unknown"); failed counts the failed-* lines
+  exit 2   "drift: error ..."   this script could not finish, or the runner
+           gave nothing that it can read; this is not a result
 """
 from __future__ import annotations
 
@@ -52,6 +64,7 @@ import os
 import re
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -67,6 +80,10 @@ RUN_TIMEOUT_S = 3 * 3600  # the runner bounds each step and the build; this only
 
 class Failed(Exception):
     """drift could not finish."""
+
+
+class Refused(Exception):
+    """The map cannot be used. For check that is a finding, for bump a reason to stop."""
 
 
 class Parser(argparse.ArgumentParser):
@@ -107,26 +124,50 @@ def find_skill(project, app):
 
 
 def load_map(skill):
+    """(the map, [(feature id, its patterns)]): as much as this script needs for the paths and for bump."""
     try:
         raw = json.loads((skill / "features.json").read_text(encoding="utf-8"))
     except OSError as exc:
-        raise Failed(f"cannot read features.json: {exc.strerror}")
+        raise Refused(f"cannot read features.json: {exc.strerror}")
     except ValueError as exc:
-        raise Failed(f"features.json is not JSON: {exc}")
+        raise Refused(f"features.json is not JSON: {exc}")
     if not isinstance(raw, dict):
-        raise Failed("the map is not an object")
+        raise Refused("the map is not an object")
     features = raw.get("features")
     if not isinstance(features, list):
-        raise Failed("the map has no list of features")
+        raise Refused("the map has no list of features")
     out = []
     for feature in features:
         if not isinstance(feature, dict) or not isinstance(feature.get("id"), str) or not feature["id"]:
-            raise Failed("a feature has no 'id'")
+            raise Refused("a feature has no 'id'")
         paths = feature.get("paths")
         if not isinstance(paths, list) or not all(isinstance(p, str) and p for p in paths):
-            raise Failed(f"'paths' of {feature['id']} must be a list of non-empty strings")
+            raise Refused(f"'paths' of {feature['id']} must be a list of non-empty strings")
         out.append((feature["id"], paths))
     return raw, out
+
+
+def map_refusal(skill, current):
+    """Why the current runner refuses the map, or None. The runner's own rules decide, so this script
+    holds no second copy of them. The runner's text is loaded as a module from the bytes that are
+    compared with the copy: none of its commands runs, and no cache file is written beside it.
+    With no current runner the rules are not known, and the answer is None."""
+    if current is None:
+        return None
+    rules = types.ModuleType("verify_current")
+    rules.__file__ = str(CURRENT)
+    try:
+        exec(compile(current, str(CURRENT), "exec"), rules.__dict__)
+        refused = rules.MapError
+        if not (callable(rules.load_map) and isinstance(refused, type) and issubclass(refused, Exception)):
+            raise TypeError("no map rules")
+    except (Exception, SystemExit) as exc:
+        raise Failed(f"the current runner at {CURRENT} has no map rules that can be loaded: {type(exc).__name__}")
+    try:
+        rules.load_map(skill / "features.json")
+    except refused as exc:
+        return str(exc)
+    return None
 
 
 def runner_number(text):
@@ -194,6 +235,12 @@ def run_findings(project, skill, app):
     is_summary = bool(tag) and re.match(tag + r": summary \S", last) is not None
     if done.returncode == 0 and is_pass:
         return []
+    # a runner that refuses the map has no app name yet, and says "verify: error"
+    named = "(?:-" + re.escape(app) + ")?" if isinstance(app, str) else ""
+    refusal = re.match("verify" + named + r": error (\S.*)\Z", last)
+    if done.returncode == 2 and refusal:
+        gaps = [line.strip() for line in lines[:-1] if line.strip()]
+        return ["failed-run " + refusal.group(1) + (": " + "; ".join(gaps) if gaps else "")]
     if done.returncode != 1 or not is_summary:
         raise Failed(f"the runner ended with exit {done.returncode}: {last or '(no output)'}")
     found = []
@@ -219,9 +266,8 @@ def read_current():
         return None
 
 
-def runner_finding(skill):
+def runner_finding(skill, current):
     """(line, state): state is None when the copy is current, else "old" or "unknown"."""
-    current = read_current()
     if current is None:
         return "runner-old unknown runner", "unknown"
     copy_path = skill / "verify"
@@ -249,10 +295,20 @@ def runner_finding(skill):
 
 def check(project, app, no_run):
     skill = find_skill(project, app)
-    raw, features = load_map(skill)
+    current = read_current()
+    runner_line, runner_state = runner_finding(skill, current)  # before the run: the copy is a file that the run can change
+    refusal = map_refusal(skill, current)
+    try:
+        raw, features = load_map(skill)
+    except Refused as exc:
+        raw, features, refusal = {}, [], refusal or str(exc)
     stale, uncovered = path_findings(features, tracked_files(project))
-    failed = [] if no_run else run_findings(project, skill, raw.get("app"))
-    runner_line, runner_state = runner_finding(skill)
+    if refusal is not None:
+        failed = [f"failed-map {refusal}"]  # the copy would refuse it too, or it is a copy for another map
+    elif no_run:
+        failed = []
+    else:
+        failed = run_findings(project, skill, raw.get("app"))
     lines = [f"stale-path {fid} {pattern}" for fid, pattern in stale]
     lines += [f"uncovered-path {folder} {count}" for folder, count in uncovered]
     lines += failed
@@ -296,7 +352,10 @@ def write_executable(target, data):
 
 def bump(project, app):
     skill = find_skill(project, app)
-    raw, _ = load_map(skill)
+    try:
+        raw, _ = load_map(skill)
+    except Refused as exc:
+        raise Failed(str(exc))
     current = read_current()
     if current is None:
         raise Failed(f"no current runner at {CURRENT}")

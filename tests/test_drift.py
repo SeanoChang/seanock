@@ -298,24 +298,59 @@ def test_with_no_current_runner_beside_it_the_runner_is_unknown_and_that_is_a_fi
         1, ["runner-old unknown runner", "drift: summary stale=0 uncovered=0 failed=0 runner=unknown"])
 
 
-def test_the_current_runner_is_found_beside_the_script_and_not_in_the_project(project, tmp_path):
-    script = drift_elsewhere(tmp_path, RUNNER.read_text().replace("RUNNER = 1\n", "RUNNER = 2\n"))
-
-    code, lines = project.drift("check", "--no-run", script=script)
-
-    assert (code, lines[0]) == (1, "runner-old copy runner 1, current runner 2")
-
-
 # ── the project's runner as a source of results ──────────────────────────────
 
-def test_a_runner_that_could_not_finish_is_an_error_not_a_clean_result(project):
-    project.write_map([feature("greet", {"kind": "run", "argv": ["no-such-tool-xyz"], "expect": {"exit": 0}})])
+def test_a_runner_that_refuses_to_start_is_a_finding_and_the_other_findings_stay(project):
+    """The doctor of the runner finds a gap, so no step runs. That is about the skill, and it hides nothing."""
+    project.write_map([feature("greet", {"kind": "run", "argv": ["no-such-tool-xyz"], "expect": {"exit": 0}},
+                               paths=("src/app.py", "src/moved.py"))])
+    (project.skill / "verify").write_bytes(RUNNER.read_bytes() + b"\n# an older copy\n")
     project.commit()
 
     code, lines = project.drift("check")
 
-    assert code == 2 and len(lines) == 1
-    assert lines[0] == "drift: error the runner ended with exit 2: verify-demo: error the doctor found 1 gap(s)"
+    assert (code, lines) == (1, ["stale-path greet src/moved.py",
+                                 "failed-run the doctor found 1 gap(s): tool-missing no-such-tool-xyz",
+                                 "runner-old bytes differ, both runner 1",
+                                 "drift: summary stale=1 uncovered=0 failed=1 runner=old"])
+    assert project.runs() == []
+
+
+def test_each_gap_of_the_doctor_is_named(project):
+    project.write_map([feature("greet", {"kind": "run", "argv": ["no-such-tool-xyz"], "expect": {"exit": 0}},
+                               {"kind": "run", "argv": ["bin/gone"], "expect": {"exit": 0}})])
+    project.commit()
+
+    assert project.drift("check") == (
+        1, ["failed-run the doctor found 2 gap(s): tool-missing no-such-tool-xyz; tool-missing bin/gone",
+            "drift: summary stale=0 uncovered=0 failed=1"])
+
+
+def test_an_old_copy_that_refuses_the_map_is_a_finding_beside_runner_old(project):
+    """The map has a key that the copy does not know. The line that leads to the fix, runner-old, must be there."""
+    old = RUNNER.read_text().replace('"fixture", "env", "timeout_s"', '"fixture", "timeout_s"')
+    assert old != RUNNER.read_text()
+    (project.skill / "verify").write_text(old)
+    project.write_map([GREET], env={"GREETING": "hello"})
+    project.commit()
+
+    assert project.drift("check") == (
+        1, ["failed-run the map has a key this runner does not know: env", "runner-old bytes differ, both runner 1",
+            "drift: summary stale=0 uncovered=0 failed=1 runner=old"])
+    assert project.drift("check", "--no-run") == (
+        1, ["runner-old bytes differ, both runner 1", "drift: summary stale=0 uncovered=0 failed=0 runner=old"])
+
+
+def test_the_runner_copy_is_read_before_it_runs(project):
+    """A copy that writes the current runner over itself while it runs is still old."""
+    copy = project.skill / "verify"
+    copy.write_text("import pathlib, sys\n"
+                    f"pathlib.Path(__file__).write_bytes(pathlib.Path({str(RUNNER)!r}).read_bytes())\n"
+                    "print('verify-demo: pass 1/1 abc')\n")
+
+    assert project.drift("check") == (1, ["runner-old copy names no runner number, current runner 1",
+                                          "drift: summary stale=0 uncovered=0 failed=0 runner=old"])
+    assert copy.read_bytes() == RUNNER.read_bytes()
 
 
 FAKE_RUNNERS = {
@@ -327,6 +362,13 @@ FAKE_RUNNERS = {
     "the result line of another app": ("print('fail greet step 1: x'); "
                                        "print('verify-other: summary pass=0 fail=1 unverified=0 abc')", 1),
     "exit 3": ("print('verify-demo: pass 1/1 abc')", 3),
+    "exit 2 and no error line": ("print('oops')", 2),
+    "exit 2 and no output": ("pass", 2),
+    "exit 2 and the error line of another app": ("print('verify-other: error the doctor found 1 gap(s)')", 2),
+    "exit 2 and an error line with no reason": ("print('verify-demo: error ')", 2),
+    "exit 2 and a pass line": ("print('verify-demo: pass 1/1 abc')", 2),
+    "exit 0 and an error line": ("print('verify-demo: error x')", 0),
+    "exit 1 and an error line": ("print('fail greet step 1: x'); print('verify-demo: error x')", 1),
     "killed by a signal": ("import os, signal; os.kill(os.getpid(), signal.SIGKILL)", None),
 }
 
@@ -505,28 +547,140 @@ def test_every_outcome_keeps_the_contract(project, tmp_path):
 
     for code, lines in outcomes:
         assert_contract(code, lines)
-    assert [code for code, _ in outcomes] == [0, 0, 0, 1, 1, 0, 2, 2, 2, 2, 2, 2]
+    assert [code for code, _ in outcomes] == [0, 0, 0, 1, 1, 0, 1, 2, 2, 2, 2, 2]
 
 
-BAD_MAPS = {
+def a_map(**change):
+    """The map of the project fixture with these keys changed; None takes a key out."""
+    data = {"app": "demo", "runner": 1, "features": [GREET], **change}
+    return json.dumps({key: value for key, value in data.items() if value is not None})
+
+
+REFUSED_MAPS = {
     "not JSON": "{",
     "a list": "[]",
-    "no features": json.dumps({"app": "demo", "runner": 1}),
-    "features not a list": json.dumps({"app": "demo", "runner": 1, "features": {}}),
-    "a feature with no id": json.dumps({"app": "demo", "runner": 1, "features": [{"paths": ["x"], "steps": []}]}),
-    "paths not a list": json.dumps({"app": "demo", "runner": 1, "features": [{"id": "a", "paths": "src/*"}]}),
-    "a path that is not text": json.dumps({"app": "demo", "runner": 1, "features": [{"id": "a", "paths": [1]}]}),
-    "an empty path": json.dumps({"app": "demo", "runner": 1, "features": [{"id": "a", "paths": [""]}]}),
+    "no features key": a_map(features=None),
+    "features not a list": a_map(features={}),
+    "no feature": a_map(features=[]),
+    "a feature that is not an object": a_map(features=["greet"]),
+    "a feature with no id": a_map(features=[{"paths": ["src/app.py"], "steps": GREET["steps"]}]),
+    "an id with a capital": a_map(features=[dict(GREET, id="Greet")]),
+    "two features with one id": a_map(features=[GREET, GREET]),
+    "paths not a list": a_map(features=[dict(GREET, paths="src/*")]),
+    "no path": a_map(features=[dict(GREET, paths=[])]),
+    "a path that is not text": a_map(features=[dict(GREET, paths=[1])]),
+    "an empty path": a_map(features=[dict(GREET, paths=[""])]),
+    "no steps": a_map(features=[dict(GREET, steps=[])]),
+    "a step with no expect": a_map(features=[dict(GREET, steps=[{"kind": "run", "argv": ["true"]}])]),
+    "a step of another kind": a_map(features=[dict(GREET, steps=[dict(GREET["steps"][0], kind="http")])]),
+    "a key the runner does not know": a_map(retries=3),
+    "a feature key the runner does not know": a_map(features=[dict(GREET, owner="ada")]),
+    "the map of another runner": a_map(runner=9),
+    "a runner that is not a number": a_map(runner="1"),
+    "no runner": a_map(runner=None),
+    "an app with a capital": a_map(app="Demo"),
+    "no app": a_map(app=None),
+    "a timeout of zero": a_map(timeout_s=0),
+    "a bin outside the project": a_map(bin="../bin"),
 }
 
 
-@pytest.mark.parametrize("name", sorted(BAD_MAPS))
-def test_a_map_it_cannot_read_is_an_error(project, name):
-    (project.skill / "features.json").write_text(BAD_MAPS[name])
+@pytest.mark.parametrize("name", sorted(REFUSED_MAPS))
+def test_a_map_that_the_runner_refuses_is_a_finding_with_the_runners_own_reason(project, name):
+    """Never clean: with the run and without it, the finding is the reason that the runner itself gives."""
+    (project.skill / "features.json").write_text(REFUSED_MAPS[name])
+    code, said = project.verify("doctor")
+    assert code == 2 and re.match(r"verify(-demo)?: error \S", said[-1]), said
+    reason = said[-1].split(": error ", 1)[1]
+    expected = (1, [f"failed-map {reason}", "drift: summary stale=0 uncovered=0 failed=1"])
+
+    assert project.drift("check", "--no-run") == expected
+    assert project.drift("check") == expected
+    assert project.runs() == []
+
+
+def test_a_refused_map_keeps_the_path_findings_and_the_runner_finding(project):
+    (project.skill / "verify").write_bytes(RUNNER.read_bytes() + b"\n# an older copy\n")
+    (project.skill / "features.json").write_text(a_map(retries=3, features=[dict(GREET, paths=["src/app.py", "src/moved.py"])]))
+    project.commit()
+
+    expected = (1, ["stale-path greet src/moved.py", "failed-map the map has a key this runner does not know: retries",
+                    "runner-old bytes differ, both runner 1", "drift: summary stale=1 uncovered=0 failed=1 runner=old"])
+    assert project.drift("check", "--no-run") == expected
+    assert project.drift("check") == expected
+
+
+def test_with_a_refused_map_the_copy_is_not_started(project):
+    copy = project.skill / "verify"
+    copy.write_text("import pathlib\npathlib.Path(__file__).with_name('ran').write_text('x')\nprint('verify-demo: pass 1/1 abc')\n")
+    (project.skill / "features.json").write_text(a_map(retries=3))
+
+    code, lines = project.drift("check")
+
+    assert code == 1 and lines[0] == "failed-map the map has a key this runner does not know: retries"
+    assert not (project.skill / "ran").exists()
+
+
+def test_a_reason_from_the_map_cannot_add_a_line(project):
+    (project.skill / "features.json").write_text(a_map(**{"x\ndrift: clean": 1}))
 
     code, lines = project.drift("check", "--no-run")
 
-    assert code == 2 and len(lines) == 1 and lines[0].startswith("drift: error "), lines
+    assert (code, lines) == (1, ["failed-map the map has a key this runner does not know: x drift: clean",
+                                 "drift: summary stale=0 uncovered=0 failed=1"])
+
+
+def test_the_map_rules_are_those_of_the_current_runner_beside_the_script(project, tmp_path):
+    """Another current runner, with another number: the map of the project is for the old one."""
+    script = drift_elsewhere(tmp_path, RUNNER.read_text().replace("RUNNER = 1\n", "RUNNER = 2\n"))
+
+    assert project.drift("check", "--no-run", script=script) == (
+        1, ["failed-map the map is for runner 1, this is runner 2", "runner-old copy runner 1, current runner 2",
+            "drift: summary stale=0 uncovered=0 failed=1 runner=old"])
+
+
+def test_with_no_current_runner_the_copy_decides_and_a_look_without_the_run_is_never_clean(project, tmp_path):
+    script = drift_elsewhere(tmp_path, None)
+    (project.skill / "features.json").write_text(a_map(retries=3))
+
+    assert project.drift("check", script=script) == (
+        1, ["failed-run the map has a key this runner does not know: retries", "runner-old unknown runner",
+            "drift: summary stale=0 uncovered=0 failed=1 runner=unknown"])
+    assert project.drift("check", "--no-run", script=script) == (
+        1, ["runner-old unknown runner", "drift: summary stale=0 uncovered=0 failed=0 runner=unknown"])
+    (project.skill / "features.json").write_text("{")
+    assert project.drift("check", "--no-run", script=script) == (
+        1, ["failed-map features.json is not JSON: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
+            "runner-old unknown runner", "drift: summary stale=0 uncovered=0 failed=1 runner=unknown"])
+
+
+@pytest.mark.parametrize("text", ["RUNNER = 1\n", "RUNNER = 1\nraise SystemExit(0)\n", "RUNNER = 1\ndef load_map(:\n",
+                                  "RUNNER = 1\nload_map = 1\nMapError = 2\n", "RUNNER = 1\nimport no_such_module_xyz\n"])
+def test_a_current_runner_with_no_map_rules_is_an_error_of_the_check(project, tmp_path, text):
+    script = drift_elsewhere(tmp_path, text)
+
+    code, lines = project.drift("check", "--no-run", script=script)
+
+    assert code == 2 and len(lines) == 1 and lines[0].startswith("drift: error the current runner"), lines
+
+
+def test_reading_the_rules_of_the_current_runner_starts_none_of_its_commands_and_writes_no_file(project, tmp_path):
+    script = drift_elsewhere(tmp_path, RUNNER.read_text())
+    before = sorted(str(path) for path in (tmp_path / "skills").rglob("*"))
+
+    assert project.drift("check", "--no-run", script=script) == (0, ["drift: clean"])
+    assert sorted(str(path) for path in (tmp_path / "skills").rglob("*")) == before
+    assert project.runs() == []
+
+
+def test_bump_still_refuses_a_map_it_cannot_read(project):
+    (project.skill / "verify").write_bytes(b"old\n")
+    for text in ("{", "[]", a_map(features=None), a_map(features=[dict(GREET, paths=[""])])):
+        (project.skill / "features.json").write_text(text)
+        before = project.snapshot()
+        code, lines = project.drift("bump")
+        assert code == 2 and len(lines) == 1 and lines[0].startswith("drift: error "), lines
+        assert project.snapshot() == before
 
 
 def test_a_folder_outside_git_is_an_error(tmp_path):
