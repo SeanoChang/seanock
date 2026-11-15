@@ -1733,3 +1733,67 @@ has none.
   no `REVIEW.md`, no comment rule, no rule table, no verify skill) and on
   one other project (7 gaps).
 - Linux, except through CI.
+
+## Correct (`config/claude/skills/correct`, 2026-11-15)
+
+### By design
+
+- **The script finds lines; the agent finds rules.** `mine` lists a typed
+  line when it holds one of about twenty words (`don't`, `never`, `again`,
+  ...), and counts two lines as one only when they differ in case and
+  punctuation. A correction in other words is not listed, and a line with
+  such a word that is no correction is listed. Grouping by meaning is the
+  agent's work.
+- **A line in which anything looks like a secret is held back whole,** and
+  only its line number is printed. The forms are: keys of several vendors,
+  GitHub, AWS and Slack tokens, a private key header, a JSON web token, a
+  `Bearer` value, `password=` and the like, a URL with a password, 32 or
+  more hex digits, and any run of 24 or more characters of letters, digits
+  and `+ / _ = -` that has a small letter, a capital and a digit. So a line
+  with a full commit id or a long mixed path is held back too. A secret of
+  a form that is not on this list, and shorter than 24 characters or with
+  no capital, is not seen.
+- **Only the text that was typed is read.** The pasted content of a prompt
+  is never opened.
+- **A line of more than 400 characters is left out** (and counted): it is a
+  paste or a brief, not a correction. It is checked for a secret first, so
+  it is counted as held back when it has one.
+- **What is printed of a line is its first 160 characters.**
+- **The layer `config` is in the list.** The design page of 2026-11-14 gave
+  six layers and an example row with a seventh, `config`. The list has
+  seven: architecture, types, config, lint, test, hook, docs.
+- **A `docs` rule is a gap until the row says why no code can check it**
+  (`accepted`). A rule that only a reader can judge is then no gap, and the
+  table shows the reason.
+- **The table that a person reads is a file under git** (`.claude/rules.md`),
+  and `check` reports it when it is not what `table` writes.
+- **`mine` reads at most the 2,000 newest commits,** prints at most 200
+  history candidates and 30 files, and says in its last line how many it
+  did not show.
+
+### Minor
+
+- **`not-in-ci` reads the workflow files as text.** It counts when a file
+  under `.github/workflows/` names the enforcer path, or a folder above it,
+  as a whole word. A workflow that runs every test with no path named
+  (`pytest`) does not count, and a path in a comment does.
+- **`check` does not run a workflow or a hook.** It shows that the enforcer
+  file is there and that CI names it, not that the check passes or that the
+  hook is installed.
+- **An `evidence` line is free text.** The script does not look up the
+  commit that it names.
+- **A fix commit is one whose subject has the word `fix`.** A fix under
+  another word is not counted, and a subject that only names the word, such
+  as "Document the fix process", is.
+- **Only folders that are named count as this project.** A worktree beside
+  the repo needs `--project`.
+
+### Not tested
+
+- The live history of a second person. The trial ran on one history file
+  (2026-11-15): 42 candidates, 1 line held back, 23 too long.
+- A live session with the user in step 2. A fresh agent followed the text on
+  a stand-in project with the user's answer given ahead; it built two rules
+  and showed each enforcer fail on the old mistake. Its findings about the
+  text were taken.
+- Linux.

@@ -41,6 +41,16 @@ Added:
   workflow of a repo is merged by you, and so is the choice of the paths in
   `REVIEW.md`. The script prints no text from the repo, only fixed words and
   counts.
+- `correct`, a skill that only you start. It turns a correction that you
+  gave more than once into a rule that code holds up. Its script `rules.py`
+  lists candidates from the repo (reverts, files that were fixed again and
+  again) and from your prompt history for the project. A line in which
+  anything looks like a secret is held back whole, and the pasted content of
+  a prompt is never read. The rules of a project are one table,
+  `.claude/rules.json`: each row names the rule, the layer that holds it,
+  and the file that fails when the rule is broken. `rules.py check` lists
+  each rule that nothing holds up, and `rules.py table` writes the table
+  that you read, `.claude/rules.md`.
 
 Removed:
 
