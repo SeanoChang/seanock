@@ -585,6 +585,41 @@ def test_clean_leaves_a_live_run_alone_and_a_stop_signal_ends_that_run_cleanly(p
         stop(pids)
 
 
+@pytest.mark.parametrize("runner_zone, other_zone", [("UTC", "Asia/Taipei"), ("America/New_York", "UTC")])
+def test_a_session_in_another_time_zone_sees_the_same_runs_as_live_and_as_cut_off(project, runner_zone, other_zone):
+    """ps prints a start time in local time. Two sessions with two zones must still mean the same process."""
+    pid_file = hang_project(project)
+    runner = project.start("run", env=dict(project.env, TZ=runner_zone))
+    pids = wait_for(pid_file)
+    other = dict(project.env, TZ=other_zone)
+    try:
+        tmp = Path(project.record()["tmp"])
+
+        code, lines = project.verify("clean", env=other)
+
+        assert code == 0 and lines[-1] == "verify-demo: cleaned 0 live=1"
+        assert alive(pids[0]) and tmp.is_dir()
+
+        runner.kill()
+        runner.wait()
+        assert project.verify("clean", env=other)[1][-1] == "verify-demo: cleaned 1"
+        assert all(gone(pid) for pid in pids) and not tmp.exists()
+    finally:
+        runner.kill()
+        stop(pids)
+
+
+def test_the_start_time_of_a_process_does_not_depend_on_the_zone_or_language_of_the_caller(runner_module, monkeypatch):
+    seen = set()
+    for zone, language in (("UTC", "C"), ("Asia/Taipei", "ja_JP.UTF-8"), ("America/New_York", "de_DE.UTF-8"),
+                           ("Australia/Lord_Howe", "C"), ("UTC", "de_DE.UTF-8")):
+        monkeypatch.setenv("TZ", zone)
+        monkeypatch.setenv("LC_ALL", language)
+        seen.add(runner_module.proc_start(os.getpid()))
+
+    assert len(seen) == 1 and None not in seen
+
+
 @pytest.mark.parametrize("marker", [None, "another-run"])
 def test_clean_never_removes_a_folder_that_does_not_carry_the_marker_of_the_run(project, tmp_path, marker):
     pid_file = hang_project(project)

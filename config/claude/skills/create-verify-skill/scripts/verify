@@ -236,10 +236,14 @@ def evidence_ignored(root):
 # ── processes ────────────────────────────────────────────────────────────────
 
 def proc_start(pid):
-    """When the process started, as ps prints it. None when there is no such process."""
+    """When the process started, as ps prints it. None when there is no such process.
+
+    ps prints local time in the caller's language. Both are fixed here, so
+    that two sessions with different settings get the same text for one process.
+    """
     try:
         out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
-                             env=dict(os.environ, LC_ALL="C"), timeout=10)
+                             env=dict(os.environ, LC_ALL="C", TZ="UTC0"), timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return None
     text = out.stdout.strip()
