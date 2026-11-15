@@ -17,7 +17,7 @@ Look for these files:
 - `docs/changelog/` directory
 
 If **none** of these exist, tell the user:
-> No scaffold docs found. Run `/scaffold-docs` first to generate project documentation, then `/orient` again.
+> No project docs found. Ask for the `setup-repo` skill to write the root map, then run `/orient` again.
 
 Stop here if nothing is found.
 
@@ -53,7 +53,7 @@ Synthesize everything you read into a **concise briefing** for the user. Structu
 
 ### Recent changes
 - What changed in the last scaffold run (from latest changelog)
-- Flag if the changelog is older than 7 days — suggest re-running `/scaffold-docs`
+- Flag if the changelog is older than 7 days
 
 ### Conventions
 - Key patterns, naming conventions, architecture decisions the user should know
@@ -67,4 +67,4 @@ Synthesize everything you read into a **concise briefing** for the user. Structu
 - **Do not explore the codebase** — only use what scaffold docs provide. If info is missing, note the gap rather than investigating.
 - **Do not write files** — this is read-only.
 - **Do not repeat raw file contents** — synthesize and summarize.
-- **If scaffold docs seem stale** (structure described doesn't match what Glob reveals at a glance), mention it and suggest `/scaffold-docs` to refresh.
+- **If scaffold docs seem stale** (structure described doesn't match what Glob reveals at a glance), mention it and name the part of the root map that is out of date.

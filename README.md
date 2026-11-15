@@ -142,8 +142,8 @@ loads whichever one matches the request. Only you start `create-verify-skill`:
 | `writing-markdown-docs` | House style for docs, with a reference per document type and a `check_doc.py` linter                           |
 | `visual-artifacts`      | Learning pages, prototypes, guides and plan pages published as Claude Artifacts, with a render checker         |
 | `brief-artifact`        | A decision or a short report as one page: markdown in, and a "Copy response" button gives the answer to paste |
-| `scaffold-docs`         | Writes a `CLAUDE.md` entry point into each meaningful folder and keeps a versioned changelog                   |
-| `orient`                | Reads those scaffold docs at the start of a session instead of exploring the tree again                        |
+| `setup-repo`            | Lists what a repo lacks for this way of working with a read-only script, then fills the gaps; never merges    |
+| `orient`                | Reads the root map and the docs beside it at the start of a session instead of exploring the tree again        |
 | `create-verify-skill`   | Writes a verify skill into a project: a feature map, a runner that drives the real app, and kept evidence      |
 | `merge-follow-up`       | Sees a merged pull request with a read-only script, then rebases your open branches and reinstalls; never merges |
 

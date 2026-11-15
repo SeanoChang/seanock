@@ -42,9 +42,13 @@ letters, digits, `_` or `-`. So `mypytest` and `pytest-cov` are no test command.
 
 Files are read as UTF-8 with errors replaced, at most 1 MiB each. A path that
 resolves outside the repo (through a symlink) counts as absent. A file that
-is there but cannot be read makes its check unknown. Every printed line has
-its non-printable characters replaced by spaces, so a file name or a branch
-name cannot print a line of its own.
+is there but cannot be read makes its check unknown.
+
+No text from the repo is printed: no file name, no folder name, no branch
+name beyond the four fixed ones, no key and no content. Each line is built
+from fixed words and counts, so a name cannot read as a result or as an
+instruction to the reader. Every printed line also has its non-printable
+characters replaced by spaces.
 """
 from __future__ import annotations
 
@@ -102,8 +106,10 @@ def inside(root, rel):
     return real if real == root or real.startswith(root + os.sep) else None
 
 
-def regular_file(root, rel):
-    """The real path of a regular file at root/rel inside the repo, else None."""
+def regular_file(root, rel, label):
+    """The real path of a regular file at root/rel inside the repo, else None.
+
+    `label` is what an error calls the file: fixed words, never a name from the repo."""
     real = inside(root, rel)
     if real is None:
         return None
@@ -112,24 +118,26 @@ def regular_file(root, rel):
     except FileNotFoundError:
         return None
     except OSError as exc:
-        raise Unreadable(f"cannot read {rel}: {exc.strerror}")
+        raise Unreadable(f"cannot read {label}: {exc.strerror}")
 
 
-def read_text(root, rel):
+def read_text(root, rel, label):
     """(text, truncated) of the file at root/rel, or None when it is absent or outside the repo."""
-    real = regular_file(root, rel)
+    real = regular_file(root, rel, label)
     if real is None:
         return None
     try:
         with open(real, "rb") as handle:
             data = handle.read(MAX_BYTES + 1)
     except OSError as exc:
-        raise Unreadable(f"cannot read {rel}: {exc.strerror}")
+        raise Unreadable(f"cannot read {label}: {exc.strerror}")
     return data[:MAX_BYTES].decode("utf-8", errors="replace"), len(data) > MAX_BYTES
 
 
 def list_dir(root, rel):
-    """The sorted names in the folder root/rel, or [] when it is absent or outside the repo."""
+    """The sorted names in the folder root/rel, or [] when it is absent or outside the repo.
+
+    `rel` is a fixed path of this script, so an error may name it."""
     real = inside(root, rel)
     if real is None or not os.path.isdir(real):
         return []
@@ -195,13 +203,13 @@ def match_command(line, regexes):
 
 
 def workflows(root):
-    """[(name, text)] of each workflow file inside the repo."""
+    """The text of each workflow file inside the repo."""
     found = []
     for name in list_dir(root, ".github/workflows"):
         if name.endswith((".yml", ".yaml")):
-            read = read_text(root, f".github/workflows/{name}")
+            read = read_text(root, f".github/workflows/{name}", "a workflow file")
             if read is not None:
-                found.append((name, read[0]))
+                found.append(read[0])
     return found
 
 
@@ -209,11 +217,15 @@ def check_ci(root, regexes, kind):
     files = workflows(root)
     if not files:
         return "gap", "no workflow"
-    for name, text in files:
-        for line in text.splitlines():
-            command = match_command(line, regexes)
-            if command:
-                return "ok", f"{command} in {name}"
+    first, running = None, 0
+    for text in files:
+        commands = [match_command(line, regexes) for line in text.splitlines()]
+        commands = [command for command in commands if command]
+        if commands:
+            first = first or commands[0]
+            running += 1
+    if first:
+        return "ok", f"{first} in {running} of {len(files)} workflow file(s)"
     return "gap", f"no {kind} command in {len(files)} workflow file(s)"
 
 
@@ -228,7 +240,7 @@ FENCE = re.compile(r"^\s{0,3}(```|~~~)")
 def root_map(root):
     """(name, text) of CLAUDE.md, else AGENTS.md, at the repo root; None when neither is there."""
     for name in ("CLAUDE.md", "AGENTS.md"):
-        read = read_text(root, name)
+        read = read_text(root, name, name)
         if read is not None:
             return name, read[0]
     return None
@@ -284,7 +296,7 @@ def check_comment_rule(found):
 # ── REVIEW.md, the rule table, the verify skill ──────────────────────────────
 
 def check_review(root):
-    read = read_text(root, "REVIEW.md")
+    read = read_text(root, "REVIEW.md", "REVIEW.md")
     if read is None:
         return "gap", "no REVIEW.md"
     if not read[0].strip():
@@ -293,7 +305,7 @@ def check_review(root):
 
 
 def check_rules(root):
-    read = read_text(root, ".claude/rules.json")
+    read = read_text(root, ".claude/rules.json", ".claude/rules.json")
     if read is None:
         return "gap", "no .claude/rules.json"
     text, truncated = read
@@ -306,8 +318,8 @@ def check_rules(root):
     if not isinstance(data, dict):
         return "gap", ".claude/rules.json is not a JSON object"
     if set(data) != {"rules"}:
-        other = sorted(set(data) - {"rules"})
-        return "gap", (f".claude/rules.json has keys other than rules: {', '.join(other)}" if other
+        other = len(set(data) - {"rules"})
+        return "gap", (f".claude/rules.json has {other} key(s) other than rules" if other
                        else ".claude/rules.json has no rules key")
     if not isinstance(data["rules"], list):
         return "gap", ".claude/rules.json: rules is not a list"
@@ -315,16 +327,17 @@ def check_rules(root):
 
 
 def check_verify(root):
-    found = []
+    found = 0
     for name in list_dir(root, ".claude/skills"):
         if not name.startswith("verify-") or name == "verify-":
             continue
         folder = f".claude/skills/{name}"
-        if regular_file(root, f"{folder}/verify") and regular_file(root, f"{folder}/features.json"):
-            found.append(name)
+        if (regular_file(root, f"{folder}/verify", "the runner of a verify skill")
+                and regular_file(root, f"{folder}/features.json", "the map of a verify skill")):
+            found += 1
     if not found:
         return "gap", "no .claude/skills/verify-<name>/ with verify and features.json"
-    return "ok", ", ".join(found)
+    return "ok", f"{found} verify skill(s)"
 
 
 # ── the run ──────────────────────────────────────────────────────────────────
@@ -381,7 +394,7 @@ def main(argv=None):
         say(f"repo-doctor: error {exc}")
         return 2
     except Exception as exc:  # anything else: it did not finish, and that must not read as clean
-        say(f"repo-doctor: error {type(exc).__name__}: {exc}")
+        say(f"repo-doctor: error {type(exc).__name__}")  # its text can hold a path of the repo
         return 2
 
 

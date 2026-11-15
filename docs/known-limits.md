@@ -1573,3 +1573,62 @@ has none.
 - No live session followed the skill text. No Codex session ran the script.
 - The script against the real `gh` in CI: the tests use a stand-in that
   answers from a file. It ran by hand against the real `gh` on this repo.
+
+## Setup repo (`config/claude/skills/setup-repo`, 2026-11-15)
+
+### By design
+
+- **The script reads; the agent fills.** `repo-doctor.py` writes no file and
+  calls no network and no `gh`. It calls git with `rev-parse` and
+  `for-each-ref` only.
+- **`unknown` is never a pass.** A check that could not find out gives exit
+  1, as a gap does.
+- **The integration branch is known by four names** (`dev`, `develop`,
+  `development`, `integration`), the ones of the merge rule. A repo that
+  integrates on another branch shows a gap; the text says to report it and
+  to create nothing. The check reads the remote-tracking refs, so it sees
+  what the last fetch saw.
+- **The workflow checks read the files as text, line by line,** against two
+  fixed lists of commands, as whole words. A command in a step that never
+  runs counts. A command that is not on the lists does not; the text says
+  to wrap it in `make test` or `make lint`, or to report the gap.
+- **A check that is `ok` shows that a file names something, not that it
+  works.** `ci-tests` does not show that CI passes or that a branch is
+  protected. `verify-skill` does not run the verify skill. `rule-table`
+  checks the outer form only; the rows are checked by `rules.py` of the
+  `correct` skill.
+- **The root map is `CLAUDE.md`, else `AGENTS.md`,** at the top of the repo.
+  A command counts when a line starts with `build`, `test`, `lint` or
+  `install` (after markdown marks) and has a code span, or a fenced block
+  follows within three lines. `## Tests` and `Testing:` do not count.
+- **No text from the repo is printed.** Each line is built from fixed words
+  and counts: `pytest in 2 of 3 workflow file(s)`, `2 verify skill(s)`. A
+  file name, a folder name, a key of the rule table and the text of an
+  unexpected error are never in the output, so a name cannot read as a
+  result line or as an instruction to the reader. Two automated security
+  reviews asked for this, 2026-11-15; the first answer (print a name only
+  when it is a plain one) still let a name carry a sentence. The cost: the
+  agent must find the workflow file itself.
+- **A path that leaves the repo through a link counts as absent,** and each
+  file is read up to 1 MiB.
+- **`scaffold-docs` left the repo with this change.** `orient` still reads
+  `docs/OVERVIEW.md` and `docs/changelog/` when they are there; nothing in
+  the harness writes them any more.
+- **The first workflow of a repo is merged by the user,** and the paths of
+  `REVIEW.md` are the user's call. Both are text in the skill; no code holds
+  them.
+
+### Minor
+
+- **A file that is swapped between the check and the read is not handled.**
+- **On a disk that ignores case, `claude.md` is read as `CLAUDE.md`.**
+- **A whitespace-only `REVIEW.md` is a gap** ("is empty").
+
+### Not tested
+
+- No live session followed the skill text. The examples of the text are run
+  through the script by a test: a repo set up as the text says is clean.
+- The script ran by hand on this repo (6 gaps: no lint in CI, no root map,
+  no `REVIEW.md`, no comment rule, no rule table, no verify skill) and on
+  one other project (7 gaps).
+- Linux, except through CI.
