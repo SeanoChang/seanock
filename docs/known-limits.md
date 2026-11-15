@@ -1881,13 +1881,31 @@ has none.
 - **A wrapped secret with a mark at the start of the next line is not
   joined** (`> `, `│`, a backslash at the line end), and a tab or a
   no-break space inside a secret prints as a space.
-- **A private key header that is wrapped at two places is not seen** when
-  one break comes right after `BEGIN`. The lines of the key itself are long
-  runs and are held back.
 - **The URL rule is slow on a line with `://` and thousands of colons:**
   about 0.6 seconds for 4 KB.
 - **A key word in letters of another script that look the same** (a
   Cyrillic `а` in `pаssword`) is not a key word.
+- **A key word in another language is not a key word.** The list is
+  English. A line such as `密碼是 x` or `パスワードは x` is printed when the
+  value has fewer than 20 characters. It is inside the boundary above (a
+  line with no key word), and it is the likeliest case for a user who types
+  in Chinese. Words to weigh for the list: `密碼`, `密码`, `金鑰`, `密鑰`,
+  `パスワード`. Found by the verifier, 2026-11-15.
+- **A short secret beside a word that is not on the list is printed:**
+  `curl -u name:value`, "the session cookie x", "the otp x", `key=x`. The
+  adversary named `cookie`, `jwt`, `otp`, `session` and the `-u name:value`
+  form as ones to weigh. `key` alone is not on the list.
+- **A key word with a hyphen of another kind between its parts** (`api`,
+  then U+2010 or U+2011, then `key`) is not a key word. With a full-width
+  hyphen it is one, because that is made plain first.
+- **A line of characters that grow when they are made plain is slow.** One
+  million U+FDFA (18 characters each after the step) take about 10 seconds.
+  The time grows with the length in a straight line: 0.9 seconds for
+  100,000.
+- **Only the first 50 numbers of the held-back lines are printed.** The
+  count is whole. `SKILL.md` says "You get its line number"; past 50 lines
+  you get the count only. A line with a key word is held back, so a long
+  history reaches 50 sooner than before.
 - **One history line that is JSON nested very deep stops `mine`** with exit
   2 (`RecursionError`); other broken lines are skipped. Found by both
   reviewers, 2026-11-15. It prints nothing from the file.
