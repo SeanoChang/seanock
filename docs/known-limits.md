@@ -1781,21 +1781,25 @@ has none.
   changes how the runner starts, not what it hands on. The trust rule in
   one sentence: under `--no-run`, the bytes that run are the installed
   skills', Python's own and git's, and no file of the project is code. It
-  holds when every folder on the caller's `PATH` is an absolute path (the
-  next point).
-- **A `PATH` of the caller with an empty entry, `.` or another relative
-  folder can make a file of the project run.** The doctor's two git calls
-  start with the project as the current folder, and `drift.py` calls git
-  for the file list. A relative entry of `PATH` is read from the current
-  folder, so a tracked file named `git` in the project then runs, also
-  under `--no-run`, and the result can still be `drift: clean`. The project
-  cannot set the caller's `PATH`, and with such a `PATH` every `git` that
-  is typed in that folder runs the same file. The runner has the same
-  lookup when it is started by hand. Both reviewers of the fourth round
-  found this on 2026-11-15, as the second case of one class after the
-  module path: a lookup path that leads into the project. It is not fixed.
-  The fix is to find git one time, with the relative entries left out, and
-  to hand that path on.
+  holds when the `git` that the caller's `PATH` leads to is not a file of
+  the project (the next point).
+- **A `PATH` of the caller that leads into the project can make a file of
+  the project run.** There are two ways. The first is an empty entry, `.`
+  or another relative folder: the doctor's two git calls start with the
+  project as the current folder, `drift.py` calls git for the file list,
+  and a relative entry of `PATH` is read from the current folder. The
+  second is an absolute folder that lies inside the project, such as
+  `<project>/bin`, which some tools add to `PATH` when a shell enters the
+  folder. In both cases a tracked file named `git` in that place then runs,
+  also under `--no-run`, and the result can still be `drift: clean`. The
+  project cannot set the caller's `PATH`, and with such a `PATH` every
+  `git` that is typed in that folder runs the same file. The runner has the
+  same lookup when it is started by hand. Both reviewers of the fourth
+  round found the first way on 2026-11-15, as the second case of one class
+  after the module path: a lookup path that leads into the project. The
+  adversary's fifth round found the second way. It is not fixed. The fix is
+  to find git one time, with the relative entries and every folder inside
+  the project left out, and to hand that path on.
 - **What the runner refuses before a run is a finding, and the runner itself
   is asked for it.** The map: `check` loads the text of the current runner
   as a module, from the bytes that it compares with the copy, and calls its

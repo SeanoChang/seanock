@@ -24,6 +24,12 @@ Added:
   A failed step is first a finding about the app: a step changes only when
   the step is shown to be wrong, and it is never weakened to get a pass.
 
+Changed:
+
+- `docs/known-limits.md` also gets the points that the last review rounds
+  of `merge-follow-up` and `setup-repo` left open. They are in the lists
+  "Minor" of those two sections.
+
 ## 0.5.0 (2026-11-15)
 
 Added:
