@@ -1,7 +1,7 @@
 # seanock
 
 An agent harness for Claude Code and Codex: global working rules, six workers,
-twelve skills, hooks that check risky steps with code, and the tests that keep
+thirteen skills, hooks that check risky steps with code, and the tests that keep
 all of it in step.
 
 It was part of the terminal setup in
@@ -130,7 +130,8 @@ native panes and bands. `settings.json` loads them from `~/.claude/mods/` with
 
 **Commands and skills.** Two slash commands live in `config/claude/commands/`:
 `/explore` and `/map`. These skills live in `config/claude/skills/`, and Claude
-loads whichever one matches the request. Only you start `create-verify-skill`:
+loads whichever one matches the request. Only you start `create-verify-skill`
+and `correct`:
 
 | Skill                   | What it's for                                                                                                  |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------- |
@@ -146,6 +147,7 @@ loads whichever one matches the request. Only you start `create-verify-skill`:
 | `orient`                | Reads the root map and the docs beside it at the start of a session instead of exploring the tree again        |
 | `create-verify-skill`   | Writes a verify skill into a project: a feature map, a runner that drives the real app, and kept evidence      |
 | `merge-follow-up`       | Sees a merged pull request with a read-only script, then rebases your open branches and reinstalls; never merges |
+| `correct`               | Turns a correction you gave more than once into a rule with an enforcer, and keeps the table of those rules   |
 
 ## Codex
 

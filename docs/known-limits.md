@@ -1733,3 +1733,193 @@ has none.
   no `REVIEW.md`, no comment rule, no rule table, no verify skill) and on
   one other project (7 gaps).
 - Linux, except through CI.
+
+## Correct (`config/claude/skills/correct`, 2026-11-15)
+
+### By design
+
+- **The script finds lines; the agent finds rules.** `mine` lists a typed
+  line when it holds one of about twenty words (`don't`, `never`, `again`,
+  ...), and counts two lines as one only when they differ in case and
+  punctuation. A correction in other words is not listed, and a line with
+  such a word that is no correction is listed. Grouping by meaning is the
+  agent's work.
+- **A line in which anything looks like a secret is held back whole,** and
+  only its line number is printed. The forms are: keys of several vendors,
+  GitHub, AWS and Slack tokens, a JSON web token, a `Basic` value, a key
+  word (the next point; a private key header holds one), a URL with a
+  password (with or without a user name), a UUID, a run of 20 or more
+  letters and digits that has both, and a run of 24 or more characters of
+  letters, digits and `+ / _ = -` that has a small letter, a capital and a
+  digit. No form asks what stands next to the secret. So a line with a
+  commit id of 20 characters or more, a UUID or a long mixed path is held
+  back too.
+- **A line with a key word is held back, whatever stands next to the
+  word.** The key words, in any letter case and also inside a longer word:
+  `pass` (so also `password`, `passwd`, `passphrase`, `passcode`,
+  `passkey`, `DB_PASS`), `pw` (so also `pwd`), `secret`, `token`, `api key`,
+  `access key` and `private key` (with a space, `_`, `-` or nothing
+  between), `auth`, `cred` (so also `credential`, `creds`), `bearer`. This
+  is the fourth form
+  of the rule, and the class was "the rule asks what stands next to the
+  key word". The first wanted the key word to touch a `:` or `=`, or a
+  flag to start at the key word. The second took a `:` or `=` anywhere
+  after it, or a dash before it. The adversary got `SECRET_KEY=x` and
+  `--db-password x` past the first, and the verifier got "my password is
+  x" and `setdefault("PASSWORD", "x")` past the second: such a line has no
+  mark that a rule could ask for. The cost is a line that holds no secret
+  and is counted, not shown: "the per-token price", "the token count is
+  wrong", "the author said no", "make the tests pass", "never bypass the
+  gate", "round upward". On one real history the rule cost one candidate
+  of 42, a line with the word `token`; 14 lines are held back where the
+  first form held back 1.
+- **The list of key words only grows.** The first list of the fourth form
+  left `pass` out, because "make the tests pass" is what a correction
+  says. Two automated security reviews of that commit showed the price:
+  `DB_PASS=x` and `--pass x`, which the form before held back, were
+  printed. So `pass` is on the list again, with `pw` and `cred`, and a
+  test holds the rule against the one before on random lines: a line that
+  the form before held back is never printed. On the real history the
+  three short words cost no candidate (2 more lines held back). The same
+  reviews asked for a `pass` that counts only with a `:`, `=`, `_` or dash
+  beside it; that is the class above, and it was not taken. One of them
+  asked for one shared list with the secret check of the visual-artifacts
+  skill (`assemble.py`): not taken, because that check reads source files
+  for another purpose, lets a placeholder pass, and ships in another skill
+  folder.
+- **A line with a character that is not printable is held back whole:** a
+  control character, a zero-width character, a line or paragraph separator.
+  Such a character can split a secret or join it to a word, and each way to
+  print the line guesses which. The first fix took these characters out
+  before the check and printed a space for them; an automated security
+  review showed that the printed form was then one that nobody had checked
+  (`--password`, a control character, the value). Tab, LF, CR and the space
+  characters of other scripts (a no-break space, the wide space of Chinese
+  text) pass and count as spaces. A line with an emoji that is joined from
+  several (a zero-width joiner) is held back too.
+- **No line is printed in a form that was not checked.** The text is
+  checked as typed with full-width characters made plain, again with each
+  line break closed (a secret that was copied from a wrapped line has a
+  break in it), each of the two also with its spaces joined, and in the
+  form that is printed. A secret that a plain space splits is not seen.
+- **The same review asked for two more things.** A URL password can now be
+  4,096 characters long (it was 256). A rule for a long run of hex digits
+  alone was not put back: a run of 20 or more letters and digits with both
+  kinds is held back, and a hex value of 32 characters from a random source
+  has both kinds except in about one case in three million.
+- **A secret of a form that is not on the list is not seen.** Examples: a
+  value of fewer than 20 characters in a line with no key word, a value of
+  small letters only, `Basic` with fewer than 16 characters after it. An
+  automated security review asked to hold back every run of 20 or more
+  characters that has two kinds of characters, separators included. That
+  was taken in part (letters and digits with no separator, from 20): the
+  full rule would hold back ordinary paths such as
+  `tests/test_runner_part2.py`, which corrections name often. A trial on
+  one real history gave the same counts before and after the stricter
+  rules: 42 candidates, 1 line held back. (The key word rule changed that
+  count later; see the point on key words.)
+- **`mine` reads git with its own format.** The `GIT_` variables of the
+  caller are dropped, and no signature is checked, so that only the
+  script's own format reaches it. Each commit starts with a mark that is
+  made for the run. The git settings of the user and of the repo are read.
+  A test sets `log.showSignature`, `format.pretty` and `color.ui`, and the
+  result does not change; other settings are not tested.
+- **Two typed lines are one candidate when they differ only in case, marks
+  and spaces,** in any script. Accents count: `écrire` and `ecrire` are two.
+- **Only the text that was typed is read.** The pasted content of a prompt
+  is never opened.
+- **A line of more than 400 characters is left out** (and counted): it is a
+  paste or a brief, not a correction. It is checked for a secret first, so
+  it is counted as held back when it has one.
+- **What is printed of a line is its first 160 characters.**
+- **The layer `config` is in the list.** The design page of 2026-11-14 gave
+  six layers and an example row with a seventh, `config`. The list has
+  seven: architecture, types, config, lint, test, hook, docs.
+- **A `docs` rule is a gap until the row says why no code can check it**
+  (`accepted`). A rule that only a reader can judge is then no gap, and the
+  table shows the reason.
+- **The table that a person reads is a file under git** (`.claude/rules.md`),
+  and `check` reports it when it is not what `table` writes.
+- **`mine` reads at most the 2,000 newest commits,** prints at most 200
+  history candidates and 30 files, and says in its last line how many it
+  did not show.
+
+### Minor
+
+- **`not-in-ci` reads the `run:` commands of the workflow files as text.**
+  A command names the enforcer when one of its words is the enforcer path,
+  or a folder above it, written as a path: with a slash in it (`tests/`,
+  `./tests`, `config/hooks`, `./lint.sh`). A word is what stands between
+  spaces, quotes and the marks `; & | ( ) < >`. The first version took a
+  bare folder name as a whole word, and the adversary showed `npm test`,
+  `make test` and `echo "no tests yet"` counting for a folder; the class
+  was "a word of a command is taken for a path". So a bare `tests` no
+  longer counts, and `pytest tests` gives `not-in-ci`: the cost is one
+  slash in the workflow. A path inside a longer word does not count either
+  (`--ignore=tests/`, `PYTHONPATH=tests/`, `tests/*.py`), and a file at the
+  top of the repo needs `./` before it. A job name, a step name, an input
+  of an action and a comment do not count. A workflow that runs every test
+  with no path named (`pytest`) does not count. A `run:` with nothing after
+  it on its line is not a step (the `defaults` of a workflow have such a
+  key); a command that starts on the line below it is so not read. The
+  block of a `run:` is found by its indent, with no YAML parser: a `run:`
+  key inside a quoted string, or a command in a flow mapping
+  (`{run: ...}`), is read wrongly.
+- **A path that a command names is not a path that the command runs.**
+  `ls tests/`, `rm -r tests/` and `pytest --ignore tests/e2e` count.
+- **A path in quotes inside a longer word of the shell counts:**
+  `--ignore="tests/e2e"`, `PYTHONPATH="tests/" true`. A quote ends a word
+  for the script and not for the shell.
+- **Some right spellings give `not-in-ci`:** an enforcer path with a space
+  in it, a command whose path stands on the next line of a plain YAML
+  value, and a quoted key (`"run": ...`). A `run:` line inside the block
+  of another key (the `script: |` of an action) counts.
+- **Characters that print as nothing and are printable for Python pass:**
+  U+3164, U+034F, U+2800, U+FE0F, U+115F, U+180B, U+E0101. One of them
+  inside a secret splits it for the script and not for the eye. Found by
+  the adversary's second round, as are the next three points.
+- **A wrapped secret with a mark at the start of the next line is not
+  joined** (`> `, `│`, a backslash at the line end), and a tab or a
+  no-break space inside a secret prints as a space.
+- **A private key header that is wrapped at two places is not seen** when
+  one break comes right after `BEGIN`. The lines of the key itself are long
+  runs and are held back.
+- **The URL rule is slow on a line with `://` and thousands of colons:**
+  about 0.6 seconds for 4 KB.
+- **A key word in letters of another script that look the same** (a
+  Cyrillic `а` in `pаssword`) is not a key word.
+- **One history line that is JSON nested very deep stops `mine`** with exit
+  2 (`RecursionError`); other broken lines are skipped. Found by both
+  reviewers, 2026-11-15. It prints nothing from the file.
+- **A `.claude/rules.md` that is not UTF-8 gives exit 2,** where
+  `table-stale` would be the better answer.
+- **When the rename of `table` fails** (`.claude/rules.md` is a folder),
+  `.claude/rules.md.part` stays on disk.
+- **A usage error** (`rules.py chek`) ends with exit 2 and the line of
+  `argparse` on stderr, not with `rules: error ...`. It is not a result, and
+  the text says so.
+- **A typed line that starts with `/` is left out** as a slash command, also
+  when it is a correction that starts with a path.
+- **`check` does not run a workflow or a hook.** It shows that the enforcer
+  file is there and that CI names it, not that the check passes or that the
+  hook is installed.
+- **An `evidence` line is free text.** The script does not look up the
+  commit that it names.
+- **A fix commit is one whose subject has the word `fix`.** A fix under
+  another word is not counted, and a subject that only names the word, such
+  as "Document the fix process", is.
+- **Only folders that are named count as this project.** A worktree beside
+  the repo needs `--project`.
+
+### Not tested
+
+- The live history of a second person. The trial ran on one history file
+  (2026-11-15): 41 candidates, 14 lines held back, 19 too long. With the
+  first form of the key word rule it was 42, 1 and 23. Only the summary
+  line of each run was read.
+- Signatures made with GnuPG. The test signs its commits with an SSH key.
+- A live session with the user in step 2. A fresh agent followed the text on
+  a stand-in project with the user's answer given ahead; it built two rules
+  and showed each enforcer fail on the old mistake. Its findings about the
+  text were taken.
+- Linux.
