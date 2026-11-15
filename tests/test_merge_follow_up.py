@@ -46,7 +46,8 @@ def test_the_text_holds_no_command_that_merges_tags_or_deletes():
                    "git worktree remove", "--admin", "--auto"):
         assert banned not in commands, banned
     pushes = [line for line in commands.splitlines() if "git push" in line]
-    assert pushes == ["git push --force-with-lease", "git push origin sync/<release>-into-<integration>-<version>:<integration>"]
+    assert pushes == ["git push --force-with-lease origin <head>:<head>",
+                      "git push origin sync/<release>-into-<integration>-<version>:<integration>"]
     said = flat(TEXT)
     assert "Give the user this command, and do not run it yourself" in said
     assert "This skill never merges a pull request." in said
@@ -83,6 +84,7 @@ def test_the_text_keeps_a_session_off_the_branches_of_another():
     assert "Rebase the ones that **this session created**" in said
     assert "**Leave every other branch alone.**" in said
     assert "run `git rebase --abort` and report the branch" in said
+    assert "Always name the branch: a push with no branch named can follow the upstream of the branch" in said
     assert "a reviewer that passed the branch re-checks it before it is merged" in said
     assert "Delete nothing" in said
     assert "Never wait with `sleep` or a loop in the shell." in said
@@ -228,3 +230,35 @@ def test_the_checks_fail_when_the_release_head_is_not_in_dev(squashed):
     checked = subprocess.run(["bash", "-e", "-c", check(other)], cwd=work, capture_output=True, text=True)
 
     assert checked.returncode == 1
+
+
+# ── the push after a rebase, run as the text gives it ────────────────────────
+
+def test_the_push_after_a_rebase_names_its_branch_and_cannot_land_on_the_base(tmp_path):
+    """A branch made from origin/dev has dev as its upstream, and git can be set to push there."""
+    command = re.search(r"`(git push --force-with-lease[^`]*)`", TEXT).group(1)
+    origin = tmp_path / "origin.git"
+    git(tmp_path, "init", "-q", "--bare", str(origin))
+    work = tmp_path / "work"
+    git(tmp_path, "clone", "-q", str(origin), str(work))
+    git(work, "checkout", "-q", "-b", "dev")
+    commit(work, "first")
+    git(work, "push", "-q", "origin", "dev")
+    git(work, "checkout", "-q", "-b", "claude/x", "origin/dev")
+    assert git(work, "rev-parse", "--abbrev-ref", "claude/x@{upstream}") == "origin/dev"
+    commit(work, "task")
+    git(work, "push", "-q", "origin", "claude/x:claude/x")
+    git(work, "commit", "-q", "--amend", "-m", "task, after a rebase")
+    git(work, "config", "push.default", "upstream")
+    dev_before = git(work, "rev-parse", "origin/dev")
+
+    done = subprocess.run(["bash", "-e", "-c", command.replace("<head>", "claude/x")], cwd=work,
+                          capture_output=True, text=True)
+
+    assert done.returncode == 0, done.stderr
+    git(work, "fetch", "-q", "origin")
+    assert git(work, "rev-parse", "origin/dev") == dev_before
+    assert git(work, "rev-parse", "origin/claude/x") == git(work, "rev-parse", "HEAD")
+    said = flat(TEXT)
+    assert "`<head>` is the event's `head`" in said
+    assert "Use `<integration>` only when it is a plain name" in said

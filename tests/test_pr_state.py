@@ -17,6 +17,7 @@ import random
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -337,6 +338,25 @@ def test_of_many_sessions_that_claim_at_the_same_time_exactly_one_wins(world):
 
     assert sorted(codes) == [0] + [1] * 7
     assert world.state()["claims"]["install:5"]["by"] == f"s{codes.index(0)}"
+
+
+def test_a_second_holder_of_the_state_waits_until_the_first_is_done(module, tmp_path):
+    """The lock itself, with no race to win: the second one is not in before the first is out."""
+    order = []
+
+    def second():
+        with module.State(tmp_path, "octo/demo"):
+            order.append("second in")
+
+    with module.State(tmp_path, "octo/demo"):
+        waiting = threading.Thread(target=second)
+        waiting.start()
+        waiting.join(timeout=1.0)
+        assert waiting.is_alive() and order == []
+        order.append("first out")
+    waiting.join(timeout=30)
+
+    assert not waiting.is_alive() and order == ["first out", "second in"]
 
 
 def test_two_sessions_that_look_at_the_same_time_both_keep_their_cursor(world):

@@ -1536,6 +1536,19 @@ has none.
   a fast-forward.
 - **A session that has not looked for 30 days loses its cursor.** Its next
   look is a first look, and what happened in between is not reported.
+- **A look that sees a shorter list forgets the rest.** The cursor is
+  replaced by the list of the look. After a look as another GitHub user
+  (`gh auth switch`), or after a pull request left the 100 newest, the next
+  look with the full list reports old merges as new. The checks of the
+  repair stop an old release; a reinstall claim for an old number would be
+  given. Found by the adversary, 2026-11-14.
+- **An answer of `gh` that GitHub does not give can stop every look.** A
+  base name that is a list gives exit 2 on each look while that pull
+  request is listed. A parent count in digits that are not ASCII would be
+  read as a number. Both found by the adversary with a stand-in `gh`.
+- **The order of `gh pr list` beyond 100 pull requests was not checked.**
+  If it is not newest first, an old pull request can come back into the
+  list and be reported as new.
 - **The lock is `flock` on a file beside the state file.** It is opened
   without following a link and is never emptied. A file system that does
   not honour `flock` (some network mounts) gives no lock.

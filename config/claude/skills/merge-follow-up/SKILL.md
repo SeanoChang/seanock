@@ -80,8 +80,11 @@ A task pull request went into the integration branch.
    - On a conflict that you cannot resolve with certainty, run
      `git rebase --abort` and report the branch.
    - After a clean rebase, run that branch's checks again, then
-     `git push --force-with-lease`. The new commit has no review yet: a
-     reviewer that passed the branch re-checks it before it is merged.
+     `git push --force-with-lease origin <head>:<head>`. `<head>` is the
+     event's `head`. Always name the branch: a push with no branch named can
+     follow the upstream of the branch, and that is often the base. The new
+     commit has no review yet: a reviewer that passed the branch re-checks
+     it before it is merged.
 3. **Leave every other branch alone.** A branch that you did not create
    belongs to another session or to the user. That session gets the same
    event from its own look.
@@ -109,7 +112,9 @@ The user merged a release. Fetch, then read `squashed_release`.
   `head_sha`, the last commit of the release pull request. `<integration>`
   is the integration branch of the repo, as `CLAUDE.md` picks it; it is not
   always the event's `head`, because a release can come from a branch such
-  as `release/1.2.0`. `<version>` is the version that was released.
+  as `release/1.2.0`. Use `<integration>` only when it is a plain name
+  (letters, digits and `. _ / -`) and not a release branch; otherwise build
+  nothing and report. `<version>` is the version that was released.
 
   ```bash
   git rev-parse "origin/<release>^{tree}" "<head_sha>^{tree}"
