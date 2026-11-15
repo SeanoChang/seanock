@@ -1411,3 +1411,34 @@ has none.
   its pid** leaves that command running, and `clean` does not know it.
 - **`ps` gives start times to the second.** A recorded pid that the system
   gave to a new process within the same second would match.
+
+## Merge follow-up (`config/claude/skills/merge-follow-up`, 2026-11-14)
+
+### By design
+
+- **Each session gets each event once; only the reinstall is claimed once.**
+  The design page of 2026-11-14 said that one session claims an event. With
+  that, a second session would never learn of a merge, and its branches
+  would stay behind. So the cursor is per session, and `--claim` is for a
+  step that must run once.
+- **An event is delivered at most once.** The cursor moves when the script
+  prints the events. A session that stops before it acts has the events in
+  its conversation only.
+- **A session's first look reports nothing.** It records what is there. A
+  merge that happened before that look is not news.
+- **The script sees the 100 newest pull requests of the signed-in user.**
+- **It reports no green check, no review and no comment.**
+- **"Branches that this session created" is the session's own knowledge.**
+  No code records who made a branch. A session that lost that knowledge (a
+  new session, a compacted one) must read its plan or ask.
+- **Polling needs a tool that wakes the session.** Without one, the skill
+  looks when the user next writes.
+- **The repair of a squashed release is commands in the skill text,** tested
+  as written on a real repo. No code runs them for the agent, and the push
+  is always the user's.
+
+### Not tested
+
+- No live session followed the skill text. No Codex session ran the script.
+- The script against the real `gh` in CI: the tests use a stand-in that
+  answers from a file. It ran by hand against the real `gh` on this repo.

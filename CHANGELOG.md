@@ -18,6 +18,15 @@ Added:
   finish, and a result counts only with the runner's own last line. This
   version runs command-line steps only. What it does not do is in
   `docs/known-limits.md`.
+- `merge-follow-up`, a skill for the steps after a merge. Its script
+  `pr-state.py` reads your pull requests with `gh` and reports what changed
+  since the session last looked: a merge, a close, a failed check, and the
+  open pull requests that are now behind their base. It only reads, and it
+  refuses any other `gh` call. Each session gets each event once. The skill
+  then rebases the session's own branches, reinstalls once for all sessions,
+  and takes the next task. It never merges. For a release that was merged
+  as one commit with one parent, it prepares the commit that joins the two
+  histories again and hands you the push.
 
 ## 0.2.0 (2026-11-14)
 
