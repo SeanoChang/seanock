@@ -23,10 +23,13 @@ Added:
   since the session last looked: a merge, a close, a failed check, and the
   open pull requests that are now behind their base. It only reads, and it
   refuses any other `gh` call. Each session gets each event once. The skill
-  then rebases the session's own branches, reinstalls once for all sessions,
-  and takes the next task. It never merges. For a release that was merged
-  as one commit with one parent, it prepares the commit that joins the two
-  histories again and hands you the push.
+  then rebases the session's own task branches, reinstalls once for all
+  sessions, and takes the next task. It never merges, and it never rebases
+  or pushes a branch that takes pull requests: the script marks those
+  (`shared_head`). A branch name that is not a plain name is held back, so
+  it cannot reach a command. For a release that was merged as one commit
+  with one parent, it prepares the commit that joins the two histories
+  again and hands you the push.
 
 ## 0.2.0 (2026-11-14)
 

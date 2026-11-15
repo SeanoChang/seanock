@@ -1472,7 +1472,10 @@ has none.
   local time, and `clean` from a session in another time zone took a live
   run for a cut-off one and removed its temp folder (found by the
   adversary). A run that an older copy of the runner recorded in local time
-  has the same problem until it ends.
+  has the same problem until it ends. The reverse is possible at long odds
+  too: within the hours of the zone's offset, a new process that got the
+  recorded pid at the one second that reads the same in UTC would count as
+  the recorded one, and `clean` would stop it.
 
 ## Merge follow-up (`config/claude/skills/merge-follow-up`, 2026-11-14)
 
@@ -1483,9 +1486,28 @@ has none.
   that, a second session would never learn of a merge, and its branches
   would stay behind. So the cursor is per session, and `--claim` is for a
   step that must run once.
-- **An event is delivered at most once.** The cursor moves when the script
-  prints the events. A session that stops before it acts has the events in
-  its conversation only.
+- **An event is delivered at most once.** The cursor is saved before the
+  script prints the events. A session that stops before it acts has the
+  events in its conversation only. If the print itself fails (a closed pipe
+  gives exit 120, which is not a result), those events are lost. The skill
+  text forbids a pipe.
+- **A head that takes pull requests is marked `shared_head`,** and the text
+  forbids a rebase of it or a push to it. The mark comes from the branch
+  names of the merge gate (`main`, `master`, `trunk`, `dev`, `develop`,
+  `development`, `integration`), from the branch that `$MERGE_GATE_BASE`
+  names, and from the bases of the listed pull requests, all compared
+  without regard to case. A head with no name is marked. A branch that is
+  the base of another of your pull requests (a stack) is marked too. An
+  integration branch with another name is not marked when none of your 100
+  newest pull requests has it as its base; for that one the rule holds in
+  text only. The script does not ask GitHub whether a pull request of
+  another author targets a head: that is one more call for each event, for
+  a rare case.
+- **A branch name or commit id that is not of the plain form is given as
+  `null`.** A plain name is letters, digits and `. _ / -`, at most 200, with
+  no `..`. Git allows more; a branch with such a name gets its events with no
+  name, and the agent reports them and runs nothing. Check names are free
+  text and are passed on as they are; the text calls them data.
 - **A session's first look reports nothing.** It records what is there. A
   merge that happened before that look is not news.
 - **The script sees the 100 newest pull requests of the signed-in user.**
@@ -1498,6 +1520,38 @@ has none.
 - **The repair of a squashed release is commands in the skill text,** tested
   as written on a real repo. No code runs them for the agent, and the push
   is always the user's.
+
+### Minor
+
+- **Two looks of one session that overlap can report one event twice.** The
+  script reads the pull requests before it takes the lock, so the slower
+  look can save an older picture over the newer one.
+- **A subagent has the session name of its lead** (`CLAUDE_CODE_SESSION_ID`
+  is the same). A look from a subagent takes the lead's events, and both
+  hold the same claim. The text says to look from the lead only.
+- **The repair of a squashed release is not claimed, and has no check for
+  "already repaired".** Each session that gets the release event builds its
+  own `sync/...` branch and hands over a push command, also after the user
+  has repaired it by hand. The extra commit changes no file and the push is
+  a fast-forward.
+- **A session that has not looked for 30 days loses its cursor.** Its next
+  look is a first look, and what happened in between is not reported.
+- **A look that sees a shorter list forgets the rest.** The cursor is
+  replaced by the list of the look. After a look as another GitHub user
+  (`gh auth switch`), or after a pull request left the 100 newest, the next
+  look with the full list reports old merges as new. The checks of the
+  repair stop an old release; a reinstall claim for an old number would be
+  given. Found by the adversary, 2026-11-14.
+- **An answer of `gh` that GitHub does not give can stop every look.** A
+  base name that is a list gives exit 2 on each look while that pull
+  request is listed. A parent count in digits that are not ASCII would be
+  read as a number. Both found by the adversary with a stand-in `gh`.
+- **The order of `gh pr list` beyond 100 pull requests was not checked.**
+  If it is not newest first, an old pull request can come back into the
+  list and be reported as new.
+- **The lock is `flock` on a file beside the state file.** It is opened
+  without following a link and is never emptied. A file system that does
+  not honour `flock` (some network mounts) gives no lock.
 
 ### Not tested
 

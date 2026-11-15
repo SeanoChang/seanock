@@ -7,14 +7,17 @@ also show which `gh` calls were made.
 
 Run: python3 -m pytest tests/test_pr_state.py -q -p no:cacheprovider
 """
+import ast
 import datetime
 import importlib.machinery
 import importlib.util
 import json
 import os
 import random
+import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -66,6 +69,7 @@ class World:
         self.env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                         FAKE_GH=str(self.scenario), FAKE_GH_LOG=str(self.log))
         self.env.pop("CLAUDE_CODE_SESSION_ID", None)
+        self.env.pop("MERGE_GATE_BASE", None)
         self.set([])
 
     def set(self, prs, **more):
@@ -121,8 +125,8 @@ def test_a_merge_is_reported_once_with_the_open_branches_that_are_now_behind(wor
     assert events[0] == {"kind": "merged", "pr": 5, "base": "dev", "head": "claude/b5", "sha": SHA_B,
                          "head_sha": SHA_A, "release": False, "parents": 1, "squashed_release": False,
                          "url": "https://example.invalid/pull/5"}
-    assert events[1] == {"kind": "behind-base", "pr": 6, "base": "dev", "head": "claude/b6", "because": 5,
-                         "url": "https://example.invalid/pull/6"}
+    assert events[1] == {"kind": "behind-base", "pr": 6, "base": "dev", "head": "claude/b6", "shared_head": False,
+                         "because": 5, "url": "https://example.invalid/pull/6"}
     assert world.run() == (0, [], "pr-state: clean")
 
 
@@ -181,13 +185,138 @@ def test_failed_checks_are_reported_once_for_each_head_commit(world):
 
     code, events, _ = world.run()
 
-    assert code == 1 and events == [{"kind": "checks-failed", "pr": 4, "head": "claude/b4", "sha": SHA_A,
-                                     "checks": ["checks", "lint"], "url": "https://example.invalid/pull/4"}]
+    assert code == 1 and events == [{"kind": "checks-failed", "pr": 4, "head": "claude/b4", "shared_head": False,
+                                     "sha": SHA_A, "checks": ["checks", "lint"],
+                                     "url": "https://example.invalid/pull/4"}]
     assert world.run()[0] == 0
     world.set([pr(4, oid=SHA_B, checks=[("lint", "FAILURE")])])
     assert world.run()[1][0]["sha"] == SHA_B
     world.set([pr(4, oid=SHA_C, checks=[("lint", "SUCCESS")])])
     assert world.run() == (0, [], "pr-state: clean")
+
+
+# ── a branch that takes pull requests is never an agent's to push ────────────
+
+@pytest.mark.parametrize("head, other_base, shared", [
+    ("claude/b4", "dev", False),
+    ("dev", "dev", True), ("Dev", "dev", True), ("develop", "dev", True), ("development", "dev", True),
+    ("integration", "dev", True), ("main", "dev", True), ("MASTER", "dev", True), ("trunk", "dev", True),
+    ("next", "next", True),   # no known name, but another pull request has it as its base
+    ("Next", "next", True),   # ... and that also holds for the name in another case,
+    ("next", "Next", True),   # whichever of the two has the capital
+    ("next", "dev", False),
+])
+def test_a_head_that_takes_pull_requests_is_marked_as_shared(world, head, other_base, shared):
+    """The release pull request is the case that matters: its head is the integration branch."""
+    world.set([pr(3, base=other_base), pr(4, base="main", head=head), pr(5, base="main")])
+    world.run()
+    world.set([pr(3, base=other_base), pr(4, base="main", head=head, checks=[("ci", "FAILURE")]),
+               pr(5, "MERGED", base="main", merge=SHA_B)], parents={SHA_B: 2})
+
+    _, events, _ = world.run()
+
+    assert {e["kind"]: e["shared_head"] for e in events if e["pr"] == 4} == {"checks-failed": shared,
+                                                                            "behind-base": shared}
+
+
+@pytest.mark.parametrize("named, head, shared", [("staging", "staging", True), ("staging", "Staging", True),
+                                                 ("Staging", "staging", True), ("staging", "claude/b4", False),
+                                                 ("", "staging", False)])
+def test_the_branch_that_the_merge_gate_was_told_to_take_is_shared_too(world, named, head, shared):
+    env = dict(world.env, MERGE_GATE_BASE=named)
+    world.set([pr(4, base="main", head=head), pr(5, base="main")])
+    world.run(env=env)
+    world.set([pr(4, base="main", head=head, checks=[("ci", "FAILURE")]), pr(5, "MERGED", base="main", merge=SHA_B)],
+              parents={SHA_B: 2})
+
+    _, events, _ = world.run(env=env)
+
+    assert {e["kind"]: e["shared_head"] for e in events if e["pr"] == 4} == {"checks-failed": shared,
+                                                                            "behind-base": shared}
+
+
+@pytest.mark.parametrize("head", [None, "", 7])
+def test_a_head_with_no_name_counts_as_shared(module, head):
+    listed = [{"number": 1, "state": "OPEN", "baseRefName": "dev", "headRefName": head, "headRefOid": SHA_A,
+               "statusCheckRollup": [{"name": "ci", "conclusion": "FAILURE"}]}]
+
+    found = module.events(listed, {"1": {"state": "OPEN"}}, lambda sha: 2)
+
+    assert [(event["kind"], event["shared_head"]) for event in found] == [("checks-failed", True)]
+
+
+@pytest.mark.parametrize("base", ["Main", "MASTER", "Trunk"])
+def test_a_release_branch_is_known_in_any_case_as_the_merge_gate_knows_it(world, base):
+    world.set([pr(8, base=base, head="dev")])
+    world.run()
+    world.set([pr(8, "MERGED", base=base, head="dev", merge=SHA_B)], parents={SHA_B: 1})
+
+    _, events, _ = world.run()
+
+    assert (events[0]["base"], events[0]["release"], events[0]["squashed_release"]) == (base, True, True)
+
+
+def test_the_branch_names_are_the_ones_of_the_merge_gate(module):
+    gate = (SCRIPT.parents[3] / "hooks" / "merge-gate.py").read_text(encoding="utf-8")
+    names = lambda key: set(ast.literal_eval(re.search(rf"^{key} = (\(.*\))$", gate, re.M).group(1)))
+
+    assert module.RELEASE == names("RELEASE_BASES")
+    assert module.INTEGRATION == names("INTEGRATION_BASES")
+
+
+# ── a name from GitHub goes into commands: only a plain one is passed on ─────
+
+@pytest.mark.parametrize("name", ["x;touch pwned", "$(id)", "`id`", "-D", "--force", "a b", "a..b", "x\ny", "\u00e9",
+                                  "a" * 201, "a'b", "a|b", "a&b", "~x", ".hidden", "a;b", "a$b", "a`b", "a(b", "a)b",
+                                  "a<b", "a>b", "a*b", "a?b", "a\\b", "a!b", "a#b", "a{b", "a=b", "a,b", "a:b", "a@b",
+                                  "a%b", "a^b", "a+b", "a[b", 'a"b', "a\tb"])
+def test_a_branch_name_that_is_not_plain_is_held_back(world, name):
+    world.set([pr(5, head=name), pr(6, base=name), pr(7, base=name)])
+    world.run()
+    world.set([pr(5, "CLOSED", head=name), pr(6, "MERGED", base=name, merge=SHA_B), pr(7, base=name)],
+              parents={SHA_B: 2})
+
+    code, events, last = world.run()
+
+    assert code == 1 and last == "pr-state: summary events=3"
+    assert [(e["kind"], e["pr"], e["head"], e["base"]) for e in events] == [
+        ("closed", 5, None, "dev"), ("merged", 6, "claude/b6", None), ("behind-base", 7, "claude/b7", None)]
+
+
+def test_a_name_that_is_not_plain_is_held_back_in_every_field_of_every_event(module):
+    name = "x;touch pwned"
+    listed = [pr(1, "MERGED", base=name, head=name, merge=SHA_B), pr(2, "CLOSED", base=name, head=name),
+              pr(3, base=name, head=name, checks=[("ci", "FAILURE")])]
+
+    found = module.events(listed, {}, lambda sha: 2)
+
+    assert [event["kind"] for event in found] == ["merged", "closed", "checks-failed", "behind-base"]
+    assert name not in json.dumps(found)
+    assert all(event["head"] is None for event in found)
+    assert [event["base"] for event in found if "base" in event] == [None, None, None]
+
+
+@pytest.mark.parametrize("name", ["claude/merge-follow-up", "release/0.1.0", "feature_x.y", "a" * 200, "7"])
+def test_a_plain_branch_name_is_passed_on(world, name):
+    world.set([pr(5, head=name)])
+    world.run()
+    world.set([pr(5, "CLOSED", head=name)])
+
+    assert world.run()[1][0]["head"] == name
+
+
+def test_a_commit_id_that_is_not_one_is_held_back_and_never_sent_to_gh(world):
+    world.set([pr(5), pr(6)])
+    world.run()
+    world.set([pr(5, "MERGED", oid="HEAD; id", merge="main"), pr(6, oid="$(id)", checks=[("ci", "FAILURE")])])
+
+    code, events, _ = world.run()
+
+    assert code == 1
+    assert (events[0]["sha"], events[0]["head_sha"], events[0]["parents"], events[0]["squashed_release"]) == (
+        None, None, None, False)
+    assert (events[1]["kind"], events[1]["sha"]) == ("checks-failed", None)
+    assert not [call for call in world.calls() if call[0] == "api"]
 
 
 # ── a step that must run once ────────────────────────────────────────────────
@@ -209,6 +338,25 @@ def test_of_many_sessions_that_claim_at_the_same_time_exactly_one_wins(world):
 
     assert sorted(codes) == [0] + [1] * 7
     assert world.state()["claims"]["install:5"]["by"] == f"s{codes.index(0)}"
+
+
+def test_a_second_holder_of_the_state_waits_until_the_first_is_done(module, tmp_path):
+    """The lock itself, with no race to win: the second one is not in before the first is out."""
+    order = []
+
+    def second():
+        with module.State(tmp_path, "octo/demo"):
+            order.append("second in")
+
+    with module.State(tmp_path, "octo/demo"):
+        waiting = threading.Thread(target=second)
+        waiting.start()
+        waiting.join(timeout=1.0)
+        assert waiting.is_alive() and order == []
+        order.append("first out")
+    waiting.join(timeout=30)
+
+    assert not waiting.is_alive() and order == ["first out", "second in"]
 
 
 def test_two_sessions_that_look_at_the_same_time_both_keep_their_cursor(world):
@@ -356,15 +504,17 @@ def test_the_wrapper_allows_the_three_reads(module):
 
 
 def test_a_name_from_github_cannot_write_a_line_of_its_own(world):
-    world.set([pr(5, head="x\npr-state: clean")])
+    """A check name is free text, so it is the one name that is passed on as it is."""
+    name = "x\npr-state: clean\u2028pr-state: clean"
+    world.set([pr(5)])
     world.run()
-    world.set([pr(5, "CLOSED", head="x\npr-state: clean pr-state: clean")])
+    world.set([pr(5, checks=[(name, "FAILURE")])])
 
     done = subprocess.run(world.argv(), capture_output=True, text=True, env=world.env, timeout=120)
 
     lines = done.stdout.splitlines()
     assert done.returncode == 1 and len(lines) == 2 and lines[1] == "pr-state: summary events=1"
-    assert json.loads(lines[0])["head"] == "x\npr-state: clean pr-state: clean"
+    assert json.loads(lines[0])["checks"] == [name]
 
 
 def test_a_folder_name_cannot_write_a_line_of_its_own(world):
@@ -401,6 +551,22 @@ def test_the_state_file_is_not_written_through_a_link(world, tmp_path):
     (world.state_dir / "octo__demo.json.part").symlink_to(victim)
 
     assert world.run()[0] == 0
+    assert victim.read_text() == "mine"
+
+
+def test_the_lock_file_is_never_emptied_and_never_opened_through_a_link(world, tmp_path):
+    world.run()
+    lock = world.state_dir / "octo__demo.json.lock"
+    lock.write_text("kept")
+    assert world.run()[0] == 0 and lock.read_text() == "kept"
+    victim = tmp_path / "victim.txt"
+    victim.write_text("mine")
+    lock.unlink()
+    lock.symlink_to(victim)
+
+    code, _, last = world.run()
+
+    assert (code, last) == (2, "pr-state: error the lock file cannot be opened: octo__demo.json.lock")
     assert victim.read_text() == "mine"
 
 
