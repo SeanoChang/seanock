@@ -1983,7 +1983,9 @@ has none.
   differ: keeping both sides gives the number two times, and two tests
   fail. With the same date, which is the usual case, git takes the heading
   line as common to both: keeping both sides gives one entry with the text
-  of both pull requests, and every test passes. Taking one side loses the
+  of both pull requests, and every test passes. (That is git's default
+  conflict style. With `merge.conflictStyle=diff3` the heading stays inside
+  the conflict, and two tests fail for the same date too.) Taking one side loses the
   entry of the other pull request, and every test passes too. Both
   reviewers and the author ran this with git on 2026-11-15; the first text
   of this point said that the tests catch it, from reading alone. So the
