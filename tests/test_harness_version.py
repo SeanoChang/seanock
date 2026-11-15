@@ -4,7 +4,8 @@ The harness has one version, in VERSION at the repo root. Three things can
 drift from it with no error:
 
 - the changelog, when a pull request changes the number and adds no entry;
-- the architecture document, when a major release keeps the old description;
+- the architecture document, when a pull request takes the next major and the
+  document keeps the old description;
 - the decision records, when a file is added out of order or without a number.
 
 The status line shows the version of the tree that is live. That part is

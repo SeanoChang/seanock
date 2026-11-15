@@ -1971,16 +1971,28 @@ has none.
 - **The oldest entry is not checked against a rule.** Each entry is held
   against the one below it, and the oldest has none: a changelog that
   starts at `0.1.1` passes.
-- **A digit of another script passes as a digit** in `VERSION` and in a
-  heading (the patterns use `\d`), after the first character of a number.
+- **A digit of another script passes as a digit** (the patterns use `\d`):
+  in a number of `VERSION` or of a heading after its first character, and
+  at every place of a date.
 - **The check of the major in `docs/architecture.md` reads one phrase,**
   also inside a comment.
+- **Two open pull requests that take the same number are caught only when
+  their entries have different dates.** Both make the same change to
+  `VERSION`, so that file does not conflict in the rebase of the later
+  one. The changelog does. With different dates the two heading lines
+  differ: keeping both sides gives the number two times, and two tests
+  fail. With the same date, which is the usual case, git takes the heading
+  line as common to both: keeping both sides gives one entry with the text
+  of both pull requests, and every test passes. Taking one side loses the
+  entry of the other pull request, and every test passes too. Both
+  reviewers and the author ran this with git on 2026-11-15; the first text
+  of this point said that the tests catch it, from reading alone. So the
+  rule is one for the agent that rebases: every entry that `dev` holds is
+  still there afterwards, and the pull request's own entry is a new one on
+  top, with the next number.
 
 ### Not tested
 
-- Two open pull requests that take the same number, end to end with git.
-  By reading: both make the same change to `VERSION`, their changelog
-  entries conflict, and a rebase that keeps both entries fails two tests.
 - How GitHub draws the changelog. The points on headings follow the
   CommonMark rules.
 
