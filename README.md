@@ -1,7 +1,7 @@
 # seanock
 
 An agent harness for Claude Code and Codex: global working rules, six workers,
-thirteen skills, hooks that check risky steps with code, and the tests that keep
+fourteen skills, hooks that check risky steps with code, and the tests that keep
 all of it in step.
 
 It was part of the terminal setup in
