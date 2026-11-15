@@ -26,9 +26,14 @@ The checks:
                       command (TEST_COMMANDS). A comment line does not count.
   ci-lint             the same for a lint or type command (LINT_COMMANDS).
   root-map            the root map (CLAUDE.md, else AGENTS.md) names a command
-                      for each of build, test, lint and install: a line that
-                      starts with that word (after markdown marks) and has a
-                      code span, or is followed within 3 lines by a fenced block.
+                      for each of build, test, lint and install. A command is
+                      named by a label: a line that starts with that word
+                      (after markdown marks; "command" or "commands" may
+                      follow), then `:` or `|` or nothing, and then a code
+                      span on the line. A line that is the label alone counts
+                      when a fenced block follows within 3 lines. A sentence
+                      that only starts with the word ("Build output goes to
+                      `dist/`") names no command.
   review-file         REVIEW.md is a file with content.
   comment-rule        the root map holds COMMENT_RULE (whitespace collapsed,
                       case ignored).
@@ -232,7 +237,7 @@ def check_ci(root, regexes, kind):
 # ── the root map ─────────────────────────────────────────────────────────────
 
 MARKS = re.compile(r"^(?:[\s>*+|#_-]|\d+[.)](?=\s))*")
-WORD = re.compile(r"(build|test|lint|install)(?![\w-])", re.IGNORECASE)
+LABEL = re.compile(r"(build|test|lint|install)(?:\s+commands?)?[*_\s]*(:|\||`|$)", re.IGNORECASE)
 SPAN = re.compile(r"`[^`]+`")
 FENCE = re.compile(r"^\s{0,3}(```|~~~)")
 
@@ -260,12 +265,14 @@ def named_commands(text):
     for index, line in enumerate(lines):
         if fenced[index]:
             continue
-        word = WORD.match(MARKS.sub("", line))
-        if not word:
+        text = MARKS.sub("", line)
+        label = LABEL.match(text)
+        if not label:
             continue
+        alone = label.group(2) in (":", "") and not text[label.end():].strip("*_ \t")   # the label and nothing else
         nearby = any(FENCE.match(lines[i]) for i in range(index + 1, min(index + 4, len(lines))))
-        if SPAN.search(line) or nearby:
-            found.add(word.group(1).lower())
+        if SPAN.search(text) or (alone and nearby):
+            found.add(label.group(1).lower())
     return [word for word in MAP_WORDS if word in found]
 
 

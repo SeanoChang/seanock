@@ -21,7 +21,7 @@ SKILLS = Path(__file__).resolve().parent.parent / "config" / "claude" / "skills"
 SKILL = SKILLS / "setup-repo"
 TEXT = (SKILL / "SKILL.md").read_text(encoding="utf-8")
 SCRIPT = SKILL / "scripts" / "repo-doctor.py"
-BRANCH_PUSH = "git push origin refs/heads/dev:refs/heads/dev"
+BRANCH_PUSH = "git push --force-with-lease=refs/heads/dev: origin refs/remotes/origin/<default>:refs/heads/dev"
 
 
 def flat(text):
@@ -77,14 +77,12 @@ def test_a_repo_that_is_set_up_as_the_text_says_is_clean(tmp_path):
     code, lines = doctor(repo)
     assert code == 1 and lines[-1] == "repo-doctor: summary gaps=8 unknown=0"
 
-    # the integration branch, with the two commands of the text; local work that is not pushed stays out of it
+    # the integration branch, with the one command of the text; local work that is not pushed stays out of it
     (repo / "local.txt").write_text("not pushed\n")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "local work")
-    for command in block("bash", "no integration branch at all").strip().splitlines():
-        done = subprocess.run(["bash", "-e", "-c", command.replace("<default>", "main")], cwd=repo,
-                              capture_output=True, text=True, timeout=60)
-        assert done.returncode == 0, done.stderr
+    assert block("bash", "no integration branch at all").strip() == BRANCH_PUSH
+    assert make_dev(repo).returncode == 0
     git(repo, "fetch", "-q", "origin")
     assert git(repo, "rev-parse", "origin/dev") == git(repo, "rev-parse", "origin/main")
     assert git(repo, "rev-parse", "origin/dev") != git(repo, "rev-parse", "HEAD")
@@ -107,30 +105,69 @@ def test_a_repo_that_is_set_up_as_the_text_says_is_clean(tmp_path):
     assert [line.split()[0] for line in lines[:-1]] == ["ok"] * 8
 
 
-def test_the_push_that_makes_the_integration_branch_does_not_move_one_that_is_there(tmp_path):
+def make_dev(repo, default="main"):
+    """Run the one command of the text that makes the integration branch."""
+    return subprocess.run(["bash", "-e", "-c", BRANCH_PUSH.replace("<default>", default)], cwd=repo,
+                          capture_output=True, text=True, timeout=60)
+
+
+def origin_with_main(tmp_path, commits=2):
     origin = tmp_path / "origin.git"
     git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    seed = tmp_path / "seed"
+    git(tmp_path, "clone", "-q", str(origin), str(seed))
+    git(seed, "checkout", "-q", "-b", "main")
+    for number in range(commits):
+        (seed / "a").write_text(f"{number}\n")
+        git(seed, "add", "-A")
+        git(seed, "commit", "-q", "-m", f"commit {number}")
+    git(seed, "push", "-q", "origin", "refs/heads/main:refs/heads/main")
+    return origin, seed
+
+
+@pytest.mark.parametrize("theirs", ["behind the default branch", "with other commits", "equal to the default branch"])
+def test_the_command_that_makes_dev_never_moves_a_dev_that_is_on_the_remote(tmp_path, theirs):
+    """Also when this clone does not know of it: a clone of one branch never fetches `dev`, so the
+    script shows a gap. A plain push would move a `dev` that is behind the default branch."""
+    origin, seed = origin_with_main(tmp_path)
+    start = {"behind the default branch": "HEAD~1", "with other commits": "HEAD~1", "equal to the default branch": "HEAD"}[theirs]
+    git(seed, "checkout", "-q", "-b", "dev", start)
+    if theirs == "with other commits":
+        (seed / "b").write_text("work of someone else\n")
+        git(seed, "add", "-A")
+        git(seed, "commit", "-q", "-m", "work of someone else on dev")
+    git(seed, "push", "-q", "origin", "refs/heads/dev:refs/heads/dev")
+    before = git(origin, "rev-parse", "refs/heads/dev")
+    repo = tmp_path / "repo"
+    git(tmp_path, "clone", "-q", "--single-branch", "--branch", "main", origin.as_uri(), str(repo))
+    git(repo, "fetch", "-q", "origin")
+    assert doctor(repo)[1][0].startswith("gap integration-branch "), "the clone must not know of dev"
+
+    done = make_dev(repo)
+
+    assert git(origin, "rev-parse", "refs/heads/dev") == before
+    if theirs == "equal to the default branch":
+        assert "up-to-date" in done.stderr      # nothing to send, and nothing moved
+    else:
+        assert done.returncode != 0, done.stderr
+
+
+def test_the_command_that_makes_dev_takes_the_default_branch_and_not_a_local_dev(tmp_path):
+    origin, _ = origin_with_main(tmp_path)
     repo = tmp_path / "repo"
     git(tmp_path, "clone", "-q", str(origin), str(repo))
-    git(repo, "checkout", "-q", "-b", "main")
-    (repo / "a").write_text("1\n")
+    git(repo, "checkout", "-q", "-b", "dev")
+    (repo / "wip").write_text("local work that nobody reviewed\n")
     git(repo, "add", "-A")
-    git(repo, "commit", "-q", "-m", "first")
-    git(repo, "push", "-q", "origin", "refs/heads/main:refs/heads/main")
-    other = tmp_path / "other"
-    git(tmp_path, "clone", "-q", str(origin), str(other))
-    git(other, "checkout", "-q", "-b", "dev")
-    (other / "b").write_text("2\n")
-    git(other, "add", "-A")
-    git(other, "commit", "-q", "-m", "work of someone else on dev")
-    git(other, "push", "-q", "origin", "refs/heads/dev:refs/heads/dev")
-    theirs = git(other, "rev-parse", "HEAD")
+    git(repo, "commit", "-q", "-m", "local wip on dev")
+    git(repo, "checkout", "-q", "main")
+    git(repo, "config", "push.default", "matching")
 
-    git(repo, "branch", "dev", "origin/main")   # this clone never fetched: it does not know of dev
-    done = subprocess.run(["bash", "-e", "-c", BRANCH_PUSH], cwd=repo, capture_output=True, text=True, timeout=60)
+    done = make_dev(repo)
 
-    assert done.returncode != 0
-    assert git(origin, "rev-parse", "refs/heads/dev") == theirs
+    assert done.returncode == 0, done.stderr
+    assert git(origin, "rev-parse", "refs/heads/dev") == git(origin, "rev-parse", "refs/heads/main")
+    assert git(repo, "rev-parse", "dev") != git(origin, "rev-parse", "refs/heads/dev")
 
 
 # ── the text against the script ──────────────────────────────────────────────
@@ -186,6 +223,8 @@ def test_the_root_map_of_the_text_names_the_four_commands_as_the_script_reads_th
     assert "a line that starts with the word and holds the command in a code span" in said
     assert "**One root map.** Do not write a `CLAUDE.md` into each folder." in said
     assert "Write only a command that you ran and saw work." in said
+    assert "leave the line out until the user has said yes and the command ran" in said
+    assert "say that you did not run it" not in said
     assert "the script reads `CLAUDE.md`, and `AGENTS.md` only when there is no `CLAUDE.md`" in said
 
 
@@ -219,9 +258,10 @@ def test_the_text_leaves_the_merge_and_the_first_workflow_to_the_user():
     assert "**You cannot tell which of the two it is:** do not create `dev`. Report what you see; the user decides." in said
     assert "say in the pull request body that the list is your proposal, and that the user decides." in said
     commands = "\n".join(re.findall(r"```bash\n(.*?)```", TEXT, re.S)) + "\n" + "\n".join(re.findall(r"`([^`\n]+)`", TEXT))
-    for banned in ("gh pr merge", "git merge ", "git tag", "--admin", "--auto", "--delete-branch", "--force",
-                   "MERGE_GATE_BASE=", "git branch -D", "git branch -d"):
+    for banned in ("gh pr merge", "git merge ", "git tag", "--admin", "--auto", "--delete-branch", "--force ",
+                   "--force-with-lease ", "--force-if-includes", "MERGE_GATE_BASE=", "git branch", "git checkout"):
         assert banned not in commands, banned
+    assert "it forces nothing: it tells git to refuse when GitHub already has a `dev`" in said
     assert [line.strip() for line in commands.splitlines() if "git push" in line] == [BRANCH_PUSH]
 
 

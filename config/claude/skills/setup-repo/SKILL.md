@@ -64,15 +64,20 @@ A gap here has two causes, and the script cannot tell them apart.
   Report the branch. The merge gate has a setting for such a branch, and
   only the user sets it.
 - **The repo has no integration branch at all:** every pull request goes into
-  the release branch. Make `dev` from the default branch:
+  the release branch. Make `dev` on GitHub from the default branch, with this
+  one command:
 
   ```bash
-  git branch dev origin/<default>
-  git push origin refs/heads/dev:refs/heads/dev
+  git push --force-with-lease=refs/heads/dev: origin refs/remotes/origin/<default>:refs/heads/dev
   ```
 
-  The push names the branch in full and uses no force, so git refuses it when
-  GitHub already has a `dev` with other commits.
+  `<default>` is the default branch of the repo. The command sends the
+  commit of that branch as the last fetch saw it, and no local branch: a
+  local `dev`, and local work that is not pushed, cannot go into it. The
+  option has an empty value after the colon. In this form it forces
+  nothing: it tells git to refuse when GitHub already has a `dev`, also one
+  that this clone never fetched. If git refuses, stop and report. Do not
+  make a local `dev` for this, and run no other push.
 - **You cannot tell which of the two it is:** do not create `dev`. Report
   what you see; the user decides.
 
@@ -139,12 +144,15 @@ word and holds the command in a code span:
 
 - **One root map.** Do not write a `CLAUDE.md` into each folder. A map in
   each folder goes out of date with each change, and nobody reads it.
-- Write only a command that you ran and saw work. An install command that
-  writes outside the repo is the exception: do not run it without the
-  user's yes. Write it as the repo documents it, and say that you did not
-  run it.
+- Write only a command that you ran and saw work. Do not run an install
+  command that writes outside the repo without the user's yes: leave the
+  line out until the user has said yes and the command ran, and report the
+  gap as one that waits for the user.
 - When the repo has no command of one kind (no build step, for example),
   leave that line out and report the gap as one that stays.
+- The script reads a label, not a sentence. `Build: ...` with the command in
+  a code span counts, and so does a line that is `Build` alone above a
+  fenced block. "Build output goes to `dist/`" names no command.
 - The file is `CLAUDE.md` at the top of the repo: the script reads
   `CLAUDE.md`, and `AGENTS.md` only when there is no `CLAUDE.md`. When the
   repo has a map already, add to it; do not write a second one.
@@ -224,7 +232,11 @@ Run the script again when the work is done, and after each merge.
   that the branch is protected.
 - It does not see an integration branch with another name.
 - It reads the remote-tracking refs. Without a fresh fetch it can miss a
-  branch, or see one that is gone.
+  branch, or see one that is gone. A clone of one branch never fetches
+  `dev`, so the script shows a gap although GitHub has it; the command that
+  makes `dev` is then refused.
+- `root-map` is `ok` when each label has a code span. The script cannot tell
+  a command from a path in that span.
 - `verify-skill` is `ok` when the two files of a verify skill are there. The
   script does not run it.
 - `rule-table` is `ok` for a table of the right outer form. The rows are

@@ -294,7 +294,7 @@ def test_claude_md_comes_before_agents_md(plain):
 
 def test_root_map_reads_table_rows_headings_and_bold_items(plain):
     write(plain / "CLAUDE.md", "| Task | Command |\n|---|---|\n| Build | `make` |\n| **Test** | `pytest` |\n\n"
-                               "## Lint `ruff`\n\n1. INSTALL with `uv sync`\n")
+                               "## Lint `ruff`\n\n1. INSTALL: `uv sync`\n")
     assert one(plain, "root-map")[0] == "ok"
 
 
@@ -312,6 +312,35 @@ def test_root_map_takes_a_fenced_block_within_three_lines(plain):
 def test_root_map_needs_the_word_first_and_a_command(plain, line):
     write(plain / "CLAUDE.md", f"{line}\n- Test: `t`\n- Lint: `l`\n- Install: `i`\n")
     assert one(plain, "root-map") == ("gap", "CLAUDE.md missing: build")
+
+
+@pytest.mark.parametrize("line", ["- Build output goes to `dist/`; never edit it by hand.",
+                                  "- Build with `make`", "- Build the app: `make`", "- Build - `make`",
+                                  "- Build: no build step.", "- Build:", "| Build |\n\n```\nmake\n```\n"])
+def test_a_line_that_starts_with_the_word_and_is_no_label_names_no_command(plain, line):
+    """Real maps hold such lines. A map with them and with no build command must stay a gap."""
+    write(plain / "CLAUDE.md", f"{line}\n- Test: `t`\n- Lint: `l`\n- Install: `i`\n")
+    assert one(plain, "root-map") == ("gap", "CLAUDE.md missing: build")
+
+
+def test_a_map_of_layout_lines_names_no_command(plain):
+    write(plain / "CLAUDE.md", "- Build output goes to `dist/`.\n- Test files live in `tests/`.\n"
+                               "- Lint settings are in `pyproject.toml`.\n- Install location of the CLI is `~/.local/bin`.\n")
+    assert one(plain, "root-map") == ("gap", "CLAUDE.md missing: build, test, lint, install")
+
+
+def test_a_fenced_block_counts_only_for_a_line_that_is_the_label_alone(plain):
+    write(plain / "CLAUDE.md", "Build: `make`\n\nTest: no tests yet.\nLint: none yet.\nInstall:\n```sh\npip install .\n```\n")
+    assert one(plain, "root-map") == ("gap", "CLAUDE.md missing: test, lint")
+
+
+@pytest.mark.parametrize("line", ["- Build: `make`", "- **Build:** `make`", "- **Build**: `make`", "* build : `make`",
+                                  "| Build | `make` |", "| **Build** | `make` |", "## Build `make`",
+                                  "- Build command: `make`", "### Build commands\n\n```\nmake\n```",
+                                  "Build:\n```\nmake\n```", "**Build**\n\n```\nmake\n```"])
+def test_the_label_forms_that_name_a_command(plain, line):
+    write(plain / "CLAUDE.md", f"{line}\n\n- Test: `t`\n- Lint: `l`\n- Install: `i`\n")
+    assert one(plain, "root-map")[0] == "ok"
 
 
 def test_lines_inside_a_fenced_block_do_not_count(plain):
