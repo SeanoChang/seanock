@@ -1573,3 +1573,122 @@ has none.
 - No live session followed the skill text. No Codex session ran the script.
 - The script against the real `gh` in CI: the tests use a stand-in that
   answers from a file. It ran by hand against the real `gh` on this repo.
+
+## Setup repo (`config/claude/skills/setup-repo`, 2026-11-15)
+
+### By design
+
+- **The script reads; the agent fills.** `repo-doctor.py` writes no file and
+  calls no network and no `gh`. It calls git with `rev-parse` and
+  `for-each-ref` only.
+- **`unknown` is never a pass.** A check that could not find out gives exit
+  1, as a gap does.
+- **The integration branch is known by four names** (`dev`, `develop`,
+  `development`, `integration`), the ones of the merge rule. A repo that
+  integrates on another branch shows a gap; the text says to report it and
+  to create nothing. The check reads the remote-tracking refs, so it sees
+  what the last fetch saw. A clone of one branch (`--single-branch`,
+  `--depth`) never fetches `dev`, so it shows a gap although GitHub has the
+  branch.
+- **`dev` is made with one command that cannot move a branch.** The text
+  gives `git push --force-with-lease=refs/heads/dev: origin
+  refs/remotes/origin/<default>:refs/heads/dev`. The empty value after the
+  colon makes git refuse when the remote has a `dev` already, also one that
+  the clone never fetched, and the source is the remote-tracking ref, so no
+  local branch and no local commit can go into it. The first version (a
+  local `git branch`, then a plain push) pushed an old local `dev` when one
+  was there, and fast-forwarded a remote `dev` that was behind the default
+  branch. Both reviewers found that, 2026-11-15. A remote that has `dev`
+  only as a tag gets a branch `dev` beside it.
+- **The workflow checks read the files as text, line by line,** against two
+  fixed lists of commands, as whole words. A command in a step that never
+  runs counts. A command that is not on the lists does not; the text says
+  to wrap it in `make test` or `make lint`, or to report the gap.
+- **A check that is `ok` shows that a file names something, not that it
+  works.** `ci-tests` does not show that CI passes or that a branch is
+  protected. `verify-skill` does not run the verify skill. `rule-table`
+  checks the outer form only; the rows are checked by `rules.py` of the
+  `correct` skill.
+- **The root map is `CLAUDE.md`, else `AGENTS.md`,** at the top of the repo.
+  One form names a command: a line that starts with `build`, `test`,
+  `lint` or `install` (after markdown marks, with `command` or `commands`
+  allowed after it), then `:` or the `|` of a table row, and then at once
+  a code span that holds something. Nothing else counts: not `## Tests`,
+  not `Testing:`, not a sentence, and not a fenced block below a label.
+  This is the third form of the rule. The first took any line with the word
+  and a code span, and the second took a code span right after the word and
+  a fenced block near a label; the adversary got a sentence past each. A
+  rule that guesses at free text was the class, so the rule now reads the
+  one form that the skill text gives, and a map in another form shows a
+  gap. That is the safe side: the agent adds four lines.
+- **The pattern of the rule has one way to match each part.** The first
+  text of the one-form rule did not: on a line with the start of a code
+  span and no end, the time grew with the square of the length, and the
+  map is read up to one mebibyte. An automated security review saw it; a
+  test holds a line of that size.
+- **What the one form still takes.** A line such as "Install: `uv` first"
+  has the form and counts. The script cannot tell a command from a path in
+  the code span, and it reads a label inside an HTML comment, an indented
+  code block or the inner fence of a longer fence as a label.
+- **The command that makes `dev` ends with exit 0 when GitHub has a `dev`
+  at the same commit as the default branch.** Git says "Everything
+  up-to-date", nothing moves, and an agent can report that it made the
+  branch.
+- **The map holds only commands that ran.** For an install command that
+  writes outside the repo, the text says to leave the line out until the
+  user has said yes and the command ran. The first version let the agent
+  write it without a run; the verifier found that.
+- **No text from the repo is printed.** Each line is built from fixed words
+  and counts: `pytest in 2 of 3 workflow file(s)`, `2 verify skill(s)`. A
+  file name, a folder name, a key of the rule table and the text of an
+  unexpected error are never in the output, so a name cannot read as a
+  result line or as an instruction to the reader. Two automated security
+  reviews asked for this, 2026-11-15; the first answer (print a name only
+  when it is a plain one) still let a name carry a sentence. The cost: the
+  agent must find the workflow file itself.
+- **A path that leaves the repo through a link counts as absent,** and each
+  file is read up to 1 MiB.
+- **`scaffold-docs` left the repo with this change.** `orient` still reads
+  `docs/OVERVIEW.md` and `docs/changelog/` when they are there; nothing in
+  the harness writes them any more.
+- **The first workflow of a repo is merged by the user,** and the paths of
+  `REVIEW.md` are the user's call. Both are text in the skill; no code holds
+  them.
+
+### Minor
+
+- **More ways in which a workflow counts and runs nothing** (found by the
+  adversary, 2026-11-15; all of the kind "the files are read as text"): a
+  file name that is a command name (`cache-dependency-path: tox.ini`,
+  `cp .flake8 dist/`), `pip install pytest ruff` with no run, a command in a
+  comment after a command, a workflow that no pull request starts (`on:
+  workflow_dispatch`), a workflow file that is a link to another file, a
+  hidden line break (U+2028) inside a comment line, and a file of more than
+  1 MiB that is cut inside a longer word.
+- **One `.claude/rules.json` that is nested very deep ends the whole run**
+  with exit 2 (`RecursionError`), so the other seven checks print nothing.
+  A table with a key two times, with `NaN` or with a huge number is `ok`; a
+  table that starts with a byte order mark is a gap.
+- **A folder that cannot be read gives a gap, not `unknown`** (`.github`
+  with no read bit, a link loop at `.github/workflows`). A plain file where
+  a folder is expected (`.claude`, or `.claude/skills/verify-x` beside a
+  real verify skill) gives `unknown`. Both fail safe: never `ok`.
+- **A `CLAUDE.md` that is not a regular file** (a folder, a pipe, a dead
+  link) is passed over for `AGENTS.md` with no word about it.
+- **`verify-skill` is `ok` for two links** named `verify` and
+  `features.json` that stay inside the repo, whatever they point to.
+- **`comment-rule` looks for the sentence anywhere in the map,** so "Never
+  change a comment in the same commit as the code it describes." counts.
+- **Ten workflow files of 1 MiB each take about 18 seconds.**
+- **A file that is swapped between the check and the read is not handled.**
+- **On a disk that ignores case, `claude.md` is read as `CLAUDE.md`.**
+- **A whitespace-only `REVIEW.md` is a gap** ("is empty").
+
+### Not tested
+
+- No live session followed the skill text. The examples of the text are run
+  through the script by a test: a repo set up as the text says is clean.
+- The script ran by hand on this repo (6 gaps: no lint in CI, no root map,
+  no `REVIEW.md`, no comment rule, no rule table, no verify skill) and on
+  one other project (7 gaps).
+- Linux, except through CI.

@@ -30,6 +30,25 @@ Added:
   it cannot reach a command. For a release that was merged as one commit
   with one parent, it prepares the commit that joins the two histories
   again and hands you the push.
+- `setup-repo`, a skill that prepares a repo for the rules in `CLAUDE.md`.
+  Its script `repo-doctor.py` only reads. It lists eight things as `ok`,
+  `gap` or `unknown`: an integration branch, a workflow that runs the tests,
+  a workflow that runs a lint or type check, a root map that names the
+  build, test, lint and install commands, `REVIEW.md`, the comment rule in
+  the root map, the rule table, and a verify skill. The skill then fills the
+  gaps that are the agent's to fill: the workflow in a pull request of its
+  own at tier 2, and the four text gaps in one pull request. The first
+  workflow of a repo is merged by you, and so is the choice of the paths in
+  `REVIEW.md`. The script prints no text from the repo, only fixed words and
+  counts.
+
+Removed:
+
+- `scaffold-docs`. It wrote a `CLAUDE.md` into each folder and a changelog
+  of the tree, and those files went out of date with each change.
+  `setup-repo` writes one root map in its place. `orient` stays and reads
+  that map. A copy that is already linked into `~/.claude/skills` is not
+  removed by the installer.
 
 ## 0.2.0 (2026-11-14)
 
