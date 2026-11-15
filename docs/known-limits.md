@@ -1134,28 +1134,33 @@ changes it.
   tree that had lost a test. An adversary review of the comment check
   found it on 2026-11-15, and it was there since the first version; the
   sentence above said "did not run" for such a repo, and that was true only
-  when the other folder was no repo. Now every call runs in one folder:
-  the first folder at or above `--repo` that holds a `.git` entry. git is
-  asked in that folder and must agree on two points: the `.git` entry is a
-  git dir (so git takes it, and no repo further up), and the top of its
-  work tree is this folder, by device and inode. Anything else is exit 2.
-  The first fix asked git where the caller pointed and then ran the calls
-  in the folder that git named. The adversary planted a git dir inside the
-  tree that names the tree as its work tree; the check passed, and the
-  tree's own setting, which named another repo, was never looked at. So
-  the guard no longer asks git at one place and works at another. A
-  submodule checkout has the setting too (git writes it), and it names the
-  submodule's own folder, so it is read as before. A repo with its git dir
-  kept elsewhere and a linked work tree have no such setting.
-- **A folder whose `.git` entry is broken is an error.** git passes over a
-  `.git` that is no git dir (an empty folder, a link to nowhere) and takes
-  the repo above. The guard takes the entry as the sign of a tree of its
-  own, so such a folder ends with exit 2, also when the repo above says
-  that this folder is its work tree. Before this change it was read as the
-  repo above it.
-- **A folder inside the `.git` folder is read as the tree that holds it.**
-  Before this change it was an error. A `--repo` that is not there, or
-  that is a file, is an error as before.
+  when the other folder was no repo. Now the guard gives a result only
+  when three answers name one folder, by device and inode: the top of the
+  work tree that git names where the caller pointed (`--repo`); the first
+  folder at or above `--repo` that holds a `.git` entry, which the guard
+  finds itself; and the top that git names when it is asked in that
+  folder, where every call then runs. Anything else is exit 2. So the
+  guard gives a result only where it gave one before, and for the same
+  folder; it has more reasons for exit 2 and no new result.
+- **That rule is the third form of the fix, and the class was "the guard's
+  idea of the tree can differ from git's".** The first form asked git
+  where the caller pointed and ran the calls in the folder with the `.git`
+  entry. The adversary planted a git dir inside the tree that names the
+  tree as its work tree; the tree's own setting, which named another repo,
+  was never looked at. The second form asked git only in the folder that
+  the guard's walk found. The walk took "could not look" for "not there":
+  for a tree whose top folder the guard may not enter (one `chmod`), it
+  went on to the repo above and said `clean`. Now a folder that cannot be
+  looked into is an error, git must also take the `.git` entry of the
+  folder (it passes over one that is no git dir and takes a repo further
+  up), and the three answers must agree.
+- **A submodule checkout has a work tree setting too** (git writes it), and
+  it names the submodule's own folder, so it is read as before. A repo
+  with its git dir kept elsewhere and a linked work tree have no such
+  setting.
+- **A folder whose `.git` entry is broken is an error** (an empty folder, a
+  link to nowhere), also when the repo above says that this folder is its
+  work tree. Before this change it was read as the repo above it.
 - **Who can write the repo's git settings can do more than that.** The same
   person can move the base ref to the head commit, and the guard then
   compares the change with itself. The guard reads a tree that an agent

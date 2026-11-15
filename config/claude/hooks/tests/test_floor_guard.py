@@ -1670,12 +1670,55 @@ def test_an_empty_repo_option_still_means_the_folder_of_the_caller(tmp_path):
     assert_only(run("--repo", "", "--base", "HEAD", cwd=repo), "deleted-test", "tests/test_a.py")
 
 
-def test_a_folder_inside_the_git_dir_is_read_as_the_tree_that_holds_it(tmp_path):
-    """Before the walk, git said that such a folder is no work tree. The tree that holds it is
-    the same one, so the guard now gives that tree's result."""
+def test_what_git_refuses_where_the_caller_pointed_is_an_error_as_before(tmp_path):
+    """The guard gives a result only where it gave one before this check was there. A folder
+    inside `.git` and a bare repo kept inside a tree are no work trees for git."""
     repo = deleted_test_repo(tmp_path)
-    for inside in (repo / ".git", repo / ".git" / "refs"):
-        assert_only(run("--repo", str(inside), "--base", "HEAD", cwd=tmp_path), "deleted-test", "tests/test_a.py")
+    subprocess.run(GIT + ["init", "-q", "--bare", str(repo / "kept.git")], check=True, capture_output=True)
+    for folder in (repo / ".git", repo / ".git" / "refs", repo / "kept.git"):
+        res = run("--repo", str(folder), "--base", "HEAD", cwd=tmp_path)
+        assert res.rc == 2 and res.out == "" and "not a git work tree" in res.err, (folder, res.out, res.err)
+
+
+def test_a_tree_that_cannot_be_entered_is_an_error_and_not_the_repo_above_it(tmp_path):
+    """Found in review of the second fix. The guard looked for `.git` itself and took "could not
+    look" for "not there": it went on to the repo above, which had lost nothing, and said clean."""
+    main = make(tmp_path, {"tests/test_a.py": TEST_BODY, ".gitignore": ".worktrees/\n"}, name="main")
+    tree = main / ".worktrees" / "w"
+    git(main, "worktree", "add", "-q", str(tree), "-b", "work")
+    (tree / "tests" / "test_a.py").unlink()
+    assert_only(run("--repo", str(tree), "--base", "HEAD", cwd=tmp_path), "deleted-test", "tests/test_a.py")
+    tree.chmod(0o600)
+    try:
+        if os.access(tree, os.X_OK):
+            return   # this user may enter every folder (root): nothing to test
+        res = run("--repo", str(tree), "--base", "HEAD", cwd=tmp_path)
+        assert res.rc == 2 and res.out == "", (res.out, res.err)
+        guard_module = load_guard()
+        with pytest.raises(guard_module.GuardError, match="cannot look"):
+            guard_module.holder_of_git(str(tree))
+    finally:
+        tree.chmod(0o700)
+
+
+def load_guard():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("floor_guard_under_test", GUARD)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_git_where_the_caller_pointed_and_git_in_the_tree_must_name_one_folder(tmp_path):
+    """A git dir planted inside the tree names a decoy as its work tree. The tree itself has no
+    setting, so git in the tree names the tree. The two answers differ: no result."""
+    repo = deleted_test_repo(tmp_path)
+    planted = repo / "planted"
+    subprocess.run(GIT + ["init", "-q", "--bare", str(planted)], check=True, capture_output=True)
+    git(planted, "config", "core.bare", "false")
+    git(planted, "config", "core.worktree", str(decoy_repo(tmp_path / "decoy")))
+    assert_names_another_folder(run("--repo", str(planted), "--base", "HEAD", cwd=tmp_path))
+    assert_only(guard(repo), "deleted-test", "tests/test_a.py")
 
 
 def test_a_work_tree_setting_that_names_the_repo_itself_changes_nothing(tmp_path):
