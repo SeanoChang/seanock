@@ -226,6 +226,30 @@ def test_a_failed_build_is_a_failed_step_finding(project):
     assert project.drift("check") == (1, ["failed-build exit 3", "drift: summary stale=0 uncovered=0 failed=1"])
 
 
+def test_the_file_list_comes_from_the_project_whatever_the_caller_or_the_repo_sets(project, tmp_path):
+    """A program that the repo's git settings name must not run, and a GIT_ variable of the caller must not aim git elsewhere."""
+    marker = tmp_path / "ran"
+    prog = tmp_path / "prog.sh"
+    prog.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
+    prog.chmod(0o755)
+    other = tmp_path / "other"
+    other.mkdir()
+    git(other, "init", "-q")
+    (other / "zzz.txt").write_text("x")
+    git(other, "add", "-A")
+    project.write_map([feature("greet", GREET["steps"][0], paths=("src/app.py", "src/gone.py"))])
+    project.commit()
+    with open(project.root / ".git" / "config", "a") as handle:   # after the last git call of the test itself
+        handle.write(f"[core]\n\tfsmonitor = {prog}\n\tpager = {prog}\n")
+    project.env.update(GIT_DIR=str(other / ".git"), GIT_WORK_TREE=str(other), GIT_INDEX_FILE=str(other / ".git" / "index"))
+    assert not marker.exists()
+
+    code, lines = project.drift("check", "--no-run")
+
+    assert (code, lines) == (1, ["stale-path greet src/gone.py", "drift: summary stale=1 uncovered=0 failed=0"])
+    assert not marker.exists()
+
+
 def test_no_run_does_not_start_the_runner(project):
     project.write_map([feature("greet", step("hi"))])
     project.commit()

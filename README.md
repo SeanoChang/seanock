@@ -150,6 +150,7 @@ and `correct`:
 | `setup-repo`            | Lists what a repo lacks for this way of working with a read-only script, then fills the gaps; never merges    |
 | `orient`                | Reads the root map and the docs beside it at the start of a session instead of exploring the tree again        |
 | `create-verify-skill`   | Writes a verify skill into a project: a feature map, a runner that drives the real app, and kept evidence      |
+| `maintain-verify-skill` | Finds where a project's verify skill no longer fits the project, then corrects the map, never the result  |
 | `merge-follow-up`       | Sees a merged pull request with a read-only script, then rebases your open branches and reinstalls; never merges |
 | `correct`               | Turns a correction you gave more than once into a rule with an enforcer, and keeps the table of those rules   |
 

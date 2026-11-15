@@ -49,6 +49,15 @@ Added:
   finish, and a result counts only with the runner's own last line. This
   version runs command-line steps only. What it does not do is in
   `docs/known-limits.md`.
+- `maintain-verify-skill`, a skill that keeps a project's verify skill true
+  to the project. Its script `drift.py check` lists where the skill no
+  longer fits: a path of the feature map that matches no tracked file,
+  tracked files that no feature covers, a step or a build that fails in a
+  real run of the runner, and a runner copy that is not the current runner.
+  `drift.py bump` replaces the runner copy, and refuses when the map is for
+  another runner number. The skill text says what to do with each finding.
+  A failed step is first a finding about the app: a step changes only when
+  the step is shown to be wrong, and it is never weakened to get a pass.
 - `merge-follow-up`, a skill for the steps after a merge. Its script
   `pr-state.py` reads your pull requests with `gh` and reports what changed
   since the session last looked: a merge, a close, a failed check, and the

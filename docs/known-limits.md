@@ -1605,6 +1605,14 @@ has none.
 - **The order of `gh pr list` beyond 100 pull requests was not checked.**
   If it is not newest first, an old pull request can come back into the
   list and be reported as new.
+- **A new task branch with a name that is already on GitHub can move that
+  branch.** The plain push is a fast-forward when the old branch of that
+  name is fully inside the base (a merged branch that nobody deleted). No
+  commit is lost. Found by the adversary on #20, 2026-11-15.
+- **With the reflog of the local repo turned off, the force push after a
+  normal rebase is refused** (`core.logAllRefUpdates=false`).
+  `--force-if-includes` has nothing to read then. The agent stops and
+  reports. Found by the adversary on #20.
 - **The lock is `flock` on a file beside the state file.** It is opened
   without following a link and is never emptied. A file system that does
   not honour `flock` (some network mounts) gives no lock.
@@ -1732,6 +1740,59 @@ has none.
 - The script ran by hand on this repo (6 gaps: no lint in CI, no root map,
   no `REVIEW.md`, no comment rule, no rule table, no verify skill) and on
   one other project (7 gaps).
+
+## Maintain verify skill (`config/claude/skills/maintain-verify-skill`, 2026-11-15)
+
+### By design
+
+- **`check` runs the app.** Without `--no-run` it starts the runner copy of
+  the project (`verify run`), which builds the app and runs every step in
+  temp folders. The project's own code runs, as in any verify run. With
+  `--no-run`, nothing of the project runs: git is called with `ls-files`
+  only, with the `GIT_` variables of the caller dropped and the file
+  watcher of the repo's settings off (an automated security review asked
+  for this, 2026-11-15).
+- **A runner result counts only in its full form.** Exit 0 needs the
+  runner's pass line, and exit 1 needs its summary line with a failed line
+  above it. Anything else (another exit code, a foreign last line, a
+  signal, a timeout of three hours) is `drift: error`, exit 2.
+- **A pattern matches as `fnmatch` does, case-sensitive, and `*` also takes
+  a `/`.** So `src/**/*.py` does not match `src/a.py`, and such a map shows
+  a stale path. The runner itself has no rule for `paths`.
+- **`uncovered-path` looks only into top folders that some pattern reaches
+  into,** and counts files per folder. A new top folder is not listed.
+- **A failed build has its own line,** `failed-build`, counted in `failed=`.
+  The design gave no line for it; without one a failed build would read as
+  no failed step.
+- **`bump` reads the runner number from the text of the runner** (`RUNNER =
+  N`, exactly one such line) and never runs or imports the file. It writes
+  a new file beside the copy and renames it, so it does not write through
+  a link, and it keeps the mode of the copy, with execute added.
+- **`runner=unknown`** in the last line when no current runner is beside
+  the script. It is a finding, not a pass.
+- **Names in a finding are data.** A feature id, a pattern, a folder name
+  and the reason of a failed step are printed, with non-printable
+  characters replaced. The agent needs them to act; the text calls them
+  data.
+- **What to do with a finding is text only.** No code stops an agent that
+  weakens a step.
+
+### Minor
+
+- **Two `bump` runs at one time share one temp name.** The copy stays
+  whole; one of the two can fail.
+- **A `.claude` or `skills` folder that is itself a link is followed.** Only
+  the `verify-<app>` folder and the copy are checked for links.
+- **The runner copy is started also when it is a link.** `check` reports it
+  as `runner-old copy is a link` in the same run.
+
+### Not tested
+
+- The timeout of three hours on the runner's run.
+- A git that hangs or is missing; only a folder outside git is tested.
+- A file name that is not UTF-8.
+- No live session followed the skill text. The commands of the text run as
+  written in a test, on a project that the real scaffold made.
 - Linux, except through CI.
 
 ## Correct (`config/claude/skills/correct`, 2026-11-15)

@@ -138,9 +138,14 @@ def runner_number(text):
 # ── the paths ────────────────────────────────────────────────────────────────
 
 def tracked_files(project):
+    """The files that git tracks in the project. The call only reads: the GIT_ variables of the caller
+    are dropped, so they cannot aim git at another repo, and a program that the repo's settings name
+    for watching files is not started."""
+    env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", LC_ALL="C")
     try:
-        done = subprocess.run(["git", "-C", str(project), "ls-files", "-z"], capture_output=True,
-                              env=dict(os.environ, LC_ALL="C"), timeout=GIT_TIMEOUT_S, stdin=subprocess.DEVNULL)
+        done = subprocess.run(["git", "--no-pager", "-c", "core.fsmonitor=false", "-C", str(project), "ls-files", "-z"],
+                              capture_output=True, env=env, timeout=GIT_TIMEOUT_S, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         done = None
     if done is None or done.returncode != 0:
