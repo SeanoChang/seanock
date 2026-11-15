@@ -91,7 +91,6 @@ SECRETS = [re.compile(pattern) for pattern in (
     r"github_pat_[A-Za-z0-9_]{20,}",
     r"A[KS]IA[0-9A-Z]{16}",
     r"xox[abeprs]-[A-Za-z0-9-]{10,}",
-    r"-----BEGIN [A-Z ]*PRIVATE KEY",
     r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}",  # a JSON web token
     r"(?i)basic[\s\\\"',]+[A-Za-z0-9+/_.=-]{16,}",
     r"(?i)" + WORD,

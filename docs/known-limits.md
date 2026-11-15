@@ -1746,13 +1746,14 @@ has none.
   agent's work.
 - **A line in which anything looks like a secret is held back whole,** and
   only its line number is printed. The forms are: keys of several vendors,
-  GitHub, AWS and Slack tokens, a private key header, a JSON web token, a
-  `Basic` value, a key word (the next point), a URL with a password
-  (with or without a user name), a UUID, a run of 20 or more letters and
-  digits that has both, and a run of 24 or more characters of letters,
-  digits and `+ / _ = -` that has a small letter, a capital and a digit. No
-  form asks what stands next to the secret. So a line with a commit id of
-  20 characters or more, a UUID or a long mixed path is held back too.
+  GitHub, AWS and Slack tokens, a JSON web token, a `Basic` value, a key
+  word (the next point; a private key header holds one), a URL with a
+  password (with or without a user name), a UUID, a run of 20 or more
+  letters and digits that has both, and a run of 24 or more characters of
+  letters, digits and `+ / _ = -` that has a small letter, a capital and a
+  digit. No form asks what stands next to the secret. So a line with a
+  commit id of 20 characters or more, a UUID or a long mixed path is held
+  back too.
 - **A line with a key word is held back, whatever stands next to the
   word.** The key words, in any letter case and also inside a longer word:
   `pass` (so also `password`, `passwd`, `passphrase`, `passcode`,

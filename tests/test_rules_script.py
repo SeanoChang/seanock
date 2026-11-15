@@ -40,7 +40,7 @@ def made_up_secrets():
         "bearer": "Bearer " + "abcdefghij0123456789",
         "password assignment": "password=" + "hunter2hunter2",
         "password with a colon": "api_key: " + "'zzTop99zzTop99'",
-        "url with a password": "https://sean:" + "pw12345" + "@example.invalid/x",
+        "url with a password": "https://sean:" + "qx12345" + "@example.invalid/x",
         "long hex": "0123456789abcdef" * 2,
         "long mixed run": "Qw3rTy" * 5,
         "long mixed run with signs": "Qw3r/Ty9+" * 3,
@@ -89,7 +89,7 @@ def hostile_secrets():
         "flag and value joined by a control character": ("mysql --password" + "\x01" + "hunter2xyz", ["hunter2xyz"]),
         "bearer and token joined by a control character": ("Bearer" + "\x01" + "abcdefgh.ijklmnop", ["abcdefgh.ijklmnop"]),
         "many spaces before the equals sign": ("password" + " " * 12 + "= " + "hunter2xyz", ["hunter2xyz"]),
-        "url with a very long password": ("https://sean:" + "pw-" * 100 + "@host.invalid", ["pw-pw-pw-"]),
+        "url with a very long password": ("https://sean:" + "qz-" * 100 + "@host.invalid", ["qz-qz-qz-"]),
         # a key word that touches other characters: the rule asks for no neighbour
         "key word inside a longer name": ("SECRET_" + "KEY=" + "hunter2xyz", ["hunter2xyz"]),
         "key word in the middle of a name": ("JWT_SECRET_" + "KEY: " + "hunter2xyz", ["hunter2xyz"]),
@@ -120,6 +120,9 @@ def hostile_secrets():
         "pw in a name": ("db_pw=" + "hunter2zq", ["hunter2zq"]),
         "pw as a word": ("the pw is " + "hunter2zq", ["hunter2zq"]),
         "creds": ("creds: admin " + "hunter2zq", ["hunter2zq"]),
+        "key word in wide letters": ("\uff50\uff41\uff53\uff53\uff57\uff4f\uff52\uff44 " + "hunter2zq", ["hunter2zq"]),
+        "api key with two spaces": ("the api  key is " + "hunter2zq", ["hunter2zq"]),
+        "api key with a break in the word and two spaces": ("the a\npi  key is " + "hunter2zq", ["hunter2zq"]),
         # a key word and its value with nothing between them that a rule could ask for
         "key word, then is, then the value": ("my password is " + "hunter2zq" + ", ok", ["hunter2zq"]),
         "key word and value as two arguments": ('os.environ.setdefault("PASSWORD", "' + "hunter2zq" + '")', ["hunter2zq"]),
