@@ -1780,26 +1780,35 @@ has none.
   variable. The steps of a full run still get the caller's variables: `-I`
   changes how the runner starts, not what it hands on. The trust rule in
   one sentence: under `--no-run`, the bytes that run are the installed
-  skills', Python's own and git's, and no file of the project is code. It
-  holds when the `git` that the caller's `PATH` leads to is not a file of
-  the project (the next point).
-- **A `PATH` of the caller that leads into the project can make a file of
-  the project run.** There are two ways. The first is an empty entry, `.`
-  or another relative folder: the doctor's two git calls start with the
+  skills', Python's own and git's, and no file of the project is code. The
+  rule does not hold when a lookup path of the caller leads into the
+  project (the next point).
+- **A lookup path of the caller that leads into the project can make a
+  file of the project run.** Three ways are known, each shown in a run, and
+  the list may not be whole. The first is an empty entry, `.` or another
+  relative folder in `PATH`: the doctor's two git calls start with the
   project as the current folder, `drift.py` calls git for the file list,
   and a relative entry of `PATH` is read from the current folder. The
-  second is an absolute folder that lies inside the project, such as
-  `<project>/bin`, which some tools add to `PATH` when a shell enters the
-  folder. In both cases a tracked file named `git` in that place then runs,
-  also under `--no-run`, and the result can still be `drift: clean`. The
-  project cannot set the caller's `PATH`, and with such a `PATH` every
-  `git` that is typed in that folder runs the same file. The runner has the
-  same lookup when it is started by hand. Both reviewers of the fourth
-  round found the first way on 2026-11-15, as the second case of one class
-  after the module path: a lookup path that leads into the project. The
-  adversary's fifth round found the second way. It is not fixed. The fix is
-  to find git one time, with the relative entries and every folder inside
-  the project left out, and to hand that path on.
+  second is an absolute folder of `PATH` that lies inside the project, such
+  as `<project>/bin`. In both, a tracked file named `git` in that place
+  runs. The third is an empty or relative entry in `PYTHONPATH` while
+  `drift.py` is started from inside the project: the copy of the runner is
+  started in isolated mode, but `drift.py` itself is a plain script, so a
+  tracked module in the current folder, such as `fnmatch.py`, loads in
+  place of Python's own. In all three the file runs also under `--no-run`,
+  and the result can still be `drift: clean`. The project alone cannot set
+  these variables of the caller. A tool that the caller set up to read
+  `PATH` entries from a file of the project can. With such a `PATH` every
+  `git` that is typed in that folder runs the same file, and with such a
+  `PYTHONPATH` every Python script that is started in that folder and
+  imports a module of that name loads the same file. The runner has the same lookups when it is started by
+  hand. The reviews of 2026-11-15 found the three ways one after the other
+  (rounds four, five and six), after the module path of the copy: it is one
+  class, a lookup path that leads into the project. It is not fixed. A fix
+  has to cover the class and not one variable: `drift.py` starts itself
+  again in isolated mode, finds git one time with the relative entries and
+  every folder inside the project left out, and gives the doctor a `PATH`
+  without them.
 - **What the runner refuses before a run is a finding, and the runner itself
   is asked for it.** The map: `check` loads the text of the current runner
   as a module, from the bytes that it compares with the copy, and calls its
