@@ -1854,6 +1854,9 @@ has none.
 - **A wrapped secret with a mark at the start of the next line is not
   joined** (`> `, `│`, a backslash at the line end), and a tab or a
   no-break space inside a secret prints as a space.
+- **A private key header that is wrapped at two places is not seen** when
+  one break comes right after `BEGIN`. The lines of the key itself are long
+  runs and are held back.
 - **The URL rule is slow on a line with `://` and thousands of colons:**
   about 0.6 seconds for 4 KB.
 - **A key word in letters of another script that look the same** (a

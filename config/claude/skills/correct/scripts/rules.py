@@ -77,8 +77,8 @@ class Failed(Exception):
 # word is often part of a longer name (SECRET_KEY, --db-password). A rule that
 # asks for a neighbour does not see those.
 HEX = "0-9a-fA-F"   # a long hex value needs no rule of its own: it is a run of letters and digits (PLAIN_RUN)
-WORD = (r"(?:pass(?:word|wd|phrase|code)?|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key"
-        r"|auth(?:orization)?|credential|bearer)s?")
+# Each key word counts inside a longer word, so `pass` is also password, passwd and passphrase.
+WORD = r"(?:pass|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth|credential|bearer)"
 SECRETS = [re.compile(pattern) for pattern in (
     r"sk-[A-Za-z0-9_-]{16,}",                                   # API keys of several vendors
     r"gh[pousr]_[A-Za-z0-9]{20,}",

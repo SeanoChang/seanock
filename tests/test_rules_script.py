@@ -277,6 +277,13 @@ def test_a_secret_with_any_neighbour_and_any_split_is_held_back(module):
         assert module.shown(line) is None, repr(line)
 
 
+def test_each_of_the_five_forms_of_a_line_is_checked(module):
+    """A key header with a tab in it and a break inside a word: only the closed text with its spaces
+    joined has the header in one piece."""
+    line = "use -----BEGIN\tOPENSSH PRIV" + "\nATE KEY----- never"
+    assert module.looks_secret(line) is True and module.shown(line) is None
+
+
 def test_a_line_with_a_character_that_does_not_show_is_held_back_and_a_space_of_another_script_is_not(module):
     """A control or zero-width character can split a secret or join it to a word, so such a line is never
     printed. The wide space of Chinese text and a no-break space are spaces: they hold no line back."""

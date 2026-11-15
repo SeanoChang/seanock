@@ -122,6 +122,19 @@ def test_the_text_names_the_keys_of_a_row_as_the_script_takes_them(module):
     assert set(module.RUNS_IN) == {"ci", "hook", "none"}
 
 
+def test_the_path_forms_of_the_text_are_the_ones_that_the_script_takes(module):
+    said = flat(TEXT)
+    assert "written as a path: `pytest tests/`, not `pytest tests`." in said
+    assert ("A name counts only as a word of its own with a slash in it: `tests/`, `./tests`, `config/hooks`, "
+            "`./lint.sh`.") in said
+    assert "so `pytest tests` does not count, and neither does `--ignore=tests/` or `tests/*.py`." in said
+    named = lambda command, path: module.named_in([f"run: {command}\n"], path)
+    assert named("pytest tests/", "tests/test_a.py") and named("pytest ./tests", "tests/test_a.py")
+    assert named("pytest config/hooks", "config/hooks/test_a.py") and named("./lint.sh", "lint.sh")
+    assert not named("pytest tests", "tests/test_a.py") and not named("npm test", "test/a.js")
+    assert not named("pytest --ignore=tests/", "tests/test_a.py") and not named("pytest tests/*.py", "tests/test_a.py")
+
+
 def test_the_example_row_of_the_text_is_a_table_that_the_script_takes(tmp_path):
     block = re.search(r"```json\n(.*?)```", TEXT, re.S).group(1)
     table = json.loads(block)
