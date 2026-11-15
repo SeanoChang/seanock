@@ -1605,6 +1605,14 @@ has none.
 - **The order of `gh pr list` beyond 100 pull requests was not checked.**
   If it is not newest first, an old pull request can come back into the
   list and be reported as new.
+- **A new task branch with a name that is already on GitHub can move that
+  branch.** The plain push is a fast-forward when the old branch of that
+  name is fully inside the base (a merged branch that nobody deleted). No
+  commit is lost. Found by the adversary on #20, 2026-11-15.
+- **With the reflog of the local repo turned off, the force push after a
+  normal rebase is refused** (`core.logAllRefUpdates=false`).
+  `--force-if-includes` has nothing to read then. The agent stops and
+  reports. Found by the adversary on #20.
 - **The lock is `flock` on a file beside the state file.** It is opened
   without following a link and is never emptied. A file system that does
   not honour `flock` (some network mounts) gives no lock.
@@ -1724,6 +1732,17 @@ has none.
 - **A file that is swapped between the check and the read is not handled.**
 - **On a disk that ignores case, `claude.md` is read as `CLAUDE.md`.**
 - **A whitespace-only `REVIEW.md` is a gap** ("is empty").
+- **Fences that the root map rule does not see as fences** (the adversary's
+  third round, 2026-11-15). A label inside such a block counts as a label:
+  a fence that is indented four spaces in a list item, a fence in a
+  blockquote, a backtick fence that a `~~~` line seems to close, and a line
+  such as ```` ```bash``` text ````.
+- **Marks in the map that give a gap where a reader sees the form:** a line
+  that a U+2028 or a form feed splits (Python's `splitlines()` splits
+  there), a command in a span of two backticks, and a byte order mark before
+  the first line. All three fail safe: a gap, never `ok`.
+- **The reference test of the label rule uses ASCII lines only.** A line
+  with Unicode whitespace or a long s (`ſ`) is not in it.
 
 ### Not tested
 
@@ -1732,6 +1751,159 @@ has none.
 - The script ran by hand on this repo (6 gaps: no lint in CI, no root map,
   no `REVIEW.md`, no comment rule, no rule table, no verify skill) and on
   one other project (7 gaps).
+
+## Maintain verify skill (`config/claude/skills/maintain-verify-skill`, 2026-11-15)
+
+### By design
+
+- **`check` runs the app.** Without `--no-run` it starts the runner copy of
+  the project (`verify run`), which builds the app and runs every step in
+  temp folders. The project's own code runs, as in any verify run. With
+  `--no-run`, nothing of the app runs: one file of the project is started,
+  the runner copy for its doctor, and only as the next two points say. Git
+  is called to list the tracked files, and the doctor of the runner asks
+  git if the evidence folder is ignored. Both calls get no `GIT_` variable
+  of the caller, and the file watcher of the repo's settings is off for
+  them (an automated security review asked for this, 2026-11-15; a test
+  then showed that the doctor's call started that program).
+- **The runner copy is started only when it is the current runner, byte for
+  byte.** A copy that is behind, or that someone changed, is `runner-old`,
+  and the doctor and the run are left out until `bump` brought it up. So
+  `check` never runs a runner that the installed skills do not hold.
+- **The runner copy is started in Python's isolated mode (`-I`),** for the
+  doctor and for the run. A plain start puts the copy's own folder first on
+  the module path. The adversary's third round put a tracked `tempfile.py`
+  beside the copy: it ran as code of the project under `--no-run`, it left
+  a `__pycache__` folder, and the result was still `drift: clean`. With
+  `-I` the copy loads the modules of the Python that runs `drift.py` and
+  nothing from its own folder, from the project or from a `PYTHON`
+  variable. The steps of a full run still get the caller's variables: `-I`
+  changes how the runner starts, not what it hands on. The trust rule in
+  one sentence: under `--no-run`, the bytes that run are the installed
+  skills', Python's own and git's, and no file of the project is code. The
+  rule does not hold when a lookup path of the caller leads into the
+  project (the next point).
+- **A lookup path of the caller that leads into the project can make a
+  file of the project run.** Three ways are known, each shown in a run, and
+  the list may not be whole. The first is an empty entry, `.` or another
+  relative folder in `PATH`: the doctor's two git calls start with the
+  project as the current folder, `drift.py` calls git for the file list,
+  and a relative entry of `PATH` is read from the current folder. The
+  second is an absolute folder of `PATH` that lies inside the project, such
+  as `<project>/bin`. In both, a tracked file named `git` in that place
+  runs. The third is an empty or relative entry in `PYTHONPATH` while
+  `drift.py` is started from inside the project: the copy of the runner is
+  started in isolated mode, but `drift.py` itself is a plain script, so a
+  tracked module in the current folder, such as `fnmatch.py`, loads in
+  place of Python's own. In all three the file runs also under `--no-run`,
+  and the result can still be `drift: clean`. The project alone cannot set
+  these variables of the caller. A tool that the caller set up to read
+  `PATH` entries from a file of the project can. With such a `PATH` every
+  `git` that is typed in that folder runs the same file, and with such a
+  `PYTHONPATH` every Python script that is started in that folder and
+  imports a module of that name loads the same file. The runner has the same lookups when it is started by
+  hand. The reviews of 2026-11-15 found the three ways one after the other
+  (rounds four, five and six), after the module path of the copy: it is one
+  class, a lookup path that leads into the project. It is not fixed. A fix
+  has to cover the class and not one variable: `drift.py` starts itself
+  again in isolated mode, finds git one time with the relative entries and
+  every folder inside the project left out, and gives the doctor a `PATH`
+  without them.
+- **What the runner refuses before a run is a finding, and the runner itself
+  is asked for it.** The map: `check` loads the text of the current runner
+  as a module, from the bytes that it compares with the copy, and calls its
+  `load_map`; a refusal is `failed-map` with the runner's own reason. None
+  of the runner's commands runs for this, and no cache file is written. The
+  doctor: `check` runs `verify doctor`, also with `--no-run`; each gap is
+  `failed-doctor`. Each step is left out when the one before it gave a
+  finding. `drift.py` holds no copy of the runner's rules.
+- **This is the third form of the check.** An adversary review broke the
+  first two with one class, "drift.py does not see what the runner
+  refuses". The first said `clean` without the run for a map that the
+  runner does not take, and threw the other findings away when the runner
+  ended with exit 2. The second asked the runner's map rules only: a gap of
+  the doctor (a value of `env` outside the temp folder, a fixture folder
+  that is gone) was still `clean` without the run, and every exit 2 of the
+  runner became a finding, also "the run was interrupted". Now each stage
+  of the runner is asked through its own contract, and no reason text is
+  read to tell a refusal from a crash.
+- **A runner result counts only in its full form.** For the doctor: exit 0
+  with the one line `doctor clean`, or exit 1 with the summary line and as
+  many gap lines above it as it counts. For the run: exit 0 with the pass
+  line, or exit 1 with the summary line and a failed line above it.
+  Anything else (exit 2 with the runner's error line, another exit code, a
+  foreign last line, a signal, a timeout) is `drift: error`, exit 2.
+- **`drift: error` keeps the findings that were found before it.** They are
+  printed above the error line. Exit 2 still means that the list is not
+  whole.
+- **With no current runner beside the script nothing is started,** and the
+  form of the map is not checked by the runner's rules. The line
+  `runner-old unknown runner` keeps the result from being clean.
+- **A current runner whose text cannot be loaded,** or that has no
+  `load_map` and `MapError`, is `drift: error`.
+- **A pattern matches as `fnmatch` does, case-sensitive, and `*` also takes
+  a `/`.** So `src/**/*.py` does not match `src/a.py`, and such a map shows
+  a stale path. The runner itself has no rule for `paths`.
+- **`uncovered-path` looks only into top folders that some pattern reaches
+  into,** and counts files per folder. A new top folder is not listed.
+- **A failed build has its own line,** `failed-build`, counted in `failed=`.
+  The design gave no line for it; without one a failed build would read as
+  no failed step.
+- **`bump` reads the runner number from the text of the runner** (`RUNNER =
+  N`, exactly one such line) and never runs or loads the file. It writes
+  a new file beside the copy and renames it, so it does not write through
+  a link, and it keeps the mode of the copy, with execute added.
+- **`runner=unknown`** in the last line when no current runner is beside
+  the script. It is a finding, not a pass.
+- **Names in a finding are data.** A feature id, a pattern, a folder name
+  and the reason of a failed step are printed, with non-printable
+  characters replaced. The agent needs them to act; the text calls them
+  data.
+- **What to do with a finding is text only.** No code stops an agent that
+  weakens a step.
+
+### Minor
+
+- **Two `bump` runs at one time share one temp name.** The copy stays
+  whole; one of the two can fail.
+- **A `.claude` or `skills` folder that is itself a link is followed.** Only
+  the `verify-<app>` folder and the copy are checked for links.
+- **A `features.json` nested so deep that Python gives up on it** is
+  `drift: error RecursionError`, exit 2, and not `failed-map`.
+- **A `features.json` that is a link to a device or a pipe is read.** A link
+  to `/dev/zero` makes `check` hang; the runner has the same limit.
+- **`bump` says `clean` for a copy with the right bytes that is not
+  executable.** It compares bytes only. A copy with mode `000` is replaced
+  by one with mode `100`, which Python cannot read: set the mode by hand.
+- **A `[` in a pattern starts a set, as in a shell.** A map that names a
+  path such as `app/[slug]/page.tsx` shows a stale path. Write `[[]slug]`.
+- **The `app` of the map is not compared with the name of the skill
+  folder.** A map with another valid `app` in `verify-<app>/` gives no
+  finding.
+- **`--help` prints the usage with exit 0,** and its last line is not a
+  result line. By the rule of the text, that is not a result.
+- **A locale that cannot print a character of a finding ends the script
+  with a Python error** and no last line. That is not a result either.
+- **When git cannot list the tracked files, nothing else is printed.** The
+  run ends with `drift: error`, and a `failed-map` or `runner-old` that the
+  script already knew is not above it. Exit 2 means that the list is not
+  whole, so no wrong result follows.
+- **A build command that starts with a placeholder is not checked by the
+  doctor.** When a map names `{root}/scripts/build.sh` and the file has
+  moved, `--no-run` says `clean`, and a full run ends with `drift: error`
+  (the runner's exit 2), not with `failed-build`. The cause is in the
+  runner: its doctor passes over a tool with a placeholder.
+- **A file that changes while `check` runs** (the map or the copy, between
+  the reading and the run) can give findings of two states. A copy that is
+  swapped between the comparison and its start is started.
+
+### Not tested
+
+- The timeout of three hours on the runner's run.
+- A git that hangs or is missing; only a folder outside git is tested.
+- A file name that is not UTF-8.
+- No live session followed the skill text. The commands of the text run as
+  written in a test, on a project that the real scaffold made.
 - Linux, except through CI.
 
 ## Correct (`config/claude/skills/correct`, 2026-11-15)

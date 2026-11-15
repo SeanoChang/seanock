@@ -6,6 +6,30 @@ the tag `vX.Y.Z`. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says how it moves. The newest
 entry is first.
 
+## 0.6.0 (2026-11-15)
+
+Added:
+
+- `maintain-verify-skill`, a skill that keeps a project's verify skill true
+  to the project. Its script `drift.py check` lists where the skill no
+  longer fits: a path of the feature map that matches no tracked file,
+  tracked files that no feature covers, a map that the current runner
+  refuses, a gap that the runner's doctor finds, a step or a build that
+  fails in a real run of the runner, and a runner copy that is not the
+  current runner. The runner itself is asked at each stage, and the copy is
+  started only when it is the current runner, byte for byte, and in
+  Python's isolated mode, so no module beside it is loaded.
+  `drift.py bump` replaces the runner copy, and refuses when the map is for
+  another runner number. The skill text says what to do with each finding.
+  A failed step is first a finding about the app: a step changes only when
+  the step is shown to be wrong, and it is never weakened to get a pass.
+
+Changed:
+
+- `docs/known-limits.md` also gets the points that the last review rounds
+  of `merge-follow-up` and `setup-repo` left open. They are in the lists
+  "Minor" of those two sections.
+
 ## 0.5.0 (2026-11-15)
 
 Added:
