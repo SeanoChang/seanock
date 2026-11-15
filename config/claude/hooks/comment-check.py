@@ -65,9 +65,19 @@ diff of another shape (context that joins two hunks, "Binary files", colour)
 ends the run with exit 2. So an attribute or a setting that makes git read
 text as binary gives an error, never a false "clean".
 
+What the check trusts. It reads the repo through git, so it reads the refs,
+the commits and the files as this repo's git shows them. Someone who can
+write into the `.git` folder can show any commit as any other: move a ref,
+give an object a replacement (refs/replace), add a parent (a grafts file),
+name a ref like a short commit id, and switch off the warning that git prints
+for it. The check then answers for what git shows, as `git diff` and
+`git log` do in the same review. It is advice for a reviewer, not a lock.
+Two things hold for every repo, also for one that was made to mislead: the
+check starts no program of the repo, and it writes nothing.
+
 Time: every git call has a timeout, and the whole run has one limit
-(--timeout), which also ends the check's own work. At the limit the run ends
-with exit 2.
+(--timeout), which also ends the check's own work, up to the point where the
+output is ready to be written. At the limit the run ends with exit 2.
 
 Usage: comment-check.py --base <ref> [--repo <dir>] [--timeout <seconds>]
                         [--git-timeout <seconds>]
@@ -400,6 +410,11 @@ def text(raw):
     return raw.decode("utf-8", "surrogateescape")
 
 
+def rendered(lines):
+    """The bytes of the output: each line made safe, one line end after each."""
+    return ("\n".join(safe(line) for line in lines) + "\n").encode("utf-8")
+
+
 def on_alarm(signum, frame):
     raise CheckError(f"the check did not finish in {RUN_TIMEOUT} s")
 
@@ -420,29 +435,26 @@ def main(argv=None):
     if args.timeout <= 0:
         parser.error("--timeout must be above 0")
     GIT_TIMEOUT, RUN_TIMEOUT = args.git_timeout, args.timeout
-    lines = []
-    code = 0
     try:
         signal.signal(signal.SIGALRM, on_alarm)
         signal.setitimer(signal.ITIMER_REAL, RUN_TIMEOUT)
         try:
             hits = stale_comments(args.repo, args.base)
+            lines = [f"stale-comment {text(path)}:{n} {text(comment)[:TEXT_MAX]}" for path, n, comment in hits]
+            lines.append(f"comment-check: summary hits={len(hits)}" if hits else "comment-check: clean")
+            # Still under the limit: many hits in a file with a very long path are long work.
+            out = rendered(lines)
+            code = 1 if hits else 0
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
-        for path, n, comment in hits:
-            lines.append(f"stale-comment {text(path)}:{n} {text(comment)[:TEXT_MAX]}")
-        lines.append(f"comment-check: summary hits={len(hits)}" if hits else "comment-check: clean")
-        code = 1 if hits else 0
     except CheckError as e:
-        lines = [f"comment-check: error {e}"]
-        code = 2
+        out, code = rendered([f"comment-check: error {e}"]), 2
     except Exception as e:  # fail closed: a crash must never read as clean
-        lines = [f"comment-check: error internal: {type(e).__name__}: {e}"]
-        code = 2
+        out, code = rendered([f"comment-check: error internal: {type(e).__name__}: {e}"]), 2
     try:
         if sys.stdout is None:  # started with stdout closed (`>&-`)
             raise OSError("stdout is closed")
-        sys.stdout.buffer.write(("\n".join(safe(l) for l in lines) + "\n").encode("utf-8"))
+        sys.stdout.buffer.write(out)
         sys.stdout.flush()
     except (OSError, ValueError) as e:  # a closed pipe: the result was not delivered
         print(f"comment-check: error cannot write the result: {e}", file=sys.stderr)

@@ -2046,14 +2046,32 @@ has none.
   the smallest one. When git lists a comment line as removed and added again
   with the same text (it can on a very large change, where it stops looking
   for the best match), the comment counts as changed and gives no hit.
+- **The check trusts what is in `.git`.** It reads the refs, the commits
+  and the files as the repo's git shows them. The adversary's second round
+  got a false `clean` in three ways, and each needs a person who writes
+  into `.git`: a replace ref for the blob of the new file, a grafts file
+  that moves the merge base (with the setting that switches off git's
+  warning for it), and a tag named like the short id of the base commit
+  (with `core.warnAmbiguousRefs` off). The first design said "a setting
+  cannot change what the check reads"; that was too wide. It holds for the
+  text of `git diff`, which the check holds against the two versions. It
+  does not hold for which commit a name means or which file an object id
+  gives: git decides that, for this check and for every `git diff` and
+  `git log` of the same review. To pin each of these would be a list that
+  is never complete. The check is advice for a reviewer, not a lock. What
+  holds for every repo: it starts no program of the repo, and it writes
+  nothing. A base given as a full commit id cannot be taken for a ref name.
 - **An attribute or a setting that makes git read text as binary gives exit
   2,** not a hit and not `clean`. A repo with `* -diff` in its attributes
   cannot be checked.
 - **Every git call runs in the folder that `--repo` names.** The script
   does not ask git for the top of the work tree. A bare repo is read too.
 - **The whole run has one time limit,** 100 seconds by default
-  (`--timeout`), for the git calls and for the script's own work. At the
-  limit the run ends with exit 2. The first version had a limit for each
+  (`--timeout`), for the git calls and for the script's own work, the
+  building of the output too. At the limit the run ends with exit 2. (The
+  second review round showed that the limit ended when the hits were
+  found: 60,000 hits in a file with a path of 20,000 characters then took
+  131 seconds.) Only the one write of the finished output is outside it. The first version had a limit for each
   git call only, and one file with many comment blocks and many deletions
   made the script's own loop run for minutes; that loop is linear now.
 - **A comment that starts with a marker word is not a comment for this
@@ -2078,6 +2096,15 @@ has none.
   `git diff` call for each changed file, about 80 ms each on the machine of
   the review: 2,000 changed files took 166 seconds there. The run then ends
   with exit 2, which the verifier reads as "did not run".
+- **`PATH` and the `PYTHON` variables are the caller's own.** The check
+  drops the caller's `GIT_` variables and no others. A `git` that stands
+  first on `PATH`, or a module on `PYTHONPATH` (the verifier starts the
+  check with `python3`, not `python3 -I`), is a program of the caller and
+  can print any result.
+- **A caller that blocks the alarm signal has no limit for the whole run.**
+  The limit for each git call still holds.
+- **The output of a run with very many hits is built in memory** before it
+  is written.
 - **The text of a git error is in the error line.** A value in the repo's
   settings can so reach the line `comment-check: error ...`. Step 9 of the
   verifier calls every line of the check data, the text of an error too.

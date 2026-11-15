@@ -774,6 +774,26 @@ def test_the_time_limit_also_ends_the_work_of_the_check_itself(tmp_path):
     assert code == 2 and time.monotonic() - start < 10
 
 
+def test_the_time_limit_also_ends_the_building_of_the_output(tmp_path):
+    """Found in review: the limit stopped when the hits were found, and one long path in many hits
+    made the lines of the output take longer than the whole limit."""
+    import importlib.util
+    import time
+    spec = importlib.util.spec_from_file_location("comment_check_output", CHECK)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.stale_comments = lambda repo, base: [module.Hit(b"a.py", 1, b"# Note.")]
+
+    def slow(line):
+        if not line.startswith("comment-check: error"):   # the one error line is short work
+            time.sleep(4)
+        return line
+    module.safe = slow
+    start = time.monotonic()
+    code = module.main(["--base", "main", "--repo", str(tmp_path), "--timeout", "1"])
+    assert code == 2 and time.monotonic() - start < 3.5
+
+
 def test_a_file_with_many_blocks_and_many_deletions_is_read_in_linear_time(tmp_path):
     import time
     units = 30000
