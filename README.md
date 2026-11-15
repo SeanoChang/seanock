@@ -103,8 +103,11 @@ runs it on each change it checks, and you can run it by hand:
 it compares the working tree with the base branch and reports a change that
 lowers the quality bar, such as a deleted test, a new skip marker, a new lint
 suppression, fewer assertions, or a CI step that may now fail silently. It
-exits 0 when clean, 1 with findings, and 2 when it could not finish. Each hook
-has tests in `config/claude/hooks/tests/`.
+exits 0 when clean, 1 with findings, and 2 when it could not finish.
+`comment-check.py` is a command of the same kind. It lists each comment whose
+code changed in the diff while the comment did not, so that a reviewer reads
+it again. Its hits are advice: the verifier judges each one, and a hit alone
+never fails a change. Each hook has tests in `config/claude/hooks/tests/`.
 
 **Status line.** `statusline-command.sh` draws three lines under the prompt:
 

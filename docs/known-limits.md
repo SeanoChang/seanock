@@ -1087,7 +1087,7 @@ changes it.
 - A session where `GIT_DIR` or `GIT_WORK_TREE` is set in the environment.
 - A config file, or a file it includes, that is a named pipe. Every git
   command would wait on it, the ones before this change too.
-- A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`.
+- A git older than 2.45, which does not know `GIT_NO_LAZY_FETCH`.
 
 ## Installer (`install.sh`, 2026-11-13)
 
@@ -1309,7 +1309,7 @@ changes it.
 - The comparison of two spellings of one folder on a disk that keeps
   letter case apart: the test for another letter case has nothing to run
   there, and it then passes with no assertion. The disk of CI ignores case.
-- A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`, and a real
+- A git older than 2.45, which does not know `GIT_NO_LAZY_FETCH`, and a real
   git older than 2.43 (the test uses a stand-in that rejects the option).
 - Refs kept in the reftable format, and a broken entry in `packed-refs`. The
   broken-ref tests write loose ref files. Both ended with exit 2 in a review
@@ -1983,7 +1983,9 @@ has none.
   differ: keeping both sides gives the number two times, and two tests
   fail. With the same date, which is the usual case, git takes the heading
   line as common to both: keeping both sides gives one entry with the text
-  of both pull requests, and every test passes. Taking one side loses the
+  of both pull requests, and every test passes. (That is git's default
+  conflict style. With `merge.conflictStyle=diff3` the heading stays inside
+  the conflict, and two tests fail for the same date too.) Taking one side loses the
   entry of the other pull request, and every test passes too. Both
   reviewers and the author ran this with git on 2026-11-15; the first text
   of this point said that the tests catch it, from reading alone. So the
@@ -1996,3 +1998,147 @@ has none.
 - How GitHub draws the changelog. The points on headings follow the
   CommonMark rules.
 
+## Comment check (`config/claude/hooks/comment-check.py`, 2026-11-15)
+
+### By design
+
+- **A hit is advice.** The check lists a comment block whose code changed
+  while no line of the block did. Whether the comment is now false is a
+  judgement, and the verifier makes it (step 9 of its text): a comment that
+  still holds is no finding, a false one is a Nit, and it is Important only
+  when a reader who trusts it would use the code wrongly.
+- **A check that did not run changes no verdict.** It goes under "Not
+  covered". The review line needs a floor guard result and does not need
+  this one. So a broken comment check cannot block a merge, and it cannot
+  open one.
+- **It sits beside the floor guard,** in `config/claude/hooks/`, and not in
+  a skill folder as the design page of 2026-11-14 had it. The verifier runs
+  both in the same way, and both read a repo they do not trust.
+- **It reads lines, not the language.** Line comments only (`#` and `//`),
+  by file extension. Block comments and docstrings are not read. A line
+  inside a multi-line string that starts with `#` or `//` reads as a
+  comment.
+- **The code under a comment** is the lines after the block up to a blank
+  line, the next comment block or a line indented less, at most 20 lines.
+- **No hit for:** a file that the diff adds as a whole, a deleted file, a
+  binary file, a link, a submodule, a change of line ends alone, code under
+  the comment that the change deleted in full, and a deletion right after
+  the last code line.
+- **It reads the committed diff from the merge base to HEAD.** The index
+  and the files of the working tree play no part, with one exception: git
+  reads `.gitattributes` from the working tree, also when the file is
+  untracked. The first text said that the working tree plays no part; the
+  adversary's third round showed the exception. An attribute there starts
+  no program. With `* -diff` it makes git print each file as binary, and the
+  run ends with exit 2 (the point on binary below). It needs `--base`; with
+  no base in the brief the verifier skips it and says so.
+- **Lint and tool markers are not comments for this check** (`noqa`,
+  `type: ignore`, `pragma`, `eslint-disable`, `pylint:`, `@ts-`, `nolint`,
+  `shellcheck`, `fmt:`, `isort:`, `mypy:`, `prettier-ignore`, `nosec`,
+  `nosemgrep`).
+- **git's diff is taken only after it is held against the two versions of
+  the file.** Each hunk must hold its removed lines and then its added
+  lines, with no line of context, and the lines outside the hunks must be
+  the same in both versions. A diff of another shape ends the run with exit
+  2. An adversary review showed three settings that gave a false `clean`
+  in the first version: `diff.interHunkContext` (also in the user's own
+  git settings) joined two hunks over an unchanged comment,
+  `core.bigFileThreshold` made git call a text file binary, and
+  `core.worktree` sent every call to another repo. The class was "a setting
+  changes what the script reads", so the script no longer trusts the text
+  of `git diff`: it checks it. The context is also set on the command line,
+  so the user's setting does no harm.
+- **"Changed" is what git's diff calls changed.** The script checks that
+  the diff is a true diff of the two versions; it does not check that it is
+  the smallest one. When git lists a comment line as removed and added again
+  with the same text (it can on a very large change, where it stops looking
+  for the best match), the comment counts as changed and gives no hit.
+- **The check trusts what is in `.git`.** It reads the refs, the commits
+  and the files as the repo's git shows them. The adversary's second round
+  got a false `clean` in three ways, and each needs a person who writes
+  into `.git`: a replace ref for the blob of the new file, a grafts file
+  that moves the merge base (with the setting that switches off git's
+  warning for it), and a tag named like the short id of the base commit
+  (with `core.warnAmbiguousRefs` off). The first design said "a setting
+  cannot change what the check reads"; that was too wide. It holds for the
+  text of `git diff`, which the check holds against the two versions. It
+  does not hold for which commit a name means or which file an object id
+  gives: git decides that, for this check and for every `git diff` and
+  `git log` of the same review. To pin each of these would be a list that
+  is never complete. The check is advice for a reviewer, not a lock. What
+  holds for every repo: it starts no program of the repo, and it writes
+  nothing. A base given as a full commit id cannot be taken for a ref name.
+- **An attribute or a setting that makes git read text as binary gives exit
+  2,** not a hit and not `clean`. A repo with `* -diff` in its attributes
+  cannot be checked.
+- **Every git call runs in the folder that `--repo` names.** The script
+  does not ask git for the top of the work tree. A bare repo is read too.
+- **The whole run has one time limit,** 100 seconds by default
+  (`--timeout`), for the git calls and for the script's own work, the
+  building of the output too. At the limit the run ends with exit 2. (The
+  second review round showed that the limit ended when the hits were
+  found: 60,000 hits in a file with a path of 20,000 characters then took
+  131 seconds.) Only the one write of the finished output is outside it. The first version had a limit for each
+  git call only, and one file with many comment blocks and many deletions
+  made the script's own loop run for minutes; that loop is linear now.
+- **A comment that starts with a marker word is not a comment for this
+  check,** also when more text follows: `# fmt: the output format` gives no
+  hit.
+- **Only the Claude verifier runs it.** The Codex verifier has no step for
+  it, as it has none for the floor guard.
+
+### Minor
+
+- **A usage error** (no `--base`) ends with exit 2 and the lines of
+  `argparse` on stderr, not with `comment-check: error ...`. The verifier
+  reads that as "did not run".
+- **Nine mutations of the builder's run changed no output,** so no test can
+  fail on them: five are equal code, and four are protections that these
+  commands do not reach in a test (`--no-pager`, `--no-textconv` on the raw
+  diff, `GIT_OPTIONAL_LOCKS`, the "Binary files" line of the first version).
+  One mutation of the fix round is equal code too: the gap of a hunk that
+  also adds lines never decides a hit, because its first added line already
+  marks the code as changed.
+- **A change with very many files can reach the time limit.** There is one
+  `git diff` call for each changed file, about 80 ms each on the machine of
+  the review: 2,000 changed files took 166 seconds there. The run then ends
+  with exit 2, which the verifier reads as "did not run".
+- **`PATH` and the `PYTHON` variables are the caller's own.** The check
+  drops the caller's `GIT_` variables and no others. A `git` that stands
+  first on `PATH`, or a module on `PYTHONPATH` (the verifier starts the
+  check with `python3`, not `python3 -I`), is a program of the caller and
+  can print any result.
+- **A caller that blocks the alarm signal has no limit for the whole run.**
+  The limit for each git call still holds.
+- **The output of a run with very many hits is built in memory** before it
+  is written.
+- **The text of a git error is in the error line.** A value in the repo's
+  settings can so reach the line `comment-check: error ...`. Step 9 of the
+  verifier calls every line of the check data, the text of an error too.
+- **"Pass means the checks ran"** in the Return part of the verifier's text
+  does not name the comment check as an exception. Step 9 says that a
+  comment check that did not run changes no verdict, and that rule is the
+  specific one.
+- **The indent of a line counts form feed and vertical tab too,** one
+  column each, like a space or a tab. The text of the script names spaces
+  and tabs only.
+- **When the limit of the whole run ends inside a git call, the error line
+  names the wrong cause:** `not a git repo: ... (the check did not finish
+  in 2 s)` for a repo that is one. The exit code is 2 in both cases.
+- **Replace refs are followed.** `GIT_NO_REPLACE_OBJECTS=1` would switch
+  them off, and the check does not set it: a replace ref needs a person who
+  writes into `.git`, which the check trusts (see "By design").
+
+### Not tested
+
+- A git older than 2.45, which does not know `GIT_NO_LAZY_FETCH` (the
+  variable is in git's own manual from 2.45.0 on; two other sections of
+  this file said 2.44 until 2026-11-15): in a
+  partial clone it could fetch through a program that the repo's settings
+  name.
+- The time limit on a system with no alarm signal (Windows).
+- Repeated lines such as `}`: the random test uses files with no duplicate
+  lines, so it does not check how git lines them up.
+- Git versions other than the local one, and Linux except through CI.
+- No live verifier followed step 9 yet. The first reviews after this change
+  are that test.

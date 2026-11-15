@@ -6,6 +6,21 @@ the tag `vX.Y.Z`. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says how it moves. The newest
 entry is first.
 
+## 0.5.0 (2026-11-15)
+
+Added:
+
+- `comment-check.py`, a command beside the floor guard. It reads the
+  committed diff against a base and lists each comment block whose code
+  changed while no line of the comment did: `stale-comment <path>:<line>
+  <text>`. It reads line comments (`#` and `//`) in the common languages,
+  runs no program that a repo's settings name, and exits 0 when clean, 1
+  with hits, and 2 when it could not finish. The verifier runs it on each
+  change (step 9 of its text). A hit is advice: a comment that still holds
+  is no finding, a comment that is now false is a Nit, and it is Important
+  only when a reader who trusts it would use the code wrongly. A check that
+  did not run goes under "Not covered" and changes no verdict.
+
 ## 0.4.0 (2026-11-15)
 
 Changed:
