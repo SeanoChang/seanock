@@ -1503,6 +1503,21 @@ has none.
   text only. The script does not ask GitHub whether a pull request of
   another author targets a head: that is one more call for each event, for
   a rare case.
+- **The agent has two push commands, and both name the branch in full.**
+  A fix goes up with a plain push, which git refuses when the branch on
+  GitHub has a commit that the local branch does not include. Only a push
+  after a rebase uses force, with `--force-with-lease` and
+  `--force-if-includes` together. The lease alone protects nothing once a
+  fetch ran, and the skill's own first step is a fetch: a commit that
+  someone else added to the task branch would be overwritten (found by the
+  adversary, 2026-11-15). With both flags git refuses that push. The text
+  says to stop and report then. `--force-if-includes` needs git 2.30 or
+  newer; an older git refuses the command.
+- **`--force-if-includes` reads the reflog of the local branch.** A foreign
+  commit that the local branch once pointed at, and that a later reset or
+  rebase dropped, counts as included, and the push overwrites it. The rule
+  "push only to a branch that this session created" and the stop after a
+  refused push are text only.
 - **A branch name or commit id that is not of the plain form is given as
   `null`.** A plain name is letters, digits and `. _ / -`, at most 200, with
   no `..`. Git allows more; a branch with such a name gets its events with no
