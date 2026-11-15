@@ -32,7 +32,17 @@ Events:
   checks-failed a check failed on the head commit of an open pull request.
   behind-base   an open pull request whose base branch just took a merge.
 
+`checks-failed` and `behind-base` carry `shared_head`: true when the head of
+the pull request is a branch that takes pull requests itself (a release
+branch, an integration branch, or the base of a listed pull request). Such a
+branch is never rebased and never pushed to by an agent.
+
+Branch names and commit ids come from GitHub, and an agent puts them into
+commands. One that is not of the plain form (a name of letters, digits and
+. _ / - ; a commit id of 40 hex digits) is given as null.
+
 State: ~/.claude/state/pr-follow/<owner>__<repo>.json, changed under a file lock.
+A cursor or a claim that is older than 30 days is dropped.
 """
 from __future__ import annotations
 
@@ -46,13 +56,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-RELEASE = {"main", "master", "trunk"}
+RELEASE = {"main", "master", "trunk"}                         # the merge gate has the same names
+INTEGRATION = {"dev", "develop", "development", "integration"}
 FAILED = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED", "ERROR"}
 FIELDS = "number,state,baseRefName,headRefName,headRefOid,mergeCommit,statusCheckRollup,url"
 STATE_DIR = Path.home() / ".claude" / "state" / "pr-follow"
 KEEP_DAYS = 30
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,99}\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
+REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}\Z")
 NWO = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\Z")
 
 
@@ -125,6 +137,21 @@ def failed_checks(pr):
     return sorted(names)
 
 
+def is_release(name):
+    """True for a release branch, compared as the merge gate compares it."""
+    return isinstance(name, str) and name.casefold() in RELEASE
+
+
+def ref(name):
+    """A branch name that is safe to put into a command, else None."""
+    return name if isinstance(name, str) and REF.match(name) and ".." not in name else None
+
+
+def commit(sha):
+    """A full commit id, else None."""
+    return sha if isinstance(sha, str) and SHA.match(sha) else None
+
+
 def snapshot(pr):
     """What the cursor keeps for one pull request."""
     state = pr.get("state")
@@ -144,31 +171,36 @@ def events(prs, seen, parents):
     """
     found = []
     merged_bases = {}
+    bases = {pr.get("baseRefName") for pr in prs}
+
+    def shared(head):
+        """True when the head takes pull requests itself, so no agent rebases it or pushes to it."""
+        return is_release(head) or (isinstance(head, str) and head.casefold() in INTEGRATION) or head in bases
+
     for pr in sorted(prs, key=lambda pr: pr["number"]):
         number, state = pr["number"], pr.get("state")
+        base, head = pr.get("baseRefName"), pr.get("headRefName")
         before = seen.get(str(number)) or {}
         if state == "MERGED" and before.get("state") != "MERGED":
-            sha = (pr.get("mergeCommit") or {}).get("oid")
-            base = pr.get("baseRefName")
-            count = parents(sha) if isinstance(sha, str) and SHA.match(sha) else None
-            release = base in RELEASE
-            found.append({"kind": "merged", "pr": number, "base": base, "head": pr.get("headRefName"),
-                          "sha": sha, "head_sha": pr.get("headRefOid"), "release": release, "parents": count,
+            sha = commit((pr.get("mergeCommit") or {}).get("oid"))
+            count = parents(sha) if sha else None
+            release = is_release(base)
+            found.append({"kind": "merged", "pr": number, "base": ref(base), "head": ref(head),
+                          "sha": sha, "head_sha": commit(pr.get("headRefOid")), "release": release, "parents": count,
                           "squashed_release": release and count == 1, "url": pr.get("url")})
             merged_bases.setdefault(base, number)
         elif state == "CLOSED" and before.get("state") != "CLOSED":
-            found.append({"kind": "closed", "pr": number, "base": pr.get("baseRefName"),
-                          "head": pr.get("headRefName"), "url": pr.get("url")})
+            found.append({"kind": "closed", "pr": number, "base": ref(base), "head": ref(head), "url": pr.get("url")})
         elif state == "OPEN":
             names = failed_checks(pr)
             if names and before.get("failed_sha") != pr.get("headRefOid"):
-                found.append({"kind": "checks-failed", "pr": number, "head": pr.get("headRefName"),
-                              "sha": pr.get("headRefOid"), "checks": names, "url": pr.get("url")})
+                found.append({"kind": "checks-failed", "pr": number, "head": ref(head), "shared_head": shared(head),
+                              "sha": commit(pr.get("headRefOid")), "checks": names, "url": pr.get("url")})
     for pr in sorted(prs, key=lambda pr: pr["number"]):
-        if pr.get("state") == "OPEN" and pr.get("baseRefName") in merged_bases:
-            found.append({"kind": "behind-base", "pr": pr["number"], "base": pr.get("baseRefName"),
-                          "head": pr.get("headRefName"), "because": merged_bases[pr.get("baseRefName")],
-                          "url": pr.get("url")})
+        base, head = pr.get("baseRefName"), pr.get("headRefName")
+        if pr.get("state") == "OPEN" and base in merged_bases:
+            found.append({"kind": "behind-base", "pr": pr["number"], "base": ref(base), "head": ref(head),
+                          "shared_head": shared(head), "because": merged_bases[base], "url": pr.get("url")})
     return found
 
 
@@ -188,7 +220,11 @@ class State:
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.lock = open(self.path.with_name(self.path.name + ".lock"), "w")
+        try:  # never through a link, and never emptied: the lock file is only a thing to hold
+            self.lock = os.open(self.path.with_name(self.path.name + ".lock"),
+                                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        except OSError:
+            raise Failed(f"the lock file cannot be opened: {self.path.name}.lock")
         fcntl.flock(self.lock, fcntl.LOCK_EX)
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
@@ -213,7 +249,7 @@ class State:
         os.replace(partial, self.path)
 
     def __exit__(self, *exc):
-        self.lock.close()  # closing the file gives the lock back
+        os.close(self.lock)  # closing the file gives the lock back
         return False
 
 

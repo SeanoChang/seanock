@@ -1483,9 +1483,24 @@ has none.
   that, a second session would never learn of a merge, and its branches
   would stay behind. So the cursor is per session, and `--claim` is for a
   step that must run once.
-- **An event is delivered at most once.** The cursor moves when the script
-  prints the events. A session that stops before it acts has the events in
-  its conversation only.
+- **An event is delivered at most once.** The cursor is saved before the
+  script prints the events. A session that stops before it acts has the
+  events in its conversation only. If the print itself fails (a closed pipe
+  gives exit 120, which is not a result), those events are lost. The skill
+  text forbids a pipe.
+- **A head that takes pull requests is marked `shared_head`,** and the text
+  forbids a rebase of it or a push to it. The mark comes from the branch
+  names of the merge gate (`main`, `master`, `trunk`, `dev`, `develop`,
+  `development`, `integration`, in any case) and from the bases of the
+  listed pull requests. A branch that is the base of another of your pull
+  requests (a stack) is marked too. An integration branch with another name
+  that has not yet taken one of your pull requests is not marked; for that
+  one the rule holds in text only.
+- **A branch name or commit id that is not of the plain form is given as
+  `null`.** A plain name is letters, digits and `. _ / -`, at most 200, with
+  no `..`. Git allows more; a branch with such a name gets its events with no
+  name, and the agent reports them and runs nothing. Check names are free
+  text and are passed on as they are; the text calls them data.
 - **A session's first look reports nothing.** It records what is there. A
   merge that happened before that look is not news.
 - **The script sees the 100 newest pull requests of the signed-in user.**
@@ -1498,6 +1513,25 @@ has none.
 - **The repair of a squashed release is commands in the skill text,** tested
   as written on a real repo. No code runs them for the agent, and the push
   is always the user's.
+
+### Minor
+
+- **Two looks of one session that overlap can report one event twice.** The
+  script reads the pull requests before it takes the lock, so the slower
+  look can save an older picture over the newer one.
+- **A subagent has the session name of its lead** (`CLAUDE_CODE_SESSION_ID`
+  is the same). A look from a subagent takes the lead's events, and both
+  hold the same claim. The text says to look from the lead only.
+- **The repair of a squashed release is not claimed, and has no check for
+  "already repaired".** Each session that gets the release event builds its
+  own `sync/...` branch and hands over a push command, also after the user
+  has repaired it by hand. The extra commit changes no file and the push is
+  a fast-forward.
+- **A session that has not looked for 30 days loses its cursor.** Its next
+  look is a first look, and what happened in between is not reported.
+- **The lock is `flock` on a file beside the state file.** It is opened
+  without following a link and is never emptied. A file system that does
+  not honour `flock` (some network mounts) gives no lock.
 
 ### Not tested
 
