@@ -220,7 +220,10 @@ def test_the_root_map_of_the_text_names_the_four_commands_as_the_script_reads_th
 
     assert module.named_commands(example) == module.MAP_WORDS == ["build", "test", "lint", "install"]
     said = flat(TEXT)
-    assert "a line that starts with the word and holds the command in a code span" in said
+    assert "The script reads one form only: a line that starts with the word, then a colon, and then at once the command in a code span" in said
+    assert "a command in a fenced block below a heading does not count" in said
+    assert "add the four lines; do not rewrite the map" in said
+    assert "an install command that writes outside the repo), or the repo has no such command" in said
     assert "**One root map.** Do not write a `CLAUDE.md` into each folder." in said
     assert "Write only a command that you ran and saw work." in said
     assert "leave the line out until the user has said yes and the command ran" in said

@@ -126,8 +126,8 @@ as one that stays.
 
 The root map is the first file an agent reads in the repo. It says what the
 project is, where things are, and how to build, test, lint and install it.
-The script wants each of the four commands as a line that starts with the
-word and holds the command in a code span:
+The script reads one form only: a line that starts with the word, then a
+colon, and then at once the command in a code span:
 
 ```markdown
 ## Commands
@@ -150,9 +150,10 @@ word and holds the command in a code span:
   gap as one that waits for the user.
 - When the repo has no command of one kind (no build step, for example),
   leave that line out and report the gap as one that stays.
-- The script reads a label, not a sentence. `Build: ...` with the command in
-  a code span counts, and so does a line that is `Build` alone above a
-  fenced block. "Build output goes to `dist/`" names no command.
+- Nothing else counts. A sentence such as "Build output goes to `dist/`"
+  names no command, and a command in a fenced block below a heading does
+  not count. When a map names its commands in another way, add the four
+  lines; do not rewrite the map.
 - The file is `CLAUDE.md` at the top of the repo: the script reads
   `CLAUDE.md`, and `AGENTS.md` only when there is no `CLAUDE.md`. When the
   repo has a map already, add to it; do not write a second one.
@@ -219,8 +220,8 @@ Run the script again when the work is done, and after each merge.
 - each check, with its state before and after;
 - each pull request that you opened, with its tier and who merges it;
 - each gap that stays, and why: it waits for the user (the first workflow, a
-  verify skill, the paths of `REVIEW.md`, the integration branch), or the
-  repo has no such command;
+  verify skill, the paths of `REVIEW.md`, the integration branch, an install
+  command that writes outside the repo), or the repo has no such command;
 - each `unknown`, and what you found by hand.
 
 ## Limits
@@ -235,8 +236,9 @@ Run the script again when the work is done, and after each merge.
   branch, or see one that is gone. A clone of one branch never fetches
   `dev`, so the script shows a gap although GitHub has it; the command that
   makes `dev` is then refused.
-- `root-map` is `ok` when each label has a code span. The script cannot tell
-  a command from a path in that span.
+- `root-map` is `ok` when each label has a code span right after its colon.
+  The script cannot tell a command from a path in that span, and a map that
+  names its commands in another form shows a gap.
 - `verify-skill` is `ok` when the two files of a verify skill are there. The
   script does not run it.
 - `rule-table` is `ok` for a table of the right outer form. The rows are

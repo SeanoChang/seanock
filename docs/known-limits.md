@@ -1610,16 +1610,30 @@ has none.
   checks the outer form only; the rows are checked by `rules.py` of the
   `correct` skill.
 - **The root map is `CLAUDE.md`, else `AGENTS.md`,** at the top of the repo.
-  A command is named by a label: a line that starts with `build`, `test`,
+  One form names a command: a line that starts with `build`, `test`,
   `lint` or `install` (after markdown marks, with `command` or `commands`
-  allowed after it), then `:`, `|` or nothing, and a code span after it. A
-  line that is the label alone counts when a fenced block follows within
-  three lines. `## Tests`, `Testing:` and a sentence such as "Build output
-  goes to `dist/`" do not count; the first version took such sentences, and
-  the adversary showed a map of layout lines that was `ok`. The script
-  cannot tell a command from a path in the code span, and it reads a label
-  inside an HTML comment, an indented code block or the inner fence of a
-  longer fence as a label.
+  allowed after it), then `:` or the `|` of a table row, and then at once
+  a code span that holds something. Nothing else counts: not `## Tests`,
+  not `Testing:`, not a sentence, and not a fenced block below a label.
+  This is the third form of the rule. The first took any line with the word
+  and a code span, and the second took a code span right after the word and
+  a fenced block near a label; the adversary got a sentence past each. A
+  rule that guesses at free text was the class, so the rule now reads the
+  one form that the skill text gives, and a map in another form shows a
+  gap. That is the safe side: the agent adds four lines.
+- **The pattern of the rule has one way to match each part.** The first
+  text of the one-form rule did not: on a line with the start of a code
+  span and no end, the time grew with the square of the length, and the
+  map is read up to one mebibyte. An automated security review saw it; a
+  test holds a line of that size.
+- **What the one form still takes.** A line such as "Install: `uv` first"
+  has the form and counts. The script cannot tell a command from a path in
+  the code span, and it reads a label inside an HTML comment, an indented
+  code block or the inner fence of a longer fence as a label.
+- **The command that makes `dev` ends with exit 0 when GitHub has a `dev`
+  at the same commit as the default branch.** Git says "Everything
+  up-to-date", nothing moves, and an agent can report that it made the
+  branch.
 - **The map holds only commands that ran.** For an install command that
   writes outside the repo, the text says to leave the line out until the
   user has said yes and the command ran. The first version let the agent

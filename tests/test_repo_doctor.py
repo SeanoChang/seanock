@@ -292,19 +292,10 @@ def test_claude_md_comes_before_agents_md(plain):
     assert one(plain, "root-map") == ("gap", "CLAUDE.md missing: test, lint, install")
 
 
-def test_root_map_reads_table_rows_headings_and_bold_items(plain):
+def test_root_map_reads_list_items_table_rows_and_bold_labels(plain):
     write(plain / "CLAUDE.md", "| Task | Command |\n|---|---|\n| Build | `make` |\n| **Test** | `pytest` |\n\n"
-                               "## Lint `ruff`\n\n1. INSTALL: `uv sync`\n")
+                               "## Lint: `ruff`\n\n1. INSTALL: `uv sync`\n")
     assert one(plain, "root-map")[0] == "ok"
-
-
-def test_root_map_takes_a_fenced_block_within_three_lines(plain):
-    text = ("## Build\n\n```sh\nmake\n```\n"
-            "## Test\nrun the suite\n\n```\npytest\n```\n"
-            "## Lint\n~~~\nruff\n~~~\n"
-            "## Install\na\nb\nc\n```\npip install .\n```\n")
-    write(plain / "CLAUDE.md", text)
-    assert one(plain, "root-map") == ("gap", "CLAUDE.md missing: install")
 
 
 @pytest.mark.parametrize("line", ["- Build the app by hand", "- Testing: `pytest`", "- Rebuild: `make`",
@@ -314,12 +305,28 @@ def test_root_map_needs_the_word_first_and_a_command(plain, line):
     assert one(plain, "root-map") == ("gap", "CLAUDE.md missing: build")
 
 
-@pytest.mark.parametrize("line", ["- Build output goes to `dist/`; never edit it by hand.",
-                                  "- Build with `make`", "- Build the app: `make`", "- Build - `make`",
-                                  "- Build: no build step.", "- Build:", "| Build |\n\n```\nmake\n```\n"])
-def test_a_line_that_starts_with_the_word_and_is_no_label_names_no_command(plain, line):
-    """Real maps hold such lines. A map with them and with no build command must stay a gap."""
-    write(plain / "CLAUDE.md", f"{line}\n- Test: `t`\n- Lint: `l`\n- Install: `i`\n")
+NO_COMMAND = [
+    "- Build output goes to `dist/`; never edit it by hand.",
+    "- Build with `make`", "- Build the app: `make`", "- Build - `make`", "- Build: no build step.", "- Build:",
+    # a code span right after the word, with no separator: a sentence
+    "Build `dist/` output is ignored by git.", "## Build `make`", "- **Build** `make`",
+    # a separator, and then words before the span
+    "- Build: see `docs/build.md`", "| Build | the app | `make` |", "- Build: **run** `make`",
+    # a span with nothing in it
+    "- Build: ``", "- Build: ` `",
+    # a fenced block is not read for a label: not below the label, and not below the next one
+    "Build:\n```\nmake\n```", "## Build\n\n```sh\nmake\n```", "**Build**\n\n```\nmake\n```",
+    "### Build commands\n\n```\nmake\n```", "| Build |\n\n```\nmake\n```\n",
+    "- Build:\n  not set up yet\n- Docs:\n  ```sh\n  mkdocs build\n  ```",
+    "## Build\nNo build yet.\n## Docs\n```\nmkdocs\n```",
+]
+
+
+@pytest.mark.parametrize("line", NO_COMMAND)
+def test_a_line_that_is_not_label_separator_command_names_no_command(plain, line):
+    """One form counts: the label, then `:` or the bar of a table, then at once the command in a code span.
+    Real maps hold the lines above. A map with them and with no build command must stay a gap."""
+    write(plain / "CLAUDE.md", f"{line}\n\n- Test: `t`\n- Lint: `l`\n- Install: `i`\n")
     assert one(plain, "root-map") == ("gap", "CLAUDE.md missing: build")
 
 
@@ -329,18 +336,36 @@ def test_a_map_of_layout_lines_names_no_command(plain):
     assert one(plain, "root-map") == ("gap", "CLAUDE.md missing: build, test, lint, install")
 
 
-def test_a_fenced_block_counts_only_for_a_line_that_is_the_label_alone(plain):
-    write(plain / "CLAUDE.md", "Build: `make`\n\nTest: no tests yet.\nLint: none yet.\nInstall:\n```sh\npip install .\n```\n")
-    assert one(plain, "root-map") == ("gap", "CLAUDE.md missing: test, lint")
+def test_a_sentence_with_a_tool_in_a_code_span_names_no_command(plain):
+    """The map that a review got past the second version of the rule."""
+    write(plain / "CLAUDE.md", "Install `uv` first; every command below runs through it.\n"
+                               "Build `dist/` output is ignored by git.\n- Test: `uv run pytest`\n- Lint: `uv run ruff check .`\n")
+    assert one(plain, "root-map") == ("gap", "CLAUDE.md missing: build, install")
+
+
+def test_one_fenced_block_does_not_serve_the_labels_above_it(plain):
+    write(plain / "CLAUDE.md", "Build:\nTest:\nLint:\n```sh\nmake all\n```\n- Install: `make install`\n")
+    assert one(plain, "root-map") == ("gap", "CLAUDE.md missing: build, test, lint")
 
 
 @pytest.mark.parametrize("line", ["- Build: `make`", "- **Build:** `make`", "- **Build**: `make`", "* build : `make`",
-                                  "| Build | `make` |", "| **Build** | `make` |", "## Build `make`",
-                                  "- Build command: `make`", "### Build commands\n\n```\nmake\n```",
-                                  "Build:\n```\nmake\n```", "**Build**\n\n```\nmake\n```"])
+                                  "| Build | `make` |", "| **Build** | `make` |", "## Build: `make`", "+ BUILD:`make`",
+                                  "- Build command: `make`", "Build commands: `make`", "> Build: `make`",
+                                  "  - Build: `make` (add `--release` for a release)", "1. Build: `make`"])
 def test_the_label_forms_that_name_a_command(plain, line):
     write(plain / "CLAUDE.md", f"{line}\n\n- Test: `t`\n- Lint: `l`\n- Install: `i`\n")
     assert one(plain, "root-map")[0] == "ok"
+
+
+@pytest.mark.parametrize("line", ["Build: `" + "a" * 1000000, "Build: `" + " " * 1000000, "Build" + " " * 1000000,
+                                  "Build: " + "*_ " * 300000 + "x", "Build: `" + "a " * 500000, "- " * 500000 + "Build"])
+def test_a_very_long_line_with_no_end_of_the_code_span_is_read_in_linear_time(plain, line):
+    """The map is read up to one mebibyte, and a repo can put all of it on one line."""
+    import time
+    write(plain / "CLAUDE.md", f"{line}\n- Test: `t`\n- Lint: `l`\n- Install: `i`\n")
+    start = time.monotonic()
+    assert one(plain, "root-map") == ("gap", "CLAUDE.md missing: build")
+    assert time.monotonic() - start < 20
 
 
 def test_lines_inside_a_fenced_block_do_not_count(plain):
@@ -625,6 +650,73 @@ def test_a_symlink_that_stays_inside_is_followed(plain):
     write(plain / "docs" / "map.md", MAP)
     (plain / "CLAUDE.md").symlink_to("docs/map.md")
     assert one(plain, "root-map")[0] == "ok"
+
+
+# ── the label rule against a plain reading ───────────────────────────────────
+
+def plain_label(line):
+    """The word that one line names a command for, or None. Read left to right, with no pattern:
+    marks, the word, "command(s)", the separator, and then at once a code span that holds something."""
+    space = " \t\n\r\f\v"
+    at, end = 0, len(line)
+    while at < end:
+        if line[at] in space + ">*+|#_-":
+            at += 1
+            continue
+        digits = at
+        while digits < end and line[digits] in "0123456789":
+            digits += 1
+        if digits > at and digits + 1 < end and line[digits] in ".)" and line[digits + 1] in space:
+            at = digits + 1
+            continue
+        break
+    word = next((w for w in ("build", "test", "lint", "install") if line[at:at + len(w)].lower() == w), None)
+    if word is None:
+        return None
+    at += len(word)
+    gap = at
+    while gap < end and line[gap] in space:
+        gap += 1
+    if gap > at and line[gap:gap + 7].lower() == "command":
+        at = gap + 7
+        if line[at:at + 1].lower() == "s":
+            at += 1
+    while at < end and line[at] in space + "*_":
+        at += 1
+    if line[at:at + 1] not in (":", "|"):
+        return None
+    at += 1
+    while at < end and line[at] in space + "*_":
+        at += 1
+    if line[at:at + 1] != "`":
+        return None
+    close = line.find("`", at + 1)
+    if close == -1 or not line[at + 1:close].strip(space):
+        return None
+    return word
+
+
+def test_the_label_rule_agrees_with_a_plain_reading_on_random_lines(module):
+    import random
+    rng = random.Random(23)
+    pieces = ["- ", "* ", "| ", "> ", "## ", "1. ", "2) ", "**", "_", "Build", "test", "LINT", "Install", "s", "pre",
+              " command", " commands", " Command", ":", "|", " ", "\t", "`make`", "`", "``", "` `", "see ", "output", "-"]
+    # half of the lines are free; the other half follow the form, each part right or a little wrong
+    parts = [["", "- ", "* ", "| ", "> ", "## ", "1. ", "  - ", "x "], ["", "**", "_"],
+             ["Build", "test", "LINT", "Install", "Builds", "Rebuild"], ["", "", " command", " commands", "command", " commanded"],
+             ["", "**", " "], [":", ":", "|", "", " -", ": see"], ["", " ", "** ", "\t"],
+             ["`make`", "`make`", "`a b`", "``", "` `", "`make", "make", "see `make`"], ["", " |", " (or `x`)", " and more"]]
+    named = 0
+    for count in range(40000):
+        if count % 2:
+            line = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 9)))
+        else:
+            line = "".join(rng.choice(options) for options in parts)
+        expected = plain_label(line)
+        got = module.named_commands(line)
+        assert got == ([expected] if expected else []), (line, got, expected)
+        named += expected is not None
+    assert named > 1000, named   # the lines do reach the form that counts, and most do not
 
 
 # ── the command matcher against a brute-force reference ──────────────────────
