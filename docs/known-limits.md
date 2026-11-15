@@ -1127,6 +1127,44 @@ changes it.
   every call, no change passes until that is fixed. The same holds for a repo
   that the guard cannot read but git can: one that works through `GIT_DIR`,
   or one whose `core.worktree` points elsewhere.
+- **The top of the work tree is checked, not taken from git.** git takes it
+  from a setting when there is one (`core.worktree`), and that setting can
+  name any folder. The guard ran every later call there. When the folder
+  was another repo, the guard read that repo: `floor-guard: clean` for a
+  tree that had lost a test. An adversary review of the comment check
+  found it on 2026-11-15, and it was there since the first version; the
+  sentence above said "did not run" for such a repo, and that was true only
+  when the other folder was no repo. Now the guard gives a result only
+  when three answers name one folder, by device and inode: the top of the
+  work tree that git names where the caller pointed (`--repo`); the first
+  folder at or above `--repo` that holds a `.git` entry, which the guard
+  finds itself; and the top that git names when it is asked in that
+  folder, where every call then runs. Anything else is exit 2. So the
+  guard gives a result only where it gave one before, and for the same
+  folder; it has more reasons for exit 2 and no new result.
+- **That rule is the third form of the fix, and the class was "the guard's
+  idea of the tree can differ from git's".** The first form asked git
+  where the caller pointed and ran the calls in the folder with the `.git`
+  entry. The adversary planted a git dir inside the tree that names the
+  tree as its work tree; the tree's own setting, which named another repo,
+  was never looked at. The second form asked git only in the folder that
+  the guard's walk found. The walk took "could not look" for "not there":
+  for a tree whose top folder the guard may not enter (one `chmod`), it
+  went on to the repo above and said `clean`. Now a folder that cannot be
+  looked into is an error, git must also take the `.git` entry of the
+  folder (it passes over one that is no git dir and takes a repo further
+  up), and the three answers must agree.
+- **A submodule checkout has a work tree setting too** (git writes it), and
+  it names the submodule's own folder, so it is read as before. A repo
+  with its git dir kept elsewhere and a linked work tree have no such
+  setting.
+- **A folder whose `.git` entry is broken is an error** (an empty folder, a
+  link to nowhere), also when the repo above says that this folder is its
+  work tree. Before this change it was read as the repo above it.
+- **Who can write the repo's git settings can do more than that.** The same
+  person can move the base ref to the head commit, and the guard then
+  compares the change with itself. The guard reads a tree that an agent
+  changed; it is no protection against someone who edits `.git` by hand.
 - **The verifier skips the guard for a tree that is not under git, and only
   when the brief says so** and its own `git -C <tree> rev-parse` fails. The
   lead that writes the brief is trusted with that statement, as it is with
@@ -1268,6 +1306,9 @@ changes it.
   hand on a case-sensitive APFS image (2026-11-13): all 183 tests passed
   there, and the test failed when the inode check was removed. On a disk that
   ignores letter case the inode check cannot change a result.
+- The comparison of two spellings of one folder on a disk that keeps
+  letter case apart: the test for another letter case has nothing to run
+  there, and it then passes with no assertion. The disk of CI ignores case.
 - A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`, and a real
   git older than 2.43 (the test uses a stand-in that rejects the option).
 - Refs kept in the reftable format, and a broken entry in `packed-refs`. The
