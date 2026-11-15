@@ -1,4 +1,4 @@
-# adapts: config/claude/agents/verifier.md@c9325a3dfd
+# adapts: config/claude/agents/verifier.md@f641e6fa5d
 # The Codex form of the verifier. Codex offers it as `agent_type = "verifier"`,
 # and Claude runs it with `codex-run --role verifier` for a second opinion from
 # another model family. When the Claude file changes, tests/test_codex_agents.py

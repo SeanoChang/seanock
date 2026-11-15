@@ -19,12 +19,14 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 CHECK = Path(os.environ.get("COMMENT_CHECK_UNDER_TEST")
              or Path(__file__).resolve().parent.parent / "comment-check.py")
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com",
        "-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false",
        "-c", "core.hooksPath=/dev/null", "-c", "advice.detachedHead=false",
-       "-c", "core.autocrlf=false"]
+       "-c", "core.autocrlf=false", "-c", "maintenance.auto=false", "-c", "gc.auto=0"]
 
 
 def git(repo, *args, check=True):
@@ -464,7 +466,7 @@ def test_no_such_folder(tmp_path):
 
 def test_not_a_repo(tmp_path):
     (tmp_path / "plain").mkdir()
-    assert_error(run("--repo", str(tmp_path / "plain"), "--base", "main", cwd=tmp_path), "not a git")
+    assert_error(run("--repo", str(tmp_path / "plain"), "--base", "main", cwd=tmp_path), "error not a git repo: ")
 
 
 def test_no_such_base(tmp_path):
@@ -600,6 +602,197 @@ def test_repo_config_programs_never_run_and_nothing_is_written(tmp_path):
     # The trap is live: porcelain commands do run the configured programs.
     subprocess.run(["git", "-C", str(repo), "diff", "main", "work"], capture_output=True, timeout=60)
     assert marker.exists()
+
+
+# ---------------------------------------------------------------- settings that change what git prints
+
+GEO_HIT = ["stale-comment src/geo.py:4 # Return the area of a circle of radius r."]
+
+# Two changes near an unchanged comment: with context between hunks, git joins them into one hunk.
+NEAR = "def f():\n    a = 1\n    # Timeout in seconds.\n    t = 30\n"
+NEAR_NEW = "def f():\n    a = 2\n    # Timeout in seconds.\n    t = 30000\n"
+NEAR_HIT = ["stale-comment a.py:3 # Timeout in seconds."]
+
+
+def geo_repo(tmp_path):
+    repo = make(tmp_path, {"src/geo.py": FUNC})
+    change(repo, {"src/geo.py": FUNC.replace("math.pi * r * r", "2 * math.pi * r")})
+    return repo
+
+
+def test_context_between_hunks_set_in_the_repo_hides_no_hit(tmp_path):
+    repo = make(tmp_path, {"a.py": NEAR})
+    change(repo, {"a.py": NEAR_NEW})
+    assert_hits(check(repo), NEAR_HIT)
+    git(repo, "config", "diff.interHunkContext", "100")
+    assert_hits(check(repo), NEAR_HIT)
+
+
+def test_context_between_hunks_set_by_the_user_hides_no_hit(tmp_path):
+    repo = make(tmp_path, {"a.py": NEAR})
+    change(repo, {"a.py": NEAR_NEW})
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gitconfig").write_text("[diff]\n\tinterHunkContext = 3\n\tcontext = 9\n")
+    res = run("--repo", str(repo), "--base", "main", cwd=repo,
+              extra_env={"HOME": str(home), "XDG_CONFIG_HOME": str(home / "none")})
+    assert_hits(res, NEAR_HIT)
+
+
+def test_a_setting_that_makes_git_read_text_as_binary_is_an_error_not_clean(tmp_path):
+    repo = geo_repo(tmp_path)
+    git(repo, "config", "core.bigFileThreshold", "1")
+    assert_error(check(repo), "git diff")
+
+
+def test_an_attribute_that_makes_git_read_text_as_binary_is_an_error_not_clean(tmp_path):
+    repo = geo_repo(tmp_path)
+    (repo / ".git/info").mkdir(exist_ok=True)
+    (repo / ".git/info/attributes").write_text("* -diff\n")
+    assert_error(check(repo), "git diff")
+
+
+def test_a_work_tree_setting_cannot_point_the_check_at_another_repo(tmp_path):
+    """core.worktree names a folder that holds a clean repo of its own. The check reads the repo at --repo."""
+    repo = geo_repo(tmp_path)
+    decoy = repo / ".git" / "decoy"
+    decoy.mkdir()
+    git(decoy, "init", "-q")
+    put(decoy, "src/geo.py", FUNC)
+    commit_all(decoy, "decoy")
+    git(decoy, "checkout", "-q", "-b", "work")
+    git(repo, "config", "core.worktree", "decoy")
+    assert_hits(run("--repo", str(repo), "--base", "main", cwd=tmp_path), GEO_HIT)
+
+
+def test_a_bare_repo_is_read(tmp_path):
+    repo = geo_repo(tmp_path)
+    bare = tmp_path / "bare.git"
+    subprocess.run(GIT + ["clone", "-q", "--bare", str(repo), str(bare)], check=True, capture_output=True, timeout=60)
+    git(bare, "symbolic-ref", "HEAD", "refs/heads/work")
+    assert_hits(run("--repo", str(bare), "--base", "main", cwd=tmp_path), GEO_HIT)
+
+
+def wrapped_git(tmp_path, body):
+    """A `git` on PATH that hands every call to the real git, and changes the answer of `git diff`
+    with `body`: Python lines that see `args` (they may change it) and, after the call, `out`."""
+    import shutil
+    real = shutil.which("git")
+    fake = tmp_path / "wrap"
+    fake.mkdir()
+    script = fake / "git"
+    script.write_text(f"#!{sys.executable}\n"
+                      "import subprocess, sys\n"
+                      "args = sys.argv[1:]\n"
+                      "is_diff = 'diff' in args\n"
+                      f"REAL = {real!r}\n"
+                      "PRE = True\n" + (body if "PRE" in body else "") +
+                      "\ndone = subprocess.run([REAL, *args], stdin=sys.stdin.buffer, capture_output=True)\n"
+                      "out = done.stdout\n"
+                      "PRE = False\n" + body +
+                      "\nsys.stdout.buffer.write(out)\nsys.stderr.buffer.write(done.stderr)\nsys.exit(done.returncode)\n")
+    script.chmod(0o755)
+    return f"{fake}:{os.environ['PATH']}"
+
+
+LYING_DIFFS = {
+    # what a setting of a later git could do: the flag that pins the context is overruled
+    "context lines between two hunks": ("if PRE and is_diff:\n"
+                                        "    args = ['--inter-hunk-context=5' if a.startswith('--inter-hunk-context') else a for a in args]\n"),
+    "context lines around each hunk": "if PRE and is_diff:\n    args = ['--unified=1' if a.startswith('--unified') else a for a in args]\n",
+    "an added line is left out": "if not PRE and is_diff:\n    out = out.replace(b'+    t = 30000\\n', b'', 1)\n",
+    "a removed line is another line": "if not PRE and is_diff:\n    out = out.replace(b'-    a = 1\\n', b'-    a = 7\\n', 1)\n",
+    "a hunk is left out": "if not PRE and is_diff:\n    out = out[:out.rindex(b'@@ -4')]\n",
+    "the first hunk is left out": "if not PRE and is_diff:\n    out = out[:out.index(b'@@ -2')] + out[out.rindex(b'@@ -4'):]\n",
+    "the last line has no line end": "if not PRE and is_diff:\n    out = out.rstrip(b'\\n')\n",
+    "a hunk sits one line lower": "if not PRE and is_diff:\n    out = out.replace(b'@@ -4 +4 @@', b'@@ -5 +5 @@', 1)\n",
+    "no diff at all": "if not PRE and is_diff:\n    out = b''\n",
+    "the files are called binary": "if not PRE and is_diff:\n    out = b'Binary files a/x and b/x differ\\n'\n",
+    "colour codes": "if not PRE and is_diff:\n    out = out.replace(b'@@ -2', b'\\x1b[36m@@ -2', 1)\n",
+    "a line after the hunk": "if not PRE and is_diff:\n    out = out + b' context\\n'\n",
+    "a line before the first hunk": "if not PRE and is_diff:\n    out = out.replace(b'@@ -2', b'warning: x\\n@@ -2', 1)\n",
+    "a hunk that names more lines than the file has": "if not PRE and is_diff:\n    out = out.replace(b'@@ -4 +4 @@', b'@@ -4 +4,3 @@', 1)\n",
+    "a hunk two times": "if not PRE and is_diff:\n    out = out + out[out.rindex(b'@@ -4'):]\n",
+    "a mark with no line end after the last hunk": "if not PRE and is_diff:\n    out = out + b'\\\\ No newline at end of file'\n",
+}
+
+
+@pytest.mark.parametrize("name", sorted(LYING_DIFFS))
+def test_a_diff_that_is_not_the_plain_diff_of_the_two_files_is_an_error(tmp_path, name):
+    """The check takes git's diff only after it has held it against the two files."""
+    repo = make(tmp_path, {"a.py": NEAR})
+    change(repo, {"a.py": NEAR_NEW})
+    res = run("--repo", str(repo), "--base", "main", cwd=repo, path=wrapped_git(tmp_path, LYING_DIFFS[name]))
+    assert_error(res, "git diff")
+
+
+def test_no_diff_for_two_versions_that_differ_only_in_the_last_line_end_is_an_error(tmp_path):
+    """git gives a hunk for that change. A diff with no hunk for two different files is no diff."""
+    repo = make(tmp_path, {"a.py": "# Note.\nx = 1"})
+    change(repo, {"a.py": "# Note.\nx = 1\n"})
+    assert check(repo).rc == 1
+    res = run("--repo", str(repo), "--base", "main", cwd=repo, path=wrapped_git(tmp_path, LYING_DIFFS["no diff at all"]))
+    assert_error(res, "git diff")
+
+
+def test_the_wrapped_git_changes_nothing_when_it_changes_nothing(tmp_path):
+    repo = make(tmp_path, {"a.py": NEAR})
+    change(repo, {"a.py": NEAR_NEW})
+    res = run("--repo", str(repo), "--base", "main", cwd=repo, path=wrapped_git(tmp_path, "pass\n"))
+    assert_hits(res, NEAR_HIT)
+
+
+# ---------------------------------------------------------------- one time limit for the whole run
+
+def test_the_whole_run_has_a_time_limit(tmp_path):
+    import time
+    repo = make(tmp_path, {"a.py": "x\n"})
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "git").write_text("#!/bin/sh\nsleep 20\n")
+    (fake / "git").chmod(0o755)
+    start = time.monotonic()
+    res = run("--repo", str(repo), "--base", "main", "--timeout", "1", cwd=repo, path=f"{fake}:/usr/bin:/bin")
+    assert_error(res, "did not finish in 1 s")
+    assert time.monotonic() - start < 10
+
+
+def test_the_time_limit_also_ends_the_work_of_the_check_itself(tmp_path):
+    """No git call is slow here: the script's own loop is. The limit is one for the whole run."""
+    import importlib.util
+    import time
+    spec = importlib.util.spec_from_file_location("comment_check_limit", CHECK)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def spin(repo, base):
+        while True:
+            sum(range(1000))
+    module.stale_comments = spin
+    start = time.monotonic()
+    code = module.main(["--base", "main", "--repo", str(tmp_path), "--timeout", "1"])
+    assert code == 2 and time.monotonic() - start < 10
+
+
+def test_a_file_with_many_blocks_and_many_deletions_is_read_in_linear_time(tmp_path):
+    import time
+    units = 30000
+    old = "".join(f"# a{i}\nva{i} = 1\n# b{i}\nvb{i} = 1\nwb{i} = 1\n" for i in range(units))
+    new = "".join(f"# a{i}\nva{i} = 1\n# b{i}\nvb{i} = 1\n" for i in range(units))
+    repo = make(tmp_path, {"big.py": old})
+    change(repo, {"big.py": new})
+    start = time.monotonic()
+    res = check(repo)
+    assert time.monotonic() - start < 30, "the scan of the deletions is not linear"
+    assert_clean(res)
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "x"])
+def test_a_time_limit_that_is_no_positive_number_is_refused(tmp_path, value):
+    repo = make(tmp_path, {"a.py": "x\n"})
+    assert_clean(check(repo))
+    res = run("--repo", str(repo), "--base", "main", "--timeout", value, cwd=repo)
+    assert res.rc == 2 and "comment-check: clean" not in res.out, (res.out, res.err)
 
 
 # ---------------------------------------------------------------- reference comparison

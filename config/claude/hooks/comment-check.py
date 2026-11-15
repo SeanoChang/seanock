@@ -18,9 +18,9 @@ What a hit is. In the new version of a changed file:
                   .jsx .ts .tsx .go .rs .c .h .cc .cpp .hpp .java .kt .swift.
                   These lines are not comments for this check (they end a
                   block and count as code): a `#!` first line, a coding line
-                  (PEP 263) on line 1 or 2, and a line that is only a lint or
-                  tool marker (noqa, type: ignore, pragma, an eslint disable,
-                  pylint, @ts- and the like; see MARKER_WORDS).
+                  (PEP 263) on line 1 or 2, and a comment that starts with a
+                  lint or tool marker (noqa, type: ignore, pragma, an eslint
+                  disable, pylint, @ts- and the like; see MARKER_WORDS).
   code under it   the lines that follow the block, up to and not including the
                   first blank line, the next comment block, or a line indented
                   less than the block (the end of the scope); at most 20 lines.
@@ -52,12 +52,25 @@ read from the work tree), no fsmonitor (core.fsmonitor is switched off), no
 pager (--no-pager), and it never fetches (GIT_NO_LAZY_FETCH): in a partial
 clone a missing object ends the run with exit 2. GIT_* variables from the
 caller's environment are dropped, so a hook's GIT_DIR cannot point it at
-another repo. It writes nothing (GIT_OPTIONAL_LOCKS=0). An attribute that
-marks every file `-diff` makes git read them as binary, which hides hits.
-Every git call has a timeout. Anything git
-prints on stderr ends the run with exit 2.
+another repo, and every call runs in the folder that --repo names, so a
+core.worktree setting cannot either. It writes nothing
+(GIT_OPTIONAL_LOCKS=0). Anything git prints on stderr ends the run with
+exit 2.
 
-Usage: comment-check.py --base <ref> [--repo <dir>] [--git-timeout <seconds>]
+A setting cannot change what the check reads from `git diff`. The check takes
+a diff only after it has held it against the two versions of the file: each
+hunk holds its removed lines and then its added lines, with no line of
+context, and the lines outside the hunks are the same in both versions. A
+diff of another shape (context that joins two hunks, "Binary files", colour)
+ends the run with exit 2. So an attribute or a setting that makes git read
+text as binary gives an error, never a false "clean".
+
+Time: every git call has a timeout, and the whole run has one limit
+(--timeout), which also ends the check's own work. At the limit the run ends
+with exit 2.
+
+Usage: comment-check.py --base <ref> [--repo <dir>] [--timeout <seconds>]
+                        [--git-timeout <seconds>]
 Output: one line per hit, `stale-comment <path>:<line> <first 80 characters of
 the comment>`, sorted by path and line, then the result line:
   exit 0  comment-check: clean
@@ -69,8 +82,10 @@ line of its own.
 Tests: PYTHONDONTWRITEBYTECODE=1 python3 -m pytest config/claude/hooks/tests/test_comment_check.py -q -p no:cacheprovider
 """
 import argparse
+import bisect
 import os
 import re
+import signal
 import subprocess
 import sys
 from typing import NamedTuple
@@ -107,6 +122,9 @@ class Hit(NamedTuple):
 
 
 GIT_TIMEOUT = 120  # seconds for one git call; --git-timeout sets it
+RUN_TIMEOUT = 100  # seconds for the whole run, the check's own work too; --timeout sets it
+NO_NEWLINE = b"\\ No newline at end of file"
+DIFF_HEAD = (b"diff --git ", b"index ", b"--- ", b"+++ ")
 
 
 def git(root, *args, stdin=None):
@@ -197,26 +215,63 @@ def comment_token(path, data):
     return None
 
 
-def changes(root, old_oid, new_oid):
-    """Return (added new line numbers, deletion gaps) of the diff of two blobs,
-    or None when git reads them as binary. A gap g means lines were deleted
-    between new lines g and g + 1."""
+def git_lines(data):
+    """The lines of a blob as git counts them: split on LF, a CR stays in its line."""
+    lines = data.split(b"\n")
+    if lines[-1] == b"":
+        lines.pop()
+    return lines
+
+
+def changes(root, old_oid, new_oid, old, new):
+    """Return (added new line numbers, deletion gaps) of the diff of two blobs.
+    A gap g means lines were deleted between new lines g and g + 1.
+
+    git's diff is used only after it is held against the two blobs, `old` and
+    `new`: each hunk holds its removed lines and then its added lines, with
+    no line of context, and the lines outside the hunks are the same in both.
+    So a setting that changes what `git diff` prints cannot mark an unchanged
+    comment as changed, or hide a change: it ends the run."""
     out = git(root, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames",
-              "--unified=0", "--diff-algorithm=myers", "--indent-heuristic",
-              old_oid, new_oid)
+              "--unified=0", "--inter-hunk-context=0", "--diff-algorithm=myers",
+              "--indent-heuristic", old_oid, new_oid)
+    wrong = CheckError("git diff gave a diff that is not the plain diff of the two versions "
+                       "(a setting or an attribute of the repo changes it)")
+    old_lines, new_lines = git_lines(old), git_lines(new)
+    rows = out.split(b"\n")
+    if rows.pop() != b"":
+        raise wrong
     added, gaps = set(), set()
-    for line in out.split(b"\n"):
-        if line.startswith(b"Binary files "):
-            return None
-        m = HUNK_RE.match(line)
+    old_at = new_at = at = 0  # lines of each blob that are accounted for, and the row that is read
+    while at < len(rows) and rows[at].startswith(DIFF_HEAD):
+        at += 1
+    hunks = 0
+    while at < len(rows):
+        m = HUNK_RE.match(rows[at])
         if not m:
-            continue
+            raise wrong
+        at += 1
+        hunks += 1
         old_count = 1 if m.group(2) is None else int(m.group(2))
-        start = int(m.group(3))
         new_count = 1 if m.group(4) is None else int(m.group(4))
-        added.update(range(start, start + new_count))
+        # with no line on a side, git names the line before the place
+        old_from = int(m.group(1)) - (1 if old_count else 0)
+        new_from = int(m.group(3)) - (1 if new_count else 0)
+        if old_from < old_at or new_from < new_at or old_lines[old_at:old_from] != new_lines[new_at:new_from]:
+            raise wrong
+        for sign, lines, first, count in ((b"-", old_lines, old_from, old_count), (b"+", new_lines, new_from, new_count)):
+            want = [sign + line for line in lines[first:first + count]]
+            if len(want) != count or rows[at:at + count] != want:
+                raise wrong
+            at += count
+            if at < len(rows) and rows[at] == NO_NEWLINE:
+                at += 1
+        old_at, new_at = old_from + old_count, new_from + new_count
+        added.update(range(new_from + 1, new_at + 1))
         if old_count:
-            gaps.add(start if new_count == 0 else start - 1)
+            gaps.add(new_from)
+    if not hunks or old_lines[old_at:] != new_lines[new_at:]:
+        raise wrong
     return added, gaps
 
 
@@ -252,7 +307,7 @@ def indent(line):
 
 def file_hits(path, data, token, added, gaps):
     """Return the hits in one new file, given the lines the diff added and
-    the gaps where it deleted lines."""
+    the sorted gaps where it deleted lines."""
     lines = split_lines(data)
     kinds = classify(lines, token)
     hits = []
@@ -274,7 +329,8 @@ def file_hits(path, data, token, added, gaps):
         if end == last or any(k in added for k in range(first, last + 1)):
             continue
         code_changed = any(k in added for k in range(last + 1, end + 1))
-        cut = any(last <= g < end for g in gaps)
+        g = bisect.bisect_left(gaps, last)
+        cut = g < len(gaps) and gaps[g] < end
         if code_changed or cut:
             hits.append(Hit(path, first, lines[start].lstrip(WS)))
     return hits
@@ -285,11 +341,13 @@ def stale_comments(repo, base_ref):
     path and line. Raise CheckError when the answer would not be whole."""
     if not os.path.isdir(repo):
         raise CheckError(f"no such folder: {repo}")
+    # Every call runs in the folder that the caller named. The top of the work
+    # tree is not asked for: a core.worktree setting names any folder as that.
+    root = repo
     try:
-        root = git(repo, "rev-parse", "--show-toplevel")
+        git(root, "rev-parse", "--git-dir")
     except CheckError as e:
-        raise CheckError(f"not a git work tree: {repo} ({e})")
-    root = os.fsdecode(root[:-1] if root.endswith(b"\n") else root)
+        raise CheckError(f"not a git repo: {repo} ({e})")
     if base_ref.startswith("-"):
         raise CheckError(f"bad base ref: {base_ref}")
     try:
@@ -313,10 +371,8 @@ def stale_comments(repo, base_ref):
             token = comment_token(path, new)
             if token is None or b"\0" in old or b"\0" in new:
                 continue
-            diff = changes(root, old_oid, new_oid)
-            if diff is None:
-                continue
-            hits.update(file_hits(path, new, token, *diff))
+            added, gaps = changes(root, old_oid, new_oid, old, new)
+            hits.update(file_hits(path, new, token, added, sorted(gaps)))
     return sorted(hits)
 
 
@@ -344,22 +400,35 @@ def text(raw):
     return raw.decode("utf-8", "surrogateescape")
 
 
+def on_alarm(signum, frame):
+    raise CheckError(f"the check did not finish in {RUN_TIMEOUT} s")
+
+
 def main(argv=None):
-    global GIT_TIMEOUT
+    global GIT_TIMEOUT, RUN_TIMEOUT
     parser = argparse.ArgumentParser(
         description="List comments whose code changed while the comment did not.")
     parser.add_argument("--base", required=True, help="ref to compare against")
     parser.add_argument("--repo", default=".", help="repo directory (default: .)")
     parser.add_argument("--git-timeout", type=int, default=GIT_TIMEOUT, metavar="SECONDS",
                         help=f"give up on one git call after this long (default: {GIT_TIMEOUT})")
+    parser.add_argument("--timeout", type=int, default=RUN_TIMEOUT, metavar="SECONDS",
+                        help=f"give up on the whole run after this long (default: {RUN_TIMEOUT})")
     args = parser.parse_args(argv)
     if args.git_timeout <= 0:
         parser.error("--git-timeout must be above 0")
-    GIT_TIMEOUT = args.git_timeout
+    if args.timeout <= 0:
+        parser.error("--timeout must be above 0")
+    GIT_TIMEOUT, RUN_TIMEOUT = args.git_timeout, args.timeout
     lines = []
     code = 0
     try:
-        hits = stale_comments(args.repo, args.base)
+        signal.signal(signal.SIGALRM, on_alarm)
+        signal.setitimer(signal.ITIMER_REAL, RUN_TIMEOUT)
+        try:
+            hits = stale_comments(args.repo, args.base)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
         for path, n, comment in hits:
             lines.append(f"stale-comment {text(path)}:{n} {text(comment)[:TEXT_MAX]}")
         lines.append(f"comment-check: summary hits={len(hits)}" if hits else "comment-check: clean")

@@ -2029,8 +2029,36 @@ has none.
   `type: ignore`, `pragma`, `eslint-disable`, `pylint:`, `@ts-`, `nolint`,
   `shellcheck`, `fmt:`, `isort:`, `mypy:`, `prettier-ignore`, `nosec`,
   `nosemgrep`).
-- **A repo attribute that marks every file `-diff` hides all hits.** The
-  script does not override attributes.
+- **git's diff is taken only after it is held against the two versions of
+  the file.** Each hunk must hold its removed lines and then its added
+  lines, with no line of context, and the lines outside the hunks must be
+  the same in both versions. A diff of another shape ends the run with exit
+  2. An adversary review showed three settings that gave a false `clean`
+  in the first version: `diff.interHunkContext` (also in the user's own
+  git settings) joined two hunks over an unchanged comment,
+  `core.bigFileThreshold` made git call a text file binary, and
+  `core.worktree` sent every call to another repo. The class was "a setting
+  changes what the script reads", so the script no longer trusts the text
+  of `git diff`: it checks it. The context is also set on the command line,
+  so the user's setting does no harm.
+- **"Changed" is what git's diff calls changed.** The script checks that
+  the diff is a true diff of the two versions; it does not check that it is
+  the smallest one. When git lists a comment line as removed and added again
+  with the same text (it can on a very large change, where it stops looking
+  for the best match), the comment counts as changed and gives no hit.
+- **An attribute or a setting that makes git read text as binary gives exit
+  2,** not a hit and not `clean`. A repo with `* -diff` in its attributes
+  cannot be checked.
+- **Every git call runs in the folder that `--repo` names.** The script
+  does not ask git for the top of the work tree. A bare repo is read too.
+- **The whole run has one time limit,** 100 seconds by default
+  (`--timeout`), for the git calls and for the script's own work. At the
+  limit the run ends with exit 2. The first version had a limit for each
+  git call only, and one file with many comment blocks and many deletions
+  made the script's own loop run for minutes; that loop is linear now.
+- **A comment that starts with a marker word is not a comment for this
+  check,** also when more text follows: `# fmt: the output format` gives no
+  hit.
 - **Only the Claude verifier runs it.** The Codex verifier has no step for
   it, as it has none for the floor guard.
 
@@ -2042,15 +2070,30 @@ has none.
 - **Nine mutations of the builder's run changed no output,** so no test can
   fail on them: five are equal code, and four are protections that these
   commands do not reach in a test (`--no-pager`, `--no-textconv` on the raw
-  diff, `GIT_OPTIONAL_LOCKS`, the "Binary files" line).
+  diff, `GIT_OPTIONAL_LOCKS`, the "Binary files" line of the first version).
+  One mutation of the fix round is equal code too: the gap of a hunk that
+  also adds lines never decides a hit, because its first added line already
+  marks the code as changed.
+- **A change with very many files can reach the time limit.** There is one
+  `git diff` call for each changed file, about 80 ms each on the machine of
+  the review: 2,000 changed files took 166 seconds there. The run then ends
+  with exit 2, which the verifier reads as "did not run".
+- **The text of a git error is in the error line.** A value in the repo's
+  settings can so reach the line `comment-check: error ...`. Step 9 of the
+  verifier calls every line of the check data, the text of an error too.
+- **"Pass means the checks ran"** in the Return part of the verifier's text
+  does not name the comment check as an exception. Step 9 says that a
+  comment check that did not run changes no verdict, and that rule is the
+  specific one.
 
 ### Not tested
 
-- Very large diffs: there is one git call for each changed file, and the
-  speed was not measured.
+- A git older than 2.45, which does not know `GIT_NO_LAZY_FETCH`: in a
+  partial clone it could fetch through a program that the repo's settings
+  name.
+- The time limit on a system with no alarm signal (Windows).
 - Repeated lines such as `}`: the random test uses files with no duplicate
   lines, so it does not check how git lines them up.
 - Git versions other than the local one, and Linux except through CI.
 - No live verifier followed step 9 yet. The first reviews after this change
   are that test.
-
