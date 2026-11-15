@@ -439,20 +439,39 @@ def holder_of_git(folder):
     return here
 
 
-def run(repo, base_ref):
+def answer(root, *args):
+    """One path that git prints for a rev-parse question asked in `root`."""
+    out = git(root, "rev-parse", *args)
+    return os.fsdecode(out[:-1] if out.endswith(b"\n") else out)
+
+
+def tree_of(repo):
+    """The folder in which every git call runs: the top of the tree that holds `repo`.
+
+    It is the first folder at or above `repo` that holds a `.git` entry. git
+    is asked in that folder, where the later calls run, and must agree on two
+    points. The `.git` entry is a git dir, so git takes it: git passes over
+    an entry that is none and takes a repo further up. And the top of its
+    work tree is this folder, by device and inode: a core.worktree setting
+    can name any folder, also another repo.
+    """
+    folder = repo or "."
+    root = holder_of_git(folder) if os.path.isdir(folder) else None
+    if root is None:
+        raise GuardError(f"not a git work tree: {repo}")
     try:
-        root = git(repo, "rev-parse", "--show-toplevel")
+        answer(root, "--resolve-git-dir", ".git")
+        top = answer(root, "--show-toplevel")
     except GuardError as e:
         raise GuardError(f"not a git work tree: {repo} ({e})")
-    root = os.fsdecode(root[:-1] if root.endswith(b"\n") else root)
-    # git takes the top of the work tree from a setting when there is one
-    # (core.worktree), and that setting can name any folder, also another
-    # repo. Every later call runs in the top, so the top must be the folder
-    # that holds the `.git` of the tree that the caller named.
-    holder = holder_of_git(repo)
-    if holder is None or not os.path.samefile(root, holder):   # one folder, by device and inode
+    if not os.path.samefile(top, root):
         raise GuardError(f"git names another folder as its work tree than the one that holds {repo} "
                          "(a core.worktree setting?)")
+    return root
+
+
+def run(repo, base_ref):
+    root = tree_of(repo)
     if base_ref is not None:
         if base_ref.startswith("-"):
             raise GuardError(f"bad base ref: {base_ref}")

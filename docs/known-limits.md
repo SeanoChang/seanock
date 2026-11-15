@@ -1134,11 +1134,28 @@ changes it.
   tree that had lost a test. An adversary review of the comment check
   found it on 2026-11-15, and it was there since the first version; the
   sentence above said "did not run" for such a repo, and that was true only
-  when the other folder was no repo. Now the top that git names must be the
-  first folder at or above `--repo` that holds a `.git` entry (the same
-  folder, by device and inode). Anything else is exit 2. A submodule
-  checkout and a repo with its git dir kept elsewhere have the setting too,
-  and it names their own folder, so they are read as before.
+  when the other folder was no repo. Now every call runs in one folder:
+  the first folder at or above `--repo` that holds a `.git` entry. git is
+  asked in that folder and must agree on two points: the `.git` entry is a
+  git dir (so git takes it, and no repo further up), and the top of its
+  work tree is this folder, by device and inode. Anything else is exit 2.
+  The first fix asked git where the caller pointed and then ran the calls
+  in the folder that git named. The adversary planted a git dir inside the
+  tree that names the tree as its work tree; the check passed, and the
+  tree's own setting, which named another repo, was never looked at. So
+  the guard no longer asks git at one place and works at another. A
+  submodule checkout has the setting too (git writes it), and it names the
+  submodule's own folder, so it is read as before. A repo with its git dir
+  kept elsewhere and a linked work tree have no such setting.
+- **A folder whose `.git` entry is broken is an error.** git passes over a
+  `.git` that is no git dir (an empty folder, a link to nowhere) and takes
+  the repo above. The guard takes the entry as the sign of a tree of its
+  own, so such a folder ends with exit 2, also when the repo above says
+  that this folder is its work tree. Before this change it was read as the
+  repo above it.
+- **A folder inside the `.git` folder is read as the tree that holds it.**
+  Before this change it was an error. A `--repo` that is not there, or
+  that is a file, is an error as before.
 - **Who can write the repo's git settings can do more than that.** The same
   person can move the base ref to the head commit, and the guard then
   compares the change with itself. The guard reads a tree that an agent
@@ -1284,6 +1301,9 @@ changes it.
   hand on a case-sensitive APFS image (2026-11-13): all 183 tests passed
   there, and the test failed when the inode check was removed. On a disk that
   ignores letter case the inode check cannot change a result.
+- The comparison of two spellings of one folder on a disk that keeps
+  letter case apart: the test for another letter case has nothing to run
+  there, and it then passes with no assertion. The disk of CI ignores case.
 - A git older than 2.44, which does not know `GIT_NO_LAZY_FETCH`, and a real
   git older than 2.43 (the test uses a stand-in that rejects the option).
 - Refs kept in the reftable format, and a broken entry in `packed-refs`. The

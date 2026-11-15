@@ -1606,11 +1606,80 @@ def test_a_git_dir_with_no_tree_of_its_own_and_a_work_tree_setting_is_an_error(t
     subprocess.run(GIT + ["clone", "-q", "--bare", str(repo), str(bare)], check=True, capture_output=True)
     git(bare, "config", "core.bare", "false")
     git(bare, "config", "core.worktree", str(decoy_repo(tmp_path / "decoy")))
-    assert_names_another_folder(run("--repo", str(bare), "--base", "HEAD", cwd=tmp_path))
+    res = run("--repo", str(bare), "--base", "HEAD", cwd=tmp_path)
+    assert res.rc == 2 and res.out == "" and "not a git work tree" in res.err, (res.out, res.err)
+
+
+def test_the_folder_that_every_call_runs_in_must_name_itself_as_the_top(tmp_path):
+    """Found in review of the first fix. The check asked git from --repo, and the later calls ask
+    git again from the top. A git dir planted inside the tree names the tree as its work tree, so
+    the check passed; the tree's own setting, which names another repo, was then never looked at.
+    git listed the untracked files of that other repo, and the guard said clean."""
+    repo = make(tmp_path, {"tests/test_a.py": TEST_BODY, ".gitignore": "hide/\n"})
+    (repo / "hide" / "tests").mkdir(parents=True)
+    (repo / "tests" / "test_a.py").rename(repo / "hide" / "tests" / "test_a.py")   # moved to where git does not look
+    assert_only(guard(repo), "deleted-test", "tests/test_a.py")
+    other = tmp_path / "other"
+    other.mkdir()
+    git(other, "init", "-q")
+    put(other, "hide/tests/test_a.py", TEST_BODY)                                  # not ignored there
+    git(repo, "config", "core.worktree", str(other))
+    planted = repo / "planted"
+    subprocess.run(GIT + ["init", "-q", "--bare", str(planted)], check=True, capture_output=True)
+    git(planted, "config", "core.bare", "false")
+    git(planted, "config", "core.worktree", str(repo))
+    assert_names_another_folder(run("--repo", str(planted), "--base", "HEAD", cwd=tmp_path))
+    assert_names_another_folder(guard(repo))
+    # with no setting in the tree itself, the planted git dir changes nothing: the tree is read
+    git(repo, "config", "--unset", "core.worktree")
+    assert_only(run("--repo", str(planted), "--base", "HEAD", cwd=tmp_path), "deleted-test", "tests/test_a.py")
+
+
+def test_a_folder_with_a_broken_git_entry_is_an_error_and_not_the_repo_above_it(tmp_path):
+    """git passes over a `.git` that is no git dir and takes the repo above. The guard does not:
+    the folder says that it is a tree of its own, and the repo above is another tree."""
+    outer = make(tmp_path, {"tests/test_a.py": TEST_BODY}, name="outer")
+    for name, entry in (("dangling", None), ("empty", "folder")):
+        proj = outer / name
+        proj.mkdir()
+        if entry is None:
+            (proj / ".git").symlink_to(tmp_path / "nowhere")
+        else:
+            (proj / ".git").mkdir()
+        res = run("--repo", str(proj), "--base", "HEAD", cwd=tmp_path)
+        assert res.rc == 2 and res.out == "", (name, res.out, res.err)
+        # also when the repo above says that this folder is its work tree
+        git(outer, "config", "core.worktree", str(proj))
+        res = run("--repo", str(proj), "--base", "HEAD", cwd=tmp_path)
+        assert res.rc == 2 and res.out == "", (name, res.out, res.err)
+        git(outer, "config", "--unset", "core.worktree")
+
+
+def test_a_folder_that_is_not_there_is_an_error_and_not_the_repo_above_it(tmp_path):
+    repo = make(tmp_path, {"tests/test_a.py": TEST_BODY})
+    res = run("--repo", str(repo / "typo"), "--base", "HEAD", cwd=tmp_path)
+    assert res.rc == 2 and res.out == "" and "not a git work tree" in res.err, (res.out, res.err)
+    put(repo, "notes.txt", "x\n")
+    res = run("--repo", str(repo / "notes.txt"), "--base", "HEAD", cwd=tmp_path)
+    assert res.rc == 2 and res.out == "", (res.out, res.err)
+
+
+def test_an_empty_repo_option_still_means_the_folder_of_the_caller(tmp_path):
+    """A logged limit, kept as it was: a shell variable for the tree that is empty."""
+    repo = deleted_test_repo(tmp_path)
+    assert_only(run("--repo", "", "--base", "HEAD", cwd=repo), "deleted-test", "tests/test_a.py")
+
+
+def test_a_folder_inside_the_git_dir_is_read_as_the_tree_that_holds_it(tmp_path):
+    """Before the walk, git said that such a folder is no work tree. The tree that holds it is
+    the same one, so the guard now gives that tree's result."""
+    repo = deleted_test_repo(tmp_path)
+    for inside in (repo / ".git", repo / ".git" / "refs"):
+        assert_only(run("--repo", str(inside), "--base", "HEAD", cwd=tmp_path), "deleted-test", "tests/test_a.py")
 
 
 def test_a_work_tree_setting_that_names_the_repo_itself_changes_nothing(tmp_path):
-    """git writes such a setting for a submodule and for a repo with its git dir kept elsewhere."""
+    """git writes such a setting for a submodule checkout."""
     repo = deleted_test_repo(tmp_path)
     git(repo, "config", "core.worktree", str(repo))
     assert_only(guard(repo), "deleted-test", "tests/test_a.py")
