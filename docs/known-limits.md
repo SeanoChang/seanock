@@ -2328,3 +2328,94 @@ has none.
 - Git versions other than the local one, and Linux except through CI.
 - No live verifier followed step 9 yet. The first reviews after this change
   are that test.
+
+## Hand-off note (`config/claude/skills/handoff`, 2026-11-15)
+
+### By design
+
+- **The check reads the form of a note, not its truth.** It cannot tell
+  whether the goal is right, whether a command works, or whether a decision
+  still holds. A note that passes can be wrong. The age of a note is no
+  gap: the time in the fact block is written and not read.
+- **One note for each work tree, and the last writer wins.** Two sessions in
+  one work tree replace each other's note. A note with text is kept one
+  time, as `.claude/handoff.prev.md`; an empty frame is replaced and not
+  kept. The write goes through a new file and a rename, so a reader sees a
+  whole note, and a link at the note's path is replaced and not followed.
+- **The fact block is read strictly.** It is what `frame` wrote, line for
+  line and in that order, or the note is not read at all (exit 2). The
+  agent writes the parts below it and never the block.
+- **`stale-changes` compares the lines of `git status`,** which name a file
+  and the kind of change. Another edit inside a file that was already
+  changed gives the same line and is not seen. The block lists the first 50
+  lines and counts the rest, so a change among the rest is seen only when
+  the count moves.
+- **A path counts only when the note writes it as code, from the top
+  folder, and when its first part exists there.** That keeps a branch name
+  such as `origin/dev` and a path of another machine out. So the name of a
+  file in a folder, written alone (`gone.py`), is not checked, a path
+  inside a code block is not checked, and a code span with a space in it is
+  not read as a path. A branch that is named like a top folder (`docs/next`
+  beside a folder `docs/`) reads as a missing path: write such a name
+  without the code marks.
+- **The note is read line by line, by a small reader of its own,** not by a
+  Markdown library. A section starts at a line that begins with `## `. A
+  code block is a fence of three or more backticks or tildes that is
+  indented by three spaces at most. What that leaves out:
+  - a block that is indented further, such as one inside a list item: a
+    line `## Name` inside it starts a section;
+  - a heading written with a line of dashes under it, and `##Name` with no
+    space: neither is a heading, and a heading closed with `##` is read
+    with those marks as part of its name;
+  - a code span that runs over two lines: it is not read as a span;
+  - an escaped backtick: it is read as a real one, so a command or a path
+    in escaped backticks counts as one in code.
+- **The first open checkbox runs up to the next checkbox line.** A command
+  in a plain bullet under it counts as its command.
+- **The script calls the session's own git, in the user's own work tree.**
+  It hands on none of the caller's `GIT_` variables, so such a variable
+  cannot point it at another repo, and it takes no lock that it does not
+  need. It is no protection against a repo that is set up to attack:
+  `git status` starts what the settings of the repo name, as each git call
+  of the session does.
+- **The commands of the skill text start Python in isolated mode
+  (`python3 -I`),** and the script uses the standard library only and has
+  no `__future__` line. So no file of the work tree is loaded as a module,
+  also when the caller's module path has an empty entry; a test plants such
+  files and runs the commands as written. `git` is still found through the
+  caller's `PATH`: a `PATH` that leads into the work tree runs a `git` of
+  that tree, as for every git call that is typed there (see "Maintain
+  verify skill").
+- **The exclude file belongs to the repo, not to the work tree.** All work
+  trees of a repo share it, and the two lines stay when the note is gone.
+  When a rule of the repo takes the note back in (a `!` line in
+  `.gitignore`), `frame` ends with exit 2 and writes no note; the two lines
+  are in the exclude file by then.
+- **A `.claude` that is a link to a folder is an error.** Git refuses to
+  answer for a path beyond a link, and `frame` ends with exit 2.
+- **A note carries no approval, and that is text only.** No code stops a
+  session that acts on a next action without the user's yes.
+
+### Minor
+
+- **Two `frame` runs at one time can each add the exclude lines.** A line
+  that is there two times changes nothing.
+- **The note has mode 600.** It is for the same user's next session.
+- **A name in the fact block is written as JSON text,** so a file name with
+  a line break or a quote stays one entry. A file name that is not UTF-8 is
+  written with its bytes escaped; that form was tested as text only,
+  because the test disk refuses such a name.
+- **The first 20 missing paths are printed.** The line `missing-path-more`
+  and the count in the last line have the rest.
+
+### Not tested
+
+- No live session followed the skill text with a shell. The live check
+  (`HANDOFF_LIVE=1`, two sessions, not in CI) gives a fresh session with no
+  shell the note alone, and a session without the note as the control. So
+  it shows that a note of this form is enough to go on, and not that an
+  agent runs `check` first.
+- Two sessions that write the parts of one note at the same time.
+- A repo with submodules or a sparse checkout.
+- Git versions other than the local one (2.54) and the one of CI.
+- Linux. CI runs on macOS only.

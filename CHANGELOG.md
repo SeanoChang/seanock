@@ -6,6 +6,25 @@ the tag `vX.Y.Z`. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says how it moves. The newest
 entry is first.
 
+## 0.8.0 (2026-11-15)
+
+Added:
+
+- `handoff`, a skill that writes a resume note for the work in a work tree,
+  and that starts a session from such a note. Its script `handoff.py frame`
+  writes `.claude/handoff.md` with what git knows (the branch, the commit,
+  each file that is not committed) and the empty parts of the hand-off
+  outline of `writing-markdown-docs`. The agent writes the parts.
+  `handoff.py check` lists what the note lacks (a part with no text, no open
+  next action, a first action with no command, a path of the tree that is
+  gone) and where the tree is no longer as the note says (another commit,
+  another branch, other changes). It exits 0 with `handoff: ok`, 1 with a
+  summary, and 2 when it could not finish. Git does not see the note: the
+  script adds its name to the repo's exclude file. The commands of the skill
+  text start Python in isolated mode, so no file of the work tree is loaded
+  as a module. A note carries no approval, and the skill commits and pushes
+  nothing.
+
 ## 0.7.0 (2026-11-15)
 
 Changed:
