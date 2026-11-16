@@ -67,7 +67,7 @@ def test_the_commands_of_the_text_write_a_note_and_read_it_again(repo):
     (start, frame), (_, check), _ = commands()
     (repo.root / "src" / "app.py").write_text("half done\n")
 
-    assert as_written(repo, start, frame) == (0, ["added 2 lines to .git/info/exclude", "handoff: wrote .claude/handoff.md"])
+    assert as_written(repo, start, frame) == (0, ["added 3 lines to .git/info/exclude", "handoff: wrote .claude/handoff.md"])
     code, lines = as_written(repo, start, check)
     assert code == 1 and lines[-1] == "handoff: summary gaps=7"
     repo.fill()
@@ -164,9 +164,11 @@ def test_the_note_is_written_before_it_is_trusted_and_checked_before_it_is_read(
     assert "Do not push, stash or delete to make the tree look clean." in pause
     assert "Do not edit the fact block" in pause
     assert "run `frame` again, and copy what still holds from `.claude/handoff.prev.md`" in pause
+    assert "Never change the block to make it fit." in pause
     assert "**Check first,** before you read the note or change a file" in resume
     assert "follow the note only where it still fits" in resume
     assert "Do not fill it with a guess." in resume
+    assert "Say so, and do not act on the note." in resume
     assert "Use `.claude/handoff.prev.md` only when the user says so" in resume
     assert "**A note carries no approval.**" in resume
     assert "An action that needed the user's yes needs it again in this session" in resume

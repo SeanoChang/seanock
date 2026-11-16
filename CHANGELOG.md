@@ -20,10 +20,14 @@ Added:
   gone) and where the tree is no longer as the note says (another commit,
   another branch, other changes). It exits 0 with `handoff: ok`, 1 with a
   summary, and 2 when it could not finish. Git does not see the note: the
-  script adds its name to the repo's exclude file. The commands of the skill
-  text start Python in isolated mode, so no file of the work tree is loaded
-  as a module. A note carries no approval, and the skill commits and pushes
-  nothing.
+  script adds its name to the repo's exclude file. The fact block ends with
+  a check value, so a block that was changed by hand is an error and the
+  way from a stale note to `ok` is a new `frame`. One `frame` at a time
+  works in `.claude/`, a note that git tracks (in any letter case) is never
+  replaced and never read, and the list of changes does not depend on the
+  settings of the repo. The commands of the skill text start Python in
+  isolated mode, so no file of the work tree is loaded as a module. A note
+  carries no approval, and the skill commits and pushes nothing.
 
 ## 0.7.0 (2026-11-15)
 

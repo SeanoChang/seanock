@@ -2336,28 +2336,51 @@ has none.
 - **The check reads the form of a note, not its truth.** It cannot tell
   whether the goal is right, whether a command works, or whether a decision
   still holds. A note that passes can be wrong. The age of a note is no
-  gap: the time in the fact block is written and not read.
+  gap: only the form of the time in the fact block is read.
 - **One note for each work tree, and the last writer wins.** Two sessions in
   one work tree replace each other's note. A note with text is kept one
   time, as `.claude/handoff.prev.md`; an empty frame is replaced and not
   kept. The write goes through a new file and a rename, so a reader sees a
   whole note, and a link at the note's path is replaced and not followed.
-- **The fact block is read strictly.** It is what `frame` wrote, line for
-  line and in that order, or the note is not read at all (exit 2). The
-  agent writes the parts below it and never the block.
+- **One `frame` at a time works in `.claude/`.** A lock on that folder
+  (`flock`) covers the look at the old note, the move to the kept note and
+  the write. Without it, two runs at one time both chose to keep a note
+  with text, and the second moved the empty frame of the first over it. A
+  run that waits longer than 30 s ends with exit 2 and writes nothing. The
+  lock ends with its process. `check` takes no lock: it reads a whole note,
+  the old one or the new one.
+- **The fact block ends with a check value, and the value holds no
+  secret.** The last line of the block is 32 hex digits of SHA-256 over the
+  lines above it. A block that was changed by hand is exit 2, also when its
+  new values are the ones of the tree: the way from a stale note to `ok` is
+  a new `frame`, not an edit. A program can write a block whose value fits,
+  and the script cannot tell that from a frame. So each rule on the block
+  holds by itself too: the lines and their order, the form of the commit
+  and of the time, the count against the list, the limit of 50. The same
+  facts in another JSON spelling, under a value that fits, are read. The
+  agent writes the parts below the block and never the block.
 - **`stale-changes` compares the lines of `git status`,** which name a file
   and the kind of change. Another edit inside a file that was already
   changed gives the same line and is not seen. The block lists the first 50
   lines and counts the rest, so a change among the rest is seen only when
-  the count moves.
+  the count moves. Three options take the settings of the repo out of the
+  list: each file of a new folder has a line of its own
+  (`--untracked-files=all`), a file that moved is one that is gone and one
+  that is new (`--no-renames`), and a change inside a submodule counts
+  (`--ignore-submodules=none`). So a folder with many files that is neither
+  tracked nor ignored fills the 50 lines by itself.
 - **A path counts only when the note writes it as code, from the top
   folder, and when its first part exists there.** That keeps a branch name
   such as `origin/dev` and a path of another machine out. So the name of a
   file in a folder, written alone (`gone.py`), is not checked, a path
   inside a code block is not checked, and a code span with a space in it is
-  not read as a path. A branch that is named like a top folder (`docs/next`
-  beside a folder `docs/`) reads as a missing path: write such a name
-  without the code marks.
+  not read as a path. A path whose first part is gone or is spelled wrong
+  (`scr/app.py`, or `src/app.py` after the folder `src/` was removed) is
+  not reported either, and so is a file of the top folder that was deleted
+  (`Makefile`): no missing-path line does not mean that each path is
+  there. A branch that is named like a top folder (`docs/next` beside a
+  folder `docs/`) reads as a missing path: write such a name without the
+  code marks.
 - **The note is read line by line, by a small reader of its own,** not by a
   Markdown library. A section starts at a line that begins with `## `. A
   code block is a fence of three or more backticks or tildes that is
@@ -2375,9 +2398,28 @@ has none.
 - **The script calls the session's own git, in the user's own work tree.**
   It hands on none of the caller's `GIT_` variables, so such a variable
   cannot point it at another repo, and it takes no lock that it does not
-  need. It is no protection against a repo that is set up to attack:
-  `git status` starts what the settings of the repo name, as each git call
-  of the session does.
+  need. Two programs that the settings of a repo can name do not run: the
+  file monitor is off (`core.fsmonitor`, also for the call that git makes
+  in a submodule), and no call fetches. In a partial clone that lacks what
+  `git status` needs, `frame` ends with exit 2.
+- **A clean filter that the settings of the repo name still runs.**
+  `git status` reads a changed file through its filter, and a run of
+  2026-11-15 showed the filter program start under `frame` and under
+  `check`. The status line switches each filter off, and pays for it: a
+  touched file under such a filter can show as changed. The list of the
+  note must be right, so the filter stays on. The settings in question are
+  the ones of `.git/config`, which a clone does not bring; each
+  `git status` of the session runs the same program.
+- **A repo that tracks a file with the note's name in other letter case
+  cannot hold a note.** `frame` and `check` end with exit 2 when git tracks
+  `.claude/HANDOFF.md`, `.Claude/handoff.md`, the kept note in such a
+  spelling, or the name with the one character for `ff` (U+FB00). On the
+  disk of a Mac each of these is the note's own file, and `frame` would
+  replace a tracked file. The answer is the same on a disk that keeps
+  letter case apart, where they are other files. The names that git lists
+  under `.claude` in any ASCII letter case are compared after Unicode case
+  folding. A disk that takes still more names for one is not covered (not
+  run: the test disk has no such rule).
 - **The commands of the skill text start Python in isolated mode
   (`python3 -I`),** and the script uses the standard library only and has
   no `__future__` line. So no file of the work tree is loaded as a module,
@@ -2387,19 +2429,38 @@ has none.
   that tree, as for every git call that is typed there (see "Maintain
   verify skill").
 - **The exclude file belongs to the repo, not to the work tree.** All work
-  trees of a repo share it, and the two lines stay when the note is gone.
-  When a rule of the repo takes the note back in (a `!` line in
-  `.gitignore`), `frame` ends with exit 2 and writes no note; the two lines
+  trees of a repo share it, and the three lines stay when the note is gone:
+  the note, the kept note, and `/.claude/handoff.tmp.*` for a note that is
+  half written. When a rule of the repo takes the note back in (a `!` line
+  in `.gitignore`), `frame` ends with exit 2 and writes no note; the lines
   are in the exclude file by then.
-- **A `.claude` that is a link to a folder is an error.** Git refuses to
-  answer for a path beyond a link, and `frame` ends with exit 2.
+- **A `.claude` that is a link to a folder is an error,** for `frame` and
+  for `check`. Git refuses to answer for a path beyond a link, and the
+  script opens the folder and the note with no link followed. A `.claude`
+  that git tracks as one entry (a link, or a submodule) is refused too: the
+  note in it came with a repo.
 - **A note carries no approval, and that is text only.** No code stops a
-  session that acts on a next action without the user's yes.
+  session that acts on a next action without the user's yes. One way in is
+  closed by code: a note that git tracks came with the repo, so `check`
+  does not read it and `frame` does not replace it (exit 2). A note that
+  reaches the work tree another way, such as an unpacked archive, is read
+  like any other.
 
 ### Minor
 
 - **Two `frame` runs at one time can each add the exclude lines.** A line
   that is there two times changes nothing.
+- **A `frame` that is killed between the write and the rename leaves
+  `.claude/handoff.tmp.<letters>`.** Git does not see that file, and no
+  later run deletes it: `frame` deletes no file by the form of its name,
+  because such a file can be the user's own.
+- **The script has no `--help`.** Each run ends with a result line or an
+  error line, and a help text is neither, so `--help` is exit 2. The first
+  lines of the script and the skill text say how to call it.
+- **A name that the terminal's character set cannot show is printed in
+  escaped form** (`\u65e5` in a gap line), and the run ends as usual.
+- **The name of a work tree can end in a line break.** The script takes one
+  line end off git's answer and no more, so such a tree gets its own note.
 - **The note has mode 600.** It is for the same user's next session.
 - **A name in the fact block is written as JSON text,** so a file name with
   a line break or a quote stays one entry. A file name that is not UTF-8 is
@@ -2416,6 +2477,8 @@ has none.
   it shows that a note of this form is enough to go on, and not that an
   agent runs `check` first.
 - Two sessions that write the parts of one note at the same time.
-- A repo with submodules or a sparse checkout.
+- A sparse checkout.
+- A disk with no `flock` (some network disks). By the code, `frame` ends
+  there with exit 2 and writes nothing.
 - Git versions other than the local one (2.54) and the one of CI.
 - Linux. CI runs on macOS only.
