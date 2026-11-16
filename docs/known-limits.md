@@ -1299,6 +1299,12 @@ changes it.
 
 ### Not tested
 
+- **`test_matches_reference_on_random_change_sets` failed one time under
+  load** (2026-11-16, seed 11, case 99: the guard gave no result of 0
+  or 1). A reviewer's full suite ran beside a mutation run of another
+  skill then. Alone, and in each full suite with no other load, the test
+  passes. The cause is not known; a time limit inside the test is the
+  first thing to look at.
 - Linux. The tests ran on macOS only, and CI runs on macOS only.
 - **The inode half of the twin rule has no test in CI.** Its one test needs a
   disk that keeps letter case apart: an untracked `A.py` beside a tracked
@@ -2341,14 +2347,35 @@ has none.
   one work tree replace each other's note. A note with text is kept one
   time, as `.claude/handoff.prev.md`; an empty frame is replaced and not
   kept. The write goes through a new file and a rename, so a reader sees a
-  whole note, and a link at the note's path is replaced and not followed.
+  whole note, and nothing is written through a link.
+- **`frame` moves and replaces only a note that `frame` wrote.** A file at
+  the note's path or at the kept note's path that does not start as the
+  notes of this script start (`---`, then `type: handoff`) is the user's
+  own or came from elsewhere, and so is a link there. `frame` then ends
+  with exit 2 before its first write: no note and no exclude line, because
+  an exclude line would hide that file from git. On a disk that
+  does not keep letter case apart, this holds for `.claude/HANDOFF.md` too,
+  which is the note's own path there. Before this rule, `frame` moved such
+  a file to the kept note, and the `frame` after that replaced it. The
+  price: a note whose first two lines were damaged (an editor that saves
+  with a byte-order mark or with other line ends) is no note of this script
+  any more. `check` and `frame` both end with exit 2 until the file is
+  moved away, and the error line says to ask the user. A note that is
+  damaged further down still starts as a note, and it is kept one time.
+- **The note's place must be this work tree's own.** A `.claude` that has a
+  `.git` of its own (a clone, a work tree of another repo) is exit 2 for
+  both commands: the exclude lines keep the note out of one repo only, so
+  the other repo would see the note, could commit it, and could track the
+  file that `frame` replaces. Who keeps `.claude` as a repo of its own
+  cannot use this skill there.
 - **One `frame` at a time works in `.claude/`.** A lock on that folder
   (`flock`) covers the look at the old note, the move to the kept note and
   the write. Without it, two runs at one time both chose to keep a note
   with text, and the second moved the empty frame of the first over it. A
-  run that waits longer than 30 s ends with exit 2 and writes nothing. The
-  lock ends with its process. `check` takes no lock: it reads a whole note,
-  the old one or the new one.
+  run that waits longer than 30 s ends with exit 2 and writes no note; the
+  exclude lines can be in the exclude file by then. The lock ends with its
+  process. `check` takes no lock: it reads a whole note, the old one or the
+  new one.
 - **The fact block ends with a check value, and the value holds no
   secret.** The last line of the block is 32 hex digits of SHA-256 over the
   lines above it. A block that was changed by hand is exit 2, also when its
@@ -2359,16 +2386,29 @@ has none.
   and of the time, the count against the list, the limit of 50. The same
   facts in another JSON spelling, under a value that fits, are read. The
   agent writes the parts below the block and never the block.
-- **`stale-changes` compares the lines of `git status`,** which name a file
-  and the kind of change. Another edit inside a file that was already
-  changed gives the same line and is not seen. The block lists the first 50
-  lines and counts the rest, so a change among the rest is seen only when
-  the count moves. Three options take the settings of the repo out of the
-  list: each file of a new folder has a line of its own
-  (`--untracked-files=all`), a file that moved is one that is gone and one
-  that is new (`--no-renames`), and a change inside a submodule counts
-  (`--ignore-submodules=none`). So a folder with many files that is neither
-  tracked nor ignored fills the 50 lines by itself.
+- **`stale-changes` compares the lines of `git status` of this repo,** and
+  `handoff: ok` says that the list is the same, not that the content is. A
+  line names a file and the kind of change. A change behind a line that
+  stays the same is not seen, and a test holds each of these cases:
+  - another edit inside a file that was changed already;
+  - another change inside a submodule that was changed already (its line
+    is ` M <path>`, whatever changed in it);
+  - any change inside a folder that is a repo of its own and no submodule,
+    such as a clone below the work tree: git lists that folder as one line
+    and does not look into it, and the script starts no git in another
+    repo;
+  - a file that a rule ignores: it has no line.
+
+  The block lists the first 50 lines and counts the rest, so a change among
+  the rest is seen only when the count moves. Three options take the
+  settings of the repo out of the list: each file of a new folder of this
+  repo has a line of its own (`--untracked-files=all`), a file that moved
+  is one that is gone and one that is new (`--no-renames`), and a submodule
+  with a change in it has its line (`--ignore-submodules=none`). So a
+  folder with many files that is neither tracked nor ignored fills the 50
+  lines by itself. Other settings of the repo still shape the list: with
+  `core.fileMode` off, a file that was made executable has no line, and a
+  test holds that case.
 - **A path counts only when the note writes it as code, from the top
   folder, and when its first part exists there.** That keeps a branch name
   such as `origin/dev` and a path of another machine out. So the name of a
@@ -2419,7 +2459,9 @@ has none.
   letter case apart, where they are other files. The names that git lists
   under `.claude` in any ASCII letter case are compared after Unicode case
   folding. A disk that takes still more names for one is not covered (not
-  run: the test disk has no such rule).
+  run: the test disk has no such rule). Tracked means in the index: a note
+  that the repo's last commit holds and that was taken out of the index by
+  hand (`git rm --cached`) is read like any other (run 2026-11-16).
 - **The commands of the skill text start Python in isolated mode
   (`python3 -I`),** and the script uses the standard library only and has
   no `__future__` line. So no file of the work tree is loaded as a module,
@@ -2435,16 +2477,15 @@ has none.
   in `.gitignore`), `frame` ends with exit 2 and writes no note; the lines
   are in the exclude file by then.
 - **A `.claude` that is a link to a folder is an error,** for `frame` and
-  for `check`. Git refuses to answer for a path beyond a link, and the
-  script opens the folder and the note with no link followed. A `.claude`
-  that git tracks as one entry (a link, or a submodule) is refused too: the
-  note in it came with a repo.
+  for `check`: the script opens the folder and the note with no link
+  followed. A `.claude` that git tracks as one entry (a link, or a
+  submodule) is refused too: the note in it came with a repo.
 - **A note carries no approval, and that is text only.** No code stops a
-  session that acts on a next action without the user's yes. One way in is
-  closed by code: a note that git tracks came with the repo, so `check`
-  does not read it and `frame` does not replace it (exit 2). A note that
-  reaches the work tree another way, such as an unpacked archive, is read
-  like any other.
+  session that acts on a next action without the user's yes. Some ways in
+  are closed by code: `check` does not read a note that git tracks, a note
+  behind a link, or a note in a `.claude` that is a repo of its own or that
+  git tracks as one entry (exit 2). A note that reaches the work tree
+  another way, such as an unpacked archive, is read like any other.
 
 ### Minor
 
@@ -2453,7 +2494,8 @@ has none.
 - **A `frame` that is killed between the write and the rename leaves
   `.claude/handoff.tmp.<letters>`.** Git does not see that file, and no
   later run deletes it: `frame` deletes no file by the form of its name,
-  because such a file can be the user's own.
+  because such a file can be the user's own. The exclude line for that
+  name form hides such a file of the user from git too.
 - **The script has no `--help`.** Each run ends with a result line or an
   error line, and a help text is neither, so `--help` is exit 2. The first
   lines of the script and the skill text say how to call it.
@@ -2479,6 +2521,6 @@ has none.
 - Two sessions that write the parts of one note at the same time.
 - A sparse checkout.
 - A disk with no `flock` (some network disks). By the code, `frame` ends
-  there with exit 2 and writes nothing.
+  there with exit 2 and writes no note.
 - Git versions other than the local one (2.54) and the one of CI.
 - Linux. CI runs on macOS only.

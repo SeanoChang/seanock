@@ -330,23 +330,74 @@ def test_an_error_that_the_script_did_not_expect_is_exit_2_and_never_a_result(re
     assert capsys.readouterr().out == "handoff: error RuntimeError: something new\n"
 
 
-def test_a_file_at_the_note_path_that_is_no_note_is_kept_too(repo):
+def test_a_note_that_frame_wrote_and_that_cannot_be_read_any_more_is_kept_too(repo):
+    """It starts as a note of this script starts, so it is one. The repo has no exclude line yet."""
     repo.note.parent.mkdir()
-    repo.note.write_text("my own notes, not a frame\n")
+    repo.note.write_text("---\ntype: handoff\nthe rest of the block is lost, and this text is not\n")
     assert repo.run("frame")[0] == 0
-    assert (repo.root / PREV).read_text() == "my own notes, not a frame\n"
+    assert (repo.root / PREV).read_text() == "---\ntype: handoff\nthe rest of the block is lost, and this text is not\n"
     assert repo.block()["dirty"] == 0, "the facts must be read after the note is kept out of git"
 
 
-def test_a_link_at_the_note_path_is_replaced_and_its_target_is_not_written(repo, tmp_path):
-    target = tmp_path / "target.txt"
-    target.write_text("do not write here\n")
-    repo.note.parent.mkdir()
-    repo.note.symlink_to(target)
-    assert repo.run("frame")[0] == 0
-    assert target.read_text() == "do not write here\n"
-    assert repo.note.is_file() and not repo.note.is_symlink()
-    assert not (repo.root / PREV).exists()
+def keeps_letter_case_apart(folder):
+    (folder / "probe-a").write_text("x")
+    return not (folder / "PROBE-A").exists()
+
+
+@pytest.mark.parametrize("name", ["handoff.md", "handoff.prev.md", "HANDOFF.md", "Handoff.Prev.md"])
+@pytest.mark.parametrize("content", ["my own notes, not a frame\n", ""])
+def test_a_file_that_frame_did_not_write_is_never_moved_or_replaced(repo, tmp_path, name, content):
+    """A file of the user at the note's path or at the kept note's path, also under a name in other letter case
+    on a disk that takes it for the same file. Frame moved such a file to the kept note, and the frame after that
+    replaced it there. Now frame ends before its first write: an exclude line would hide the file from git."""
+    same_file = name in ("handoff.md", "handoff.prev.md") or not keeps_letter_case_apart(tmp_path)
+    mine = repo.root / ".claude" / name
+    mine.parent.mkdir()
+    mine.write_text(content)
+    exclude = (repo.root / ".git" / "info" / "exclude").read_text()
+    for _ in range(2):
+        code, lines = repo.run("frame")
+        if same_file:
+            assert code == 2 and len(lines) == 1 and "is not a note that frame wrote" in lines[0], lines
+        else:
+            assert code == 0
+            repo.fill()
+    assert mine.read_text() == content and name in os.listdir(mine.parent)
+    if same_file:
+        assert os.listdir(mine.parent) == [name]
+        assert (repo.root / ".git" / "info" / "exclude").read_text() == exclude
+        assert repo.git("status", "--porcelain", "--untracked-files=all") == f"?? .claude/{name}\n"
+
+
+@pytest.mark.parametrize("rel", [NOTE, PREV])
+def test_a_link_at_the_path_of_the_note_or_of_the_kept_note_is_never_replaced_or_followed(repo, tmp_path, rel):
+    repo.framed()
+    whole = repo.note.read_bytes()
+    target = tmp_path / "target.md"
+    target.write_bytes(whole)
+    if rel == NOTE:
+        repo.note.unlink()
+    (repo.root / rel).symlink_to(target)
+    code, lines = repo.run("frame")
+    assert (code, lines) == (2, [f"handoff: error {rel} is a link, and frame replaces only a note that frame wrote"])
+    assert (repo.root / rel).is_symlink() and target.read_bytes() == whole
+    assert sorted(os.listdir(repo.note.parent)) == sorted({"handoff.md", Path(rel).name})
+
+
+def test_a_claude_folder_that_is_a_repo_of_its_own_holds_no_note(repo, tmp_path):
+    """The exclude lines keep the note out of one repo. In a `.claude` with its own `.git`, the other repo sees the
+    note, can commit it, and can track the file that frame replaces."""
+    shared = Repo(tmp_path, "shared")
+    subprocess.run(["git", "clone", "-q", str(shared.root), str(repo.root / ".claude")], check=True, env=repo.env,
+                   capture_output=True)
+    exclude = (repo.root / ".git" / "info" / "exclude").read_text()
+    inner = sorted(os.listdir(repo.root / ".claude"))
+    (repo.root / ".claude" / "handoff.md").write_text("---\ntype: handoff\n")
+    for command in ("frame", "check"):
+        code, lines = repo.run(command)
+        assert code == 2 and len(lines) == 1 and lines[0].startswith("handoff: error .claude is a repo of its own"), lines
+    assert sorted(os.listdir(repo.root / ".claude")) == sorted(inner + ["handoff.md"])
+    assert (repo.root / ".git" / "info" / "exclude").read_text() == exclude
 
 
 def test_a_link_at_the_exclude_file_or_at_the_claude_folder_is_an_error_and_nothing_is_written(repo, tmp_path):
@@ -363,9 +414,9 @@ def test_a_link_at_the_exclude_file_or_at_the_claude_folder_is_an_error_and_noth
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     (other.root / ".claude").symlink_to(elsewhere)
-    code, lines = other.run("frame")
-    assert code == 2 and "git check-ignore failed" in lines[-1]
+    assert other.run("frame") == (2, ["handoff: error .claude is no plain folder"])
     assert list(elsewhere.iterdir()) == []
+    assert "handoff" not in (other.root / ".git" / "info" / "exclude").read_text()
 
 
 def test_a_folder_at_the_note_path_or_a_file_at_the_claude_path_is_an_error(repo, tmp_path):
@@ -539,6 +590,30 @@ def test_a_change_inside_a_submodule_counts_whatever_the_settings_say(repo, tmp_
     assert repo.run("check") == (0, ["handoff: ok"])
 
 
+def test_a_change_behind_a_line_that_stays_the_same_is_not_seen(repo, tmp_path):
+    """The list has the lines of `git status`: the names, and the kind of change. The text of the skill and the
+    known limits say what that leaves out. This test holds each of those sentences against a run."""
+    sub = add_submodule(repo, tmp_path)
+    (repo.root / ".gitignore").write_text("build/\n")
+    repo.commit("a rule")
+    shared = Repo(tmp_path, "shared")
+    subprocess.run(["git", "clone", "-q", str(shared.root), str(repo.root / "vendor")], check=True, env=repo.env,
+                   capture_output=True)
+    (repo.root / "build").mkdir()
+    (repo.root / "build" / "out.txt").write_text("1\n")
+    (repo.root / "src" / "app.py").write_text("changed once\n")
+    (sub / "src" / "app.py").write_text("changed once\n")
+    (repo.root / "vendor" / "new.c").write_text("work that is not committed\n")
+    repo.framed()
+    assert sorted(repo.block()["changed"]) == [" M src/app.py", " M sub", "?? vendor/"]
+    (repo.root / "src" / "app.py").write_text("changed again\n")       # a file that was changed already
+    (sub / "tests" / "test_app.py").write_text("another file\n")        # a submodule that was changed already
+    (repo.root / "vendor" / "new.c").unlink()                          # a folder that is a repo of its own
+    (repo.root / "vendor" / "src" / "app.py").write_text("changed\n")
+    (repo.root / "build" / "out.txt").write_text("2\n")                # a file that a rule ignores
+    assert repo.run("check") == (0, ["handoff: ok"])
+
+
 def test_a_file_that_comes_or_goes_inside_a_folder_that_git_does_not_track_is_seen(repo):
     feature = repo.root / "src" / "feature"
     feature.mkdir()
@@ -552,7 +627,7 @@ def test_a_file_that_comes_or_goes_inside_a_folder_that_git_does_not_track_is_se
     assert repo.run("check") == (1, ["stale-changes note=2 now=2", "handoff: summary gaps=1"])
 
 
-def test_the_settings_of_the_repo_do_not_change_what_counts_as_a_change(repo):
+def test_the_settings_for_renames_and_new_files_do_not_change_the_list(repo):
     repo.git("mv", "tests/test_app.py", "tests/test_main.py")
     (repo.root / "new.txt").write_text("x\n")
     repo.git("config", "status.showUntrackedFiles", "no")
@@ -564,6 +639,16 @@ def test_the_settings_of_the_repo_do_not_change_what_counts_as_a_change(repo):
         assert repo.run("check", cwd=repo.root / "src") == (0, ["handoff: ok"]), name
     (repo.root / "new.txt").unlink()
     assert repo.run("check")[1][0] == "stale-changes note=3 now=2"
+
+
+def test_other_settings_of_the_repo_still_shape_the_list(repo):
+    """Three options of the status call take three settings out. This one stays in: a repo that is told not to
+    look at file modes has no line for a file that was made executable. The known limits say so."""
+    (repo.root / "src" / "app.py").chmod(0o755)
+    repo.framed()
+    assert repo.block()["changed"] == [" M src/app.py"]
+    repo.git("config", "core.fileMode", "false")
+    assert repo.run("check") == (1, ["stale-changes note=1 now=0", "handoff: summary gaps=1"])
 
 
 def test_a_fact_block_that_is_edited_to_say_what_the_tree_says_now_is_an_error(repo):

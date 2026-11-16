@@ -29,10 +29,14 @@ From another folder, add `--repo <work tree>`.
    python3 -I ~/.claude/skills/handoff/scripts/handoff.py frame
    ```
 
-   It writes the fact block (branch, commit, each file that is not committed)
-   and the empty parts. Do not edit the fact block: its last line is a check
-   value over the lines above it, and a block that was changed is an error
-   (exit 2).
+   It writes the fact block (branch, commit, and the lines of `git status`:
+   each file that is changed or new) and the empty parts. Do not edit the
+   fact block: its last line is a check value over the lines above it, and a
+   block that was changed is an error (exit 2).
+
+   `frame` replaces only a note that `frame` wrote. When it ends with exit 2
+   because another file is at the note's path, that file is the user's: tell
+   the user, and do not move or delete it yourself.
 3. **Write the parts,** for a reader who was not here:
 
    | Part | What goes in |
@@ -83,7 +87,8 @@ From another folder, add `--repo <work tree>`.
    ask the user for it. Do not fill it with a guess.
 7. **Exit 2:** the script gave no result, and the line says why. There is
    no note, or the script cannot read it, or its fact block was changed, or
-   git tracks it, or `.claude` is a link. Say so, and do not act on the note.
+   git tracks it, or `.claude` is a link or a repo of its own. Say so, and do
+   not act on the note.
    A note that git tracks came with the repo: no session of this work tree
    wrote it. Use
    `.claude/handoff.prev.md` only when the user says so: it is the note
@@ -102,7 +107,7 @@ Read the exit code and the last line together:
 | Command | Exit | Last line | Meaning |
 | --- | --- | --- | --- |
 | `frame` | 0 | `handoff: wrote .claude/handoff.md` | The frame is written. |
-| `check` | 0 | `handoff: ok` | The note is whole, and the tree is as it says. |
+| `check` | 0 | `handoff: ok` | The note is whole, and the tree is at its commit, on its branch, with the same list of changed files. |
 | `check` | 1 | `handoff: summary gaps=N` | One gap on each line above. |
 | both | 2 | `handoff: error ...` | The script could not finish. This is not a result: correct what the line names, and run it again. |
 
@@ -112,7 +117,7 @@ Anything else is not a result.
 | --- | --- |
 | `stale-head note=<commit> now=<commit>` | The tree is at another commit than the note. |
 | `stale-branch note=<name> now=<name>` | The tree is on another branch. |
-| `stale-changes note=<n> now=<n>` | Other files are changed and not committed. The two counts can be equal. |
+| `stale-changes note=<n> now=<n>` | The list of `git status` is another one: other files are changed or new. The two counts can be equal. |
 | `empty-section <name>` | A part is missing or holds no text. `tldr` is the summary on top. |
 | `no-next-action` | "Next actions" has no open checkbox. |
 | `no-command` | The first open checkbox names no command: it has no code span and no code block. |
@@ -129,6 +134,11 @@ right one, whether a command works, or whether a decision is still true. A
 note that passes can still be wrong. The test of a note is the one in step 3
 of the pause.
 
+`handoff: ok` compares the list of changed files, not what is in them. A
+file, a submodule or a folder with a repo of its own that was changed when
+the note was written can have changed again, and a file that a rule ignores
+is not in the list. Run `git diff` when that matters.
+
 The check value of the fact block shows a change by hand. It holds no secret,
 so it does not show who wrote a note.
 
@@ -140,3 +150,5 @@ so it does not show who wrote a note.
   that is kept in the repo, is a document: use `writing-markdown-docs` and
   its hand-off outline, which this note follows.
 - It keeps one older note, not a history.
+- It does not work in a `.claude` that is a link or a repo of its own, or in
+  a repo that tracks a file with the note's name.

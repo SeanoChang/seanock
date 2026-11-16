@@ -31,11 +31,18 @@ The gap lines of check:
 The note lives in the work tree and git does not see it: frame adds its names
 to the repo's exclude file when no rule ignores them yet. A note with text in
 it is kept one time, as .claude/handoff.prev.md, when frame writes a new one.
-A note that git tracks came with the repo: frame does not replace it and check
-does not read it. This holds also for a tracked name that differs only in
-letter case, which is the same file on a disk that does not keep case apart,
-and for a .claude that git tracks as a link or as a submodule. No command
-reads the note through a link, at the folder or at the file.
+
+The note's place must be this work tree's own, and frame moves or replaces
+only a note that frame wrote. Each of these is exit 2, for frame and for check:
+
+  - git tracks the note or the kept note, also under a name that differs only
+    in letter case (the same file on a disk that does not keep case apart);
+  - git tracks .claude as one entry (a link, a submodule), or .claude is a
+    repo of its own: a note there is a file of that repo;
+  - .claude, the note or the kept note is a link.
+
+For frame also: the file at the note's path or at the kept note's path does not
+start as a note of this script starts. Frame then writes nothing at all.
 
 The fact block ends with a check value over its lines. A block that was
 changed by hand is an error: when the tree moved, run frame again.
@@ -65,6 +72,7 @@ FOLDER = ".claude"
 NOTE = FOLDER + "/handoff.md"
 PREV = FOLDER + "/handoff.prev.md"
 TEMP = FOLDER + "/handoff.tmp."    # how the name of a file starts that frame writes and then renames to the note
+MARK = b"---\ntype: handoff\n"     # how each note starts that frame wrote
 KEPT_OUT = (NOTE, PREV, TEMP + "*")
 SECTIONS = ("Next actions", "State now", "Environment", "Decisions, and why", "Rejected approaches", "Open questions")
 SKELETON = "\n> [!tldr]\n>\n" + "".join(f"\n## {name}\n" for name in SECTIONS)
@@ -174,15 +182,20 @@ def fold(name):
     return name.casefold()
 
 
-def tracked_as(top):
-    """None, or the name of a file that git tracks and that is the note or the kept note on some disk. The folder
-    counts too when git tracks it as one entry, a link or a submodule: each file in it came with a repo then."""
+def refuse_another_owner(top):
+    """The note's place must be this work tree's own. A note that git tracks came with the repo, under its own
+    name or under one that is the same file on some disk. So did each file of a `.claude` that git tracks as one
+    entry (a link, a submodule), and each file of a `.claude` that is a repo of its own belongs to that repo. No
+    session of this work tree wrote such a note: check does not read it, and frame does not write there."""
     own = {fold(NOTE), fold(PREV), fold(FOLDER)}
     _, out = git(top, "ls-files", "-z", "--", f":(top,icase){FOLDER}")
     for name in out.decode("utf-8", "surrogateescape").split("\0"):
         if fold(name) in own:
-            return name
-    return None
+            raise Failed(f"git tracks {name} in this repo: a note at that place came with the repo, and this script "
+                         "neither reads nor replaces it")
+    if os.path.lexists(top / FOLDER / ".git"):
+        raise Failed(f"{FOLDER} is a repo of its own: a note there is a file of that repo, and this script neither "
+                     "reads nor writes it")
 
 
 def is_ignored(top, rel):
@@ -318,7 +331,8 @@ def split_body(lines):
 
 def code_spans(line):
     """The code spans of one line: a run of backticks opens a span that the next run of the same length ends.
-    Each run is looked at one time, so a long line of runs that fit no other costs no more than its length."""
+    A run finds its partner by a search in a sorted list, so a long line of runs that fit no other is not read
+    again for each of them."""
     runs = [match.span() for match in RUN.finditer(line)]
     by_width = {}
     for number, (opened, closed) in enumerate(runs):
@@ -404,10 +418,10 @@ def missing_paths(top, body_rows):
     return found
 
 
-def read_plain(top):
-    """The bytes of the plain file at the note's path, and never more than one byte past the size of a note. The
-    folder and the file are each opened one time and never through a link, so no other file can stand in the
-    place of the note between a look and the read. OSError when one of them cannot be opened."""
+def read_plain(top, rel):
+    """The bytes of the plain file at the note's or the kept note's path, and never more than one byte past the
+    size of a note. The folder and the file are each opened one time and never through a link, so no other file
+    can stand in the place of the note between a look and the read. OSError when one of them cannot be opened."""
     try:
         folder = os.open(top / FOLDER, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError as exc:
@@ -415,19 +429,19 @@ def read_plain(top):
             raise
         raise Failed(f"{FOLDER} is no plain folder")
     try:
-        fd = os.open(Path(NOTE).name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder)
+        fd = os.open(Path(rel).name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder)
     finally:
         os.close(folder)
     if not stat.S_ISREG(os.fstat(fd).st_mode):
         os.close(fd)
-        raise Failed(f"{NOTE} is no plain file")
+        raise Failed(f"{rel} is no plain file")
     with os.fdopen(fd, "rb") as handle:
         return handle.read(MAX_NOTE_BYTES + 1)
 
 
 def read_note_file(top):
     try:
-        data = read_plain(top)
+        data = read_plain(top, NOTE)
     except FileNotFoundError:
         raise Failed(f"no note at {NOTE}")
     except OSError as exc:
@@ -445,10 +459,7 @@ def short(commit):
 
 
 def check(top):
-    tracked = tracked_as(top)
-    if tracked:
-        raise Failed(f"git tracks {tracked} in this repo: the note came with the repo, and it is not a note of a "
-                     "session here")
+    refuse_another_owner(top)
     noted, body = read_note(read_note_file(top))
     now = read_facts(top)
     gaps = []
@@ -476,16 +487,26 @@ def check(top):
     return 1, lines + [f"handoff: summary gaps={count}"]
 
 
-def worth_keeping(top):
-    """True when the file at the note's path holds something that frame did not write itself."""
+def own_file(top, rel):
+    """The bytes of the note or of the kept note, or None when there is no file. Frame moves and replaces only a
+    note that frame wrote. A file that starts in another way is the user's own or came from elsewhere, and so
+    did a link: Failed, and it is left as it is."""
     try:
-        data = read_plain(top)
+        data = read_plain(top, rel)
     except FileNotFoundError:
-        return False
+        return None
     except OSError as exc:
         if exc.errno != errno.ELOOP:
             raise
-        return False            # a link is replaced; what it points at is not this script's to move
+        raise Failed(f"{rel} is a link, and frame replaces only a note that frame wrote")
+    if not data.startswith(MARK):
+        raise Failed(f"{rel} is not a note that frame wrote, and frame does not replace it; ask the user what to do "
+                     "with that file")
+    return data
+
+
+def worth_keeping(data):
+    """True when a note holds something that frame did not write itself."""
     try:
         if len(data) > MAX_NOTE_BYTES:
             return True
@@ -498,8 +519,8 @@ def worth_keeping(top):
 
 
 def write_whole(path, text):
-    """Write the file under another name and rename it, so a reader sees the old note or the new one, and a link
-    at the path is replaced and not followed."""
+    """Write the file under another name and rename it, so a reader sees the old note or the new one, and
+    nothing is written through a link."""
     fd, temp = tempfile.mkstemp(dir=path.parent, prefix=Path(TEMP).name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
@@ -535,11 +556,13 @@ def only_frame_in(folder):
 
 
 def frame(top):
-    tracked = tracked_as(top)
-    if tracked:
-        raise Failed(f"git tracks {tracked} in this repo; frame writes no note over or through a tracked file")
+    refuse_another_owner(top)
     folder, note, prev = top / FOLDER, top / NOTE, top / PREV
     try:
+        # Before the first write: with a file of the user at one of the two paths, frame leaves no trace. An
+        # exclude line would hide that file from git.
+        own_file(top, NOTE)
+        own_file(top, PREV)
         folder.mkdir(exist_ok=True)
     except OSError as exc:
         raise Failed(f"cannot use {folder.name}/ as a folder: {exc.strerror}")
@@ -549,7 +572,8 @@ def frame(top):
     written = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         with only_frame_in(folder):
-            if worth_keeping(top):
+            old = own_file(top, NOTE)
+            if old is not None and worth_keeping(old):
                 os.replace(note, prev)
                 lines.append(f"kept the last note as {PREV}")
             write_whole(note, fact_block(facts, written) + SKELETON)

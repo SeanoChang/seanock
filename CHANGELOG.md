@@ -23,9 +23,11 @@ Added:
   script adds its name to the repo's exclude file. The fact block ends with
   a check value, so a block that was changed by hand is an error and the
   way from a stale note to `ok` is a new `frame`. One `frame` at a time
-  works in `.claude/`, a note that git tracks (in any letter case) is never
-  replaced and never read, and the list of changes does not depend on the
-  settings of the repo. The commands of the skill text start Python in
+  works in `.claude/`. `frame` moves and replaces only a note that `frame`
+  wrote, and both commands refuse a note that git tracks (in any letter
+  case), a note behind a link, and a `.claude` that is a repo of its own.
+  The list of changes is the one of `git status`, and the settings of the
+  repo for new files, renames and submodules do not change it. The commands of the skill text start Python in
   isolated mode, so no file of the work tree is loaded as a module. A note
   carries no approval, and the skill commits and pushes nothing.
 
