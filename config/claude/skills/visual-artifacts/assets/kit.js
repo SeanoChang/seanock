@@ -616,11 +616,14 @@
     lua: 'and break do else elseif end for function goto if in local not or repeat return then until while',
     sql: 'add all alter and as asc by case create delete desc distinct drop else end exists foreign from group having if in index insert into is join key left limit not on or order primary references returning right select set table then union unique update values when where with',
     sh: 'case do done elif else esac export fi for function if in local return set then unset until while',
+    // pseudocode, as in course notes and handouts: control words only, matched in any case (IF, If, if)
+    pseudo: 'if then else elif elseif otherwise for each foreach in of to downto by from step while do until repeat loop return break continue and or not is function procedure def begin end let set case when switch',
     yaml: '', json: '',
   };
   const LANG = { ts: 'js', tsx: 'js', jsx: 'js', mjs: 'js', cjs: 'js', javascript: 'js', typescript: 'js', python: 'py', rust: 'rs', golang: 'go',
-    h: 'c', cc: 'c', cpp: 'c', hpp: 'c', java: 'c', kt: 'c', kotlin: 'c', cs: 'c', swift: 'c', scala: 'c', bash: 'sh', zsh: 'sh', shell: 'sh', yml: 'yaml' };
-  const LINE_C = { go: '//', js: '//', rs: '//', c: '//', py: '#', sh: '#', yaml: '#', lua: '--', sql: '--' };
+    h: 'c', cc: 'c', cpp: 'c', hpp: 'c', java: 'c', kt: 'c', kotlin: 'c', cs: 'c', swift: 'c', scala: 'c', bash: 'sh', zsh: 'sh', shell: 'sh', yml: 'yaml',
+    pseudocode: 'pseudo', algo: 'pseudo', algorithm: 'pseudo' };
+  const LINE_C = { go: '//', js: '//', rs: '//', c: '//', py: '#', sh: '#', yaml: '#', lua: '--', sql: '--', pseudo: '//|#|▷' }; // | separates markers
   const LITS = new Set('true false nil null None True False undefined'.split(' '));
   const synOf = {};
   function syntax(lang) {
@@ -628,12 +631,14 @@
     if (!(lang in KW)) return null;
     if (synOf[lang]) return synOf[lang];
     const parts = [];
-    if (LINE_C[lang]) parts.push(`(?<c>${LINE_C[lang].replace(/[/-]/g, '\\$&')}.*)`);
+    if (LINE_C[lang]) parts.push(`(?<c>(?:${LINE_C[lang].replace(/[/-]/g, '\\$&')}).*)`);
     if (['go', 'js', 'rs', 'c', 'sql'].includes(lang)) parts.push('(?<b>/\\*)');
-    parts.push(`(?<s>"(?:[^"\\\\]|\\\\.)*"?|'(?:[^'\\\\]|\\\\.)*'?${['go', 'js', 'sh'].includes(lang) ? '|`[^`]*`?' : ''})`, '(?<n>\\b\\d[\\w.]*)', '(?<w>[A-Za-z_$][\\w$]*)');
-    return (synOf[lang] = { lang, re: new RegExp(parts.join('|'), 'g'), kw: new Set(KW[lang].split(' ')), ci: lang === 'sql' });
+    // pseudocode is half prose, so an apostrophe (don't, it's) opens no string there
+    const single = lang === 'pseudo' ? '' : `|'(?:[^'\\\\]|\\\\.)*'?`;
+    parts.push(`(?<s>"(?:[^"\\\\]|\\\\.)*"?${single}${['go', 'js', 'sh'].includes(lang) ? '|`[^`]*`?' : ''})`, '(?<n>\\b\\d[\\w.]*)', '(?<w>[A-Za-z_$][\\w$]*)');
+    return (synOf[lang] = { lang, re: new RegExp(parts.join('|'), 'g'), kw: new Set(KW[lang].split(' ')), ci: lang === 'sql' || lang === 'pseudo' });
   }
-  /** One line as HTML with .tk-k/.tk-s/.tk-n/.tk-c spans. st.block carries an open block comment to the next line. */
+  /** One line as HTML with .tk-k/.tk-f/.tk-s/.tk-n/.tk-c spans. st.block carries an open block comment to the next line. */
   function paint(t, syn, st) {
     if (!syn) return esc(t);
     const tk = (k, x) => `<span class="tk-${k}">${esc(x)}</span>`;
@@ -659,7 +664,10 @@
       }
       else if (g.s) out += tk('s', m[0]);
       else if (g.n || LITS.has(m[0])) out += tk('n', m[0]);
-      else out += syn.kw.has(syn.ci ? m[0].toLowerCase() : m[0]) ? tk('k', m[0]) : esc(m[0]);
+      else if (syn.kw.has(syn.ci ? m[0].toLowerCase() : m[0])) out += tk('k', m[0]);
+      else if (/^[A-Z][A-Z0-9_]+$/.test(m[0])) out += tk('n', m[0]); // a constant or an operation (MAX_N, READ, LW); one capital is a variable
+      else if ((syn.lang === 'pseudo' ? /^\(/ : /^\s*\(/).test(t.slice(i))) out += tk('f', m[0]); // a name before ( is a function, defined or called; pseudocode needs the ( right after the name, as "holding v (clean)" is prose
+      else out += esc(m[0]);
     }
     return out + esc(t.slice(i));
   }
@@ -1745,7 +1753,7 @@
    * op groups steps under a jump button; state is trusted HTML from the page. Compute it by running the code's logic.
    */
   let traceCount = 0;
-  function trace(root, { code: src, lang = '', steps = [], interval = 1300 } = {}) {
+  function trace(root, { code: src, lang = 'pseudo', steps = [], interval = 1300 } = {}) { // no lang: pseudocode; lang 'text' keeps it plain
     if (typeof src !== 'string') throw new Error('Kit.trace needs code: a string of source lines');
     if (!steps.length) throw new Error('Kit.trace needs at least one step');
     const total = src.replace(/\n+$/, '').split('\n').length;
