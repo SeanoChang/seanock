@@ -2544,8 +2544,28 @@ project of that test, before the first review.
 "Whole" means that all seven parts are on the page, and the two parts with no
 data show an empty state.
 
+Added on 2026-11-17 (0.10.0), from 17 more live sessions on Sonnet. Each is a
+reviewer: the verifier's instructions, a brief with the goal "exactly as the
+prototype" and no hint, and a page that is already built.
+
+| The page                                              | Without the rule                       | With the rule                                        |
+| ----------------------------------------------------- | -------------------------------------- | ---------------------------------------------------- |
+| five parts, the two with no data dropped (a real run) | 0 of 9 failed it: 7 pass, 2 unverified | 6 of 6 failed it, both parts in an Important finding |
+| all seven parts, two as empty states                  | not run                                | 0 of 2 failed it: 1 pass, 1 unverified               |
+
+Without the rule, every reviewer saw the two dropped parts, and none counted
+an Important finding: they logged the drop as a Nit or as no finding, and
+one wrote "that is the right call under the rule". In the measured
+session, the agent reported that the verifier had passed the build that had
+the cuts.
+
 ### By design
 
+- **The instructions of the builder and the verifier did not change.** The
+  first plan was to add a step on reference builds to both. With the rule
+  alone, the builder built every part in 9 of 9 runs and the reviewer failed
+  the dropped parts in 6 of 6, so a second text for the same order was left
+  out. Both agents load the rules file.
 - **The control shows another fault than the measured session.** There, the
   agent dropped parts. In the short run without the rule, the session that
   Sean talks to copies the prototype with its sample content, against the
@@ -2595,7 +2615,7 @@ data show an empty state.
   other assertions of the test fail when the rule is cut.
 - **The list of parts is the agent's own** (from the review). A list that
   misses a view of the reference, as the summary in the measured session
-  did, is then checked "part by part" and passes.
+  did, is then checked "part by part" and can pass.
 - **"The check" is not tied to the Done line of a brief** (from the
   review). The sentence says what the check compares. The brief rule does
   not yet ask for that comparison in its Done line.
@@ -2603,6 +2623,15 @@ data show an empty state.
   review). In an attended run with a blocked task, only the older sentence
   holds ("Scope beyond the request goes in suggestions"), and that sentence
   was in the rules of the measured session.
+- **The reviewer tests read words, not judgment.** The control passes only
+  for the verdicts "pass" and "unverified"; an answer with no verdict line,
+  or with another word there, fails it. The test with the rule asks for the verdict "fail", the word
+  "Important" and the names of both parts anywhere in the answer; a reviewer
+  that fails the page for another reason and names the parts in passing
+  passes it.
+- **The reviewer gets one page.** It is the page of one real run, kept byte
+  for byte in `tests/reference_fixture.py`. A page that drops one part, or
+  that hides a part and keeps its heading, was not tried.
 - **`.github/workflows/ci.yml` changed by one comment line,** the name of
   the new switch in the list of tests that CI does not run. No step changed.
 
@@ -2613,3 +2642,6 @@ data show an empty state.
 - A reference that is not an HTML file: a screenshot, a design file.
 - A long session. The measured fault came late in a long one, through a
   brief that the agent wrote itself; each live run here is one short request.
+- A reviewer with a shell. The live reviewer reads files and runs nothing,
+  so no run had a floor guard result or a browser.
+- The adversary, and a reviewer on Opus, the model the verifier runs on.

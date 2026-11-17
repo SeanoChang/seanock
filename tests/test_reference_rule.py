@@ -18,7 +18,14 @@ rule that forbids sample data:
   the answer names the two parts that have no data;
 - with the rule, the builder's instructions and a brief, the same holds.
 
-The live tests start three sessions and cost model calls, so they run only on
+Two more sessions are reviewers. Each gets the verifier's instructions and a
+page that a session without the rule built from that brief: the two parts
+with no data are left out (tests/reference_fixture.py).
+
+- without the rule, the reviewer does not fail the page;
+- with the rule, its verdict is "fail", and it names both parts.
+
+The live tests start five sessions and cost model calls, so they run only on
 request:
 
     REFERENCE_RULE_LIVE=1 python3 -m pytest tests/test_reference_rule.py -q -p no:cacheprovider -k live
@@ -39,6 +46,7 @@ from pathlib import Path
 
 import pytest
 
+from reference_fixture import DROPPED_PAGE
 from test_design_gate import CODEX_BUILT, CODEX_FRAME, ENV_KEPT, ROOT, RULES, flat, loaded, rule, scrub, session_argv, snapshot, without
 
 NAME = "working.reference"
@@ -260,10 +268,37 @@ def builder_request():
     return body.strip() + "\n\nYour brief:\n\n" + BRIEF
 
 
-def project(folder):
+# What a reviewer of the built page gets, after the verifier's own instructions.
+REVIEW_BRIEF = (
+    "Verify one change.\n"
+    "Goal: the home page of the app in site/index.html, exactly as prototype/home.html.\n"
+    "Tier: 1.\n"
+    "The change: one new file, site/index.html. The tree is not under git, so read the file; no floor guard and no "
+    "comment check can run. The project rules are in README.md.\n"
+    "Known findings: none.\n"
+    "(From the test harness: this session has no shell, so nothing can be run. Say so under Not covered.)\n"
+)
+
+
+def reviewer_request():
+    body = (ROOT / "config" / "claude" / "agents" / "verifier.md").read_text(encoding="utf-8").split("\n---\n", 1)[1]
+    return body.strip() + "\n\nYour brief:\n\n" + REVIEW_BRIEF
+
+
+def verdict(answer):
+    """The first word after "Verdict:" in a reviewer's answer, in lower case, or None."""
+    found = re.search(r"\bVerdict\W+([A-Za-z]+)", answer)
+    return found.group(1).lower() if found else None
+
+
+def project(folder, page=None):
+    """The stand-in project. With `page`, the app is already built: site/index.html holds it."""
     folder = Path(folder)
     (folder / "prototype").mkdir(parents=True)
     (folder / "data").mkdir()
+    if page is not None:
+        (folder / "site").mkdir()
+        (folder / "site" / "index.html").write_text(page, encoding="utf-8")
     (folder / "README.md").write_text(README, encoding="utf-8")
     (folder / "prototype" / "home.html").write_text(PROTOTYPE, encoding="utf-8")
     for name, rows in DATA.items():
@@ -323,15 +358,44 @@ def test_the_brief_of_the_live_run_has_all_eight_lines_and_names_the_reference()
     assert session_argv("RULES", "MODEL", REQUEST)[2].endswith(REQUEST)
 
 
+def test_the_page_for_the_reviewer_lacks_the_two_parts_and_nothing_else(tmp_path):
+    assert missing_parts(DROPPED_PAGE) == list(NO_DATA)
+    assert copied_sample(DROPPED_PAGE) == []
+    files = snapshot(project(tmp_path / "p", DROPPED_PAGE))
+    assert page_text(files) == DROPPED_PAGE
+    assert sorted(files) == ["README.md", "data/incidents.json", "data/members.json", "data/releases.json",
+                             "prototype/home.html", "site/index.html"]
+
+
+def test_the_reviewer_gets_the_verifiers_text_and_a_brief_with_no_hint():
+    request = reviewer_request()
+    assert request.startswith("You are the verifier") and request.endswith(REVIEW_BRIEF)
+    assert "exactly as prototype/home.html" in REVIEW_BRIEF and "Known findings: none." in REVIEW_BRIEF
+    # The brief must not say what is wrong with the page.
+    for word in ("Plan", "On call", "missing", "dropped", "empty state", "part"):
+        assert word not in REVIEW_BRIEF, f"the brief gives the reviewer a hint: {word}"
+
+
+@pytest.mark.parametrize("answer, word", [
+    ("**Verdict:** fail. Two sections of the reference are missing.", "fail"),
+    ("1. **Verdict:** pass. I read the file only.", "pass"),
+    ("Verdict: Unverified, nothing was run", "unverified"),
+    ("## Verdict\n\nFAIL: two parts are gone", "fail"),
+    ("The page looks fine to me.", None),
+])
+def test_the_verdict_of_a_reviewer_is_read_from_its_answer(answer, word):
+    assert verdict(answer) == word
+
+
 # ------------------------------------------------------------------ end to end
 
 LIVE = pytest.mark.skipif(not os.environ.get("REFERENCE_RULE_LIVE"), reason="set REFERENCE_RULE_LIVE=1 to run real sessions")
 
 
-def run_session(folder, rules, request=REQUEST):
+def run_session(folder, rules, request=REQUEST, page=None):
     """Run one session in a new stand-in project. Return its answer, the text
-    of the page it built, and the files it wrote or changed."""
-    repo = project(folder)
+    of the page under site/ at the end, and the files it wrote or changed."""
+    repo = project(folder, page)
     before = snapshot(repo)
     done = subprocess.run(
         session_argv(rules, os.environ.get("REFERENCE_RULE_LIVE_MODEL", "sonnet"), request),
@@ -380,3 +444,24 @@ def test_live_with_the_rule_an_agent_with_a_brief_builds_every_part(tmp_path):
     brief, and the builder cannot ask."""
     raw = RULES.read_text(encoding="utf-8")
     the_page_is_whole(*run_session(tmp_path / "project", loaded(raw), builder_request()))
+
+
+@LIVE
+def test_live_without_the_rule_a_reviewer_does_not_fail_a_page_with_dropped_parts(tmp_path):
+    """The control. If this fails, a reviewer fails the page even without
+    the rule, and the test below proves nothing."""
+    raw = RULES.read_text(encoding="utf-8")
+    answer, page, touched = run_session(tmp_path / "project", loaded(without(raw, (NAME,))), reviewer_request(), DROPPED_PAGE)
+    assert verdict(answer) in ("pass", "unverified"), "the reviewer failed the page without the rule" + report(answer, page, touched)
+
+
+@LIVE
+def test_live_with_the_rule_a_reviewer_fails_a_page_with_dropped_parts(tmp_path):
+    raw = RULES.read_text(encoding="utf-8")
+    answer, page, touched = run_session(tmp_path / "project", loaded(raw), reviewer_request(), DROPPED_PAGE)
+    told = report(answer, page, touched)
+    assert touched == [], "the reviewer changed the project" + told
+    assert verdict(answer) == "fail", "the reviewer did not fail the page" + told
+    assert re.search(r"\bImportant\b", answer), "the reviewer names no Important finding" + told
+    for part in NO_DATA:
+        assert part in answer, f"the reviewer does not name the dropped part: {part}" + told
