@@ -216,8 +216,9 @@ refuter checked each finding of the 6.2 run.
 - The 6.2 adversary found two faults that were still open after three
   passes of Claude's adversary. The older model found neither. Each of the
   older model's six findings matches one that the refuter or Claude's
-  adversary had confirmed. Two of them the 6.2 run did not report: a
-  contract nested very deep, and a slow wildcard match.
+  adversary had confirmed. Two things in them the 6.2 run did not report:
+  a slow wildcard match (one finding), and a contract nested very deep
+  (one input of the finding on damaged folders).
 - Both Astra runs missed the `preflight` class. Finding it took the matcher
   of Claude Code itself as the reference, which Claude's adversary fetched
   and neither Codex run did. A Codex adversary is a second attack, not a

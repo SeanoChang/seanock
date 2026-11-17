@@ -749,8 +749,9 @@ the run may change.
   tracked here.
 - **The Codex reviewers never write the merge gate's lines.** A Codex review is
   a second opinion. The review for the tier runs on Claude.
-- **The builder runs on GPT-6.1 Sol at `high`.** The numbers are in the
-  `codex-exec` skill, under Evidence.
+- **The builder runs on GPT-6.2 Sol at `high`.** The numbers are in the
+  `codex-exec` skill, under Evidence. One builder brief was run on it
+  (2026-11-17); the six-task check of 2026-11-11 was on GPT-6.1 Sol.
 
 ### Not enforced
 

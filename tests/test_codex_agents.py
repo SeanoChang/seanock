@@ -111,6 +111,21 @@ def test_the_builder_runs_on_the_cheaper_codex_model():
     assert agent("builder")["model"] == "gpt-6.2-sol" and agent("builder")["model_reasoning_effort"] == "high"
 
 
+def test_the_docs_name_the_models_that_the_role_files_hold():
+    """Found by the verifier of 0.14.0: the known limits still named the builder's model of the version before."""
+    def spoken(model):                      # gpt-6.2-sol -> GPT-6.2 Sol
+        family, version, name = model.split("-")
+        return f"{family.upper()}-{version} {name.capitalize()}"
+    limits = (REPO / "docs" / "known-limits.md").read_text(encoding="utf-8")
+    assert f"**The builder runs on {spoken(agent('builder')['model'])} at `high`.**" in limits
+    skill = (REPO / "config" / "claude" / "skills" / "codex-exec" / "SKILL.md").read_text(encoding="utf-8")
+    rules = (REPO / "config" / "claude" / "CLAUDE.md").read_text(encoding="utf-8")
+    for role in ROLES:
+        model = agent(role)["model"]
+        assert f"| `{role}`" in skill and f"`{model}`, `high`" in skill, role
+        assert f"**{spoken(model)}** (Codex)" in rules, role
+
+
 def test_the_reviewers_run_on_the_strongest_codex_model():
     for role in ("verifier", "adversary"):
         assert agent(role)["model"] == "gpt-6.2-astra" and agent(role)["model_reasoning_effort"] == "high"
