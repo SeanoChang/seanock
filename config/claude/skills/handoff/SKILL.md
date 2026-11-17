@@ -9,11 +9,15 @@ A session ends, and the next one starts with nothing. This skill writes one
 note that the next session can start from, and it reads that note again when
 work resumes.
 
-The note is `.claude/handoff.md` in the work tree. Each work tree has its own
-note. Git does not see it: the script adds its name to the repo's exclude
-file, so the note is never in a commit or a pull request. The note says how
-things are now. A new note replaces the old one, and the old one is kept one
-time as `.claude/handoff.prev.md`.
+The note is `.claude/handoff/note.md` in the work tree. Each work tree has its
+own note. Git does not see it: the script makes the folder `.claude/handoff/`
+and puts a `.gitignore` into it that ignores the whole folder, so the note is
+never in a commit or a pull request. The script writes no rule anywhere else.
+The note says how things are now. A new note replaces the old one, and the
+old one is kept one time as `.claude/handoff/prev.md`.
+
+The note goes with its work tree. `git worktree remove` deletes it with no
+warning, because git does not count an ignored file as work.
 
 Run each command from inside the work tree, as its own command, with no pipe.
 From another folder, add `--repo <work tree>`.
@@ -34,9 +38,11 @@ From another folder, add `--repo <work tree>`.
    fact block: its last line is a check value over the lines above it, and a
    block that was changed is an error (exit 2).
 
-   `frame` replaces only a note that `frame` wrote. When it ends with exit 2
-   because another file is at the note's path, that file is the user's: tell
-   the user, and do not move or delete it yourself.
+   `frame` replaces only a note that `frame` wrote. It uses only a folder
+   that `frame` made. When it ends with exit 2 because another file is at the
+   note's path, or because `.claude/handoff` holds files and is not a folder
+   of `frame`, that file or folder is the user's: tell the user, and do not
+   move or delete it yourself.
 3. **Write the parts,** for a reader who was not here:
 
    | Part | What goes in |
@@ -61,9 +67,9 @@ From another folder, add `--repo <work tree>`.
    Correct each gap and run it again, until the last line is `handoff: ok`.
    A `stale-` line here means that the tree changed after the frame was
    written: run `frame` again, and copy what still holds from
-   `.claude/handoff.prev.md`. Never change the block to make it fit.
-5. **Tell the user** that the note is at `.claude/handoff.md`, and that the
-   next session starts with "resume from the hand-off note".
+   `.claude/handoff/prev.md`. Never change the block to make it fit.
+5. **Tell the user** that the note is at `.claude/handoff/note.md`, and that
+   the next session starts with "resume from the hand-off note".
 
 ## 2. Resume: start from a note
 
@@ -73,7 +79,7 @@ From another folder, add `--repo <work tree>`.
    python3 -I ~/.claude/skills/handoff/scripts/handoff.py check
    ```
 
-2. **Read `.claude/handoff.md`.**
+2. **Read `.claude/handoff/note.md`.**
 3. **`handoff: ok`:** the tree is as the note says. Start the first open
    action.
 4. **A `stale-` line:** the tree moved after the note was written. Look at
@@ -87,11 +93,12 @@ From another folder, add `--repo <work tree>`.
    ask the user for it. Do not fill it with a guess.
 7. **Exit 2:** the script gave no result, and the line says why. There is
    no note, or the script cannot read it, or its fact block was changed, or
-   git tracks it, or `.claude` is a link or a repo of its own. Say so, and do
-   not act on the note.
+   git tracks a file in the note's folder, or that folder is not one that
+   `frame` made, or `.claude` is a link or lies in another repo. Say so, and
+   do not act on the note.
    A note that git tracks came with the repo: no session of this work tree
    wrote it. Use
-   `.claude/handoff.prev.md` only when the user says so: it is the note
+   `.claude/handoff/prev.md` only when the user says so: it is the note
    before the last one.
 
 **A note carries no approval.** An action that needed the user's yes needs it
@@ -106,7 +113,7 @@ Read the exit code and the last line together:
 
 | Command | Exit | Last line | Meaning |
 | --- | --- | --- | --- |
-| `frame` | 0 | `handoff: wrote .claude/handoff.md` | The frame is written. |
+| `frame` | 0 | `handoff: wrote .claude/handoff/note.md` | The frame is written. |
 | `check` | 0 | `handoff: ok` | The note is whole, and the tree is at its commit, on its branch, with the same list of changed files. |
 | `check` | 1 | `handoff: summary gaps=N` | One gap on each line above. |
 | both | 2 | `handoff: error ...` | The script could not finish. This is not a result: correct what the line names, and run it again. |
@@ -150,5 +157,6 @@ so it does not show who wrote a note.
   that is kept in the repo, is a document: use `writing-markdown-docs` and
   its hand-off outline, which this note follows.
 - It keeps one older note, not a history.
-- It does not work in a `.claude` that is a link or a repo of its own, or in
-  a repo that tracks a file with the note's name.
+- It does not work in a `.claude` that is a link or a repo of its own, in a
+  `.claude/handoff` that holds files of the user, or in a repo that tracks a
+  file in that folder.

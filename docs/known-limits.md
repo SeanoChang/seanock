@@ -2337,6 +2337,14 @@ has none.
 
 ## Hand-off note (`config/claude/skills/handoff`, 2026-11-15)
 
+Version 0.8.0 kept the note at `.claude/handoff.md` and wrote three names
+into the exclude file of the repo. Its last review round ended with a break
+that stayed open: all work trees of a repo share that file, so a file of the
+user with one of the names in another work tree was gone from `git status`,
+and `git worktree remove` then deleted it with no warning. Since 0.11.0
+(2026-11-17) the note has a folder of its own that ignores itself, and the
+script writes no rule outside that folder.
+
 ### By design
 
 - **The check reads the form of a note, not its truth.** It cannot tell
@@ -2345,37 +2353,69 @@ has none.
   gap: only the form of the time in the fact block is read.
 - **One note for each work tree, and the last writer wins.** Two sessions in
   one work tree replace each other's note. A note with text is kept one
-  time, as `.claude/handoff.prev.md`; an empty frame is replaced and not
+  time, as `.claude/handoff/prev.md`; an empty frame is replaced and not
   kept. The write goes through a new file and a rename, so a reader sees a
   whole note, and nothing is written through a link.
 - **`frame` moves and replaces only a note that `frame` wrote.** A file at
   the note's path or at the kept note's path that does not start as the
   notes of this script start (`---`, then `type: handoff`) is the user's
   own or came from elsewhere, and so is a link there. `frame` then ends
-  with exit 2 before its first write: no note and no exclude line, because
-  an exclude line would hide that file from git. On a disk that
-  does not keep letter case apart, this holds for `.claude/HANDOFF.md` too,
-  which is the note's own path there. Before this rule, `frame` moved such
-  a file to the kept note, and the `frame` after that replaced it. The
-  price: a note whose first two lines were damaged (an editor that saves
-  with a byte-order mark or with other line ends) is no note of this script
-  any more. `check` and `frame` both end with exit 2 until the file is
-  moved away, and the error line says to ask the user. A note that is
-  damaged further down still starts as a note, and it is kept one time.
-- **The note's place must be this work tree's own.** A `.claude` that has a
-  `.git` of its own (a clone, a work tree of another repo) is exit 2 for
-  both commands: the exclude lines keep the note out of one repo only, so
-  the other repo would see the note, could commit it, and could track the
-  file that `frame` replaces. Who keeps `.claude` as a repo of its own
-  cannot use this skill there.
-- **One `frame` at a time works in `.claude/`.** A lock on that folder
-  (`flock`) covers the look at the old note, the move to the kept note and
-  the write. Without it, two runs at one time both chose to keep a note
-  with text, and the second moved the empty frame of the first over it. A
-  run that waits longer than 30 s ends with exit 2 and writes no note; the
-  exclude lines can be in the exclude file by then. The lock ends with its
-  process. `check` takes no lock: it reads a whole note, the old one or the
-  new one.
+  with exit 2 before its first write. On a disk that does not keep letter
+  case apart, this holds for `.claude/handoff/NOTE.md` too, which is the
+  note's own path there. Before this rule, `frame` moved such a file to the
+  kept note, and the `frame` after that replaced it. The price: a note
+  whose first two lines were damaged (an editor that saves with a
+  byte-order mark or with other line ends) is no note of this script any
+  more. `check` and `frame` both end with exit 2 until the file is moved
+  away; the error line of `frame` says to ask the user, and the one of
+  `check` names the first line of the block (run 2026-11-17). A note that
+  is damaged further down still starts as a note, and it is kept one time.
+- **The folder ignores itself, and `frame` writes no rule anywhere else.**
+  `frame` makes `.claude/handoff/` and puts a `.gitignore` with the one line
+  `*` into it. In git the rule that is nearest to a file wins, so no `!`
+  rule of the tree, of the exclude file or of the user's own ignore file
+  shows the note to git, and a test holds that. The same rule keeps the
+  note out of every other repo that looks at the folder. What follows from
+  it:
+  - a file of the user in another work tree, under any name, stays in
+    `git status` there, and git refuses to remove that work tree;
+  - the note goes with its work tree: `git worktree remove` deletes it with
+    no warning, because git does not count an ignored file as work;
+  - everything else in the folder is out of git's sight too. A session that
+    puts a file beside the note hides it from git.
+- **`frame` uses only a folder that `frame` made.** That is a folder whose
+  `.gitignore` is the one line `*`, byte for byte, or an empty folder, which
+  `frame` then makes its own. A `.claude/handoff` with files and another
+  `.gitignore`, or none, is the user's folder: both commands end with exit
+  2, the line says to ask the user, and nothing is written. A `.gitignore`
+  there would hide the user's files from git, the fault of 0.8.0 in another
+  place. A folder where the user wrote the same one-line `.gitignore` reads
+  as a folder of `frame`: git did not see its files before, and `frame`
+  adds its note beside them (run 2026-11-17).
+- **The folder must lie in this work tree's own repo.** The script asks git
+  for the top of the repo from inside `.claude`, or from inside the folder
+  when it is there. Another top than the one of the work tree is exit 2 for
+  both commands. That covers a `.claude` with a `.git` of its own, as a
+  folder or as a file that names one (a clone, a work tree of another
+  repo), and the same for the folder itself. Such a repo can bring a folder
+  and a note that look like `frame`'s own. A `.git` file there that names
+  no git folder is exit 2 with git's error. Who keeps `.claude` as a repo
+  of its own cannot use this skill there.
+- **A git folder elsewhere that takes `.claude` as its work tree is not
+  seen** (`core.worktree`, or `GIT_WORK_TREE` in another tool). Nothing
+  inside `.claude` says so, and git finds only the repo of the work tree
+  from there. `frame` then writes its note. A test holds this case: the
+  other repo does not list the note. When that other repo tracks a file at
+  the note's path, `frame` replaces it if it starts as a note starts, and
+  that repo shows the change. Other ways to make one folder part of two
+  repos may exist; this list may not be whole.
+- **One `frame` at a time works in `.claude/handoff/`.** A lock on that
+  folder (`flock`) covers the look at the folder and at the old note, the
+  move to the kept note and the write. Without it, two runs at one time
+  both chose to keep a note with text, and the second moved the empty frame
+  of the first over it. A run that waits longer than 30 s ends with exit 2
+  and writes no note. The lock ends with its process. `check` takes no
+  lock: it reads a whole note, the old one or the new one.
 - **The fact block ends with a check value, and the value holds no
   secret.** The last line of the block is 32 hex digits of SHA-256 over the
   lines above it. A block that was changed by hand is exit 2, also when its
@@ -2450,13 +2490,15 @@ has none.
   note must be right, so the filter stays on. The settings in question are
   the ones of `.git/config`, which a clone does not bring; each
   `git status` of the session runs the same program.
-- **A repo that tracks a file with the note's name in other letter case
+- **A repo that tracks a file in the note's folder, under any letter case,
   cannot hold a note.** `frame` and `check` end with exit 2 when git tracks
-  `.claude/HANDOFF.md`, `.Claude/handoff.md`, the kept note in such a
-  spelling, or the name with the one character for `ff` (U+FB00). On the
-  disk of a Mac each of these is the note's own file, and `frame` would
-  replace a tracked file. The answer is the same on a disk that keeps
-  letter case apart, where they are other files. The names that git lists
+  `.claude/handoff` itself or any file below it, in spellings such as
+  `.claude/Handoff/Prev.md`, `.Claude/handoff/note.md`, or the folder name
+  with the one character for `ff` (U+FB00). On the disk of a Mac each of
+  these is the note's own place, and what git tracks there came with the
+  repo. The answer is the same on a disk that keeps letter case apart,
+  where they are other files. A tracked `.claude/handoff.md`, the name of
+  0.8.0, is no longer in the way. The names that git lists
   under `.claude` in any ASCII letter case are compared after Unicode case
   folding. A disk that takes still more names for one is not covered (not
   run: the test disk has no such rule). Tracked means in the index: a note
@@ -2470,32 +2512,39 @@ has none.
   caller's `PATH`: a `PATH` that leads into the work tree runs a `git` of
   that tree, as for every git call that is typed there (see "Maintain
   verify skill").
-- **The exclude file belongs to the repo, not to the work tree.** All work
-  trees of a repo share it, and the three lines stay when the note is gone:
-  the note, the kept note, and `/.claude/handoff.tmp.*` for a note that is
-  half written. When a rule of the repo takes the note back in (a `!` line
-  in `.gitignore`), `frame` ends with exit 2 and writes no note; the lines
-  are in the exclude file by then.
-- **A `.claude` that is a link to a folder is an error,** for `frame` and
-  for `check`: the script opens the folder and the note with no link
-  followed. A `.claude` that git tracks as one entry (a link, or a
-  submodule) is refused too: the note in it came with a repo.
+- **A note of 0.8.0 is not read and not moved.** A file at
+  `.claude/handoff.md` is a file like any other now, and git lists it again
+  when no rule ignores it. The three lines that 0.8.0 wrote into the
+  exclude file of a repo stay there until someone takes them out. 0.8.0
+  was on `dev` only and in no release.
+- **A link is never followed.** `.claude`, the folder, its `.gitignore`,
+  the note and the kept note are each opened with no link followed, and a
+  link at one of them is exit 2 for `frame` and for `check`. The script
+  opens the folder one time and reads, writes and renames every file
+  through that open folder. A `.claude` that git tracks as one entry (a
+  link, or a submodule) is refused too: the note in it came with a repo.
 - **A note carries no approval, and that is text only.** No code stops a
   session that acts on a next action without the user's yes. Some ways in
-  are closed by code: `check` does not read a note that git tracks, a note
-  behind a link, or a note in a `.claude` that is a repo of its own or that
-  git tracks as one entry (exit 2). A note that reaches the work tree
-  another way, such as an unpacked archive, is read like any other.
+  are closed by code: `check` does not read a note in a folder where git
+  tracks a file, a note behind a link, or a note in a `.claude` that lies
+  in another repo or that git tracks as one entry (exit 2). A note that
+  reaches the work tree another way, such as an unpacked archive that holds
+  the folder with its `.gitignore`, is read like any other.
 
 ### Minor
 
-- **Two `frame` runs at one time can each add the exclude lines.** A line
-  that is there two times changes nothing.
 - **A `frame` that is killed between the write and the rename leaves
-  `.claude/handoff.tmp.<letters>`.** Git does not see that file, and no
-  later run deletes it: `frame` deletes no file by the form of its name,
-  because such a file can be the user's own. The exclude line for that
-  name form hides such a file of the user from git too.
+  `.claude/handoff/note.tmp.<digits>`.** Git does not see that file, and no
+  later run deletes it: `frame` deletes no file by the form of its name.
+- **A `frame` that is killed while it makes the folder** leaves an empty
+  folder, and the next `frame` goes on from it. Killed between the making
+  of the `.gitignore` and the write of its two bytes, it leaves an empty
+  `.gitignore`: both commands then end with exit 2 ("not a folder that
+  frame made") until that file is deleted by hand (run 2026-11-17; the
+  kill itself was not run).
+- **The repo that holds the folder is looked up before the folder is
+  opened.** The two steps are not one: a folder that is swapped between
+  them is opened with no link followed, and is then read as it is.
 - **The script has no `--help`.** Each run ends with a result line or an
   error line, and a help text is neither, so `--help` is exit 2. The first
   lines of the script and the skill text say how to call it.
@@ -2519,6 +2568,9 @@ has none.
   it shows that a note of this form is enough to go on, and not that an
   agent runs `check` first.
 - Two sessions that write the parts of one note at the same time.
+- `git clean -x`. By git's own text it deletes ignored files, so it would
+  delete the note. The guard of this harness denies that command, and no
+  test runs it.
 - A sparse checkout.
 - A disk with no `flock` (some network disks). By the code, `frame` ends
   there with exit 2 and writes no note.
