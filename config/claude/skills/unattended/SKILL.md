@@ -143,8 +143,10 @@ instruction.
 - `preflight` reads the allow, ask and deny rules for shell commands in the
   user's settings and in the two settings files of the project. It does not
   know the permission mode, hooks, or the commands that Claude Code runs
-  without asking by itself, and it does not split a command with `&&` or a
-  pipe. So it can call a command `would-prompt` that would run. It is built
-  to err on that side.
+  without asking by itself, and it does not parse a shell command: one
+  with a quote, an operator, a wildcard or a variable is `unsure`. So it
+  can call a command `would-prompt` or `unsure` that would run. It is built
+  to err on that side: a rule that allows is read narrowly, and a rule that
+  stops is read widely.
 - The log holds what the session wrote. It is not proof that a task is
   done: the check of the task is.

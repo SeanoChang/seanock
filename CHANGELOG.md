@@ -25,7 +25,10 @@ Added:
   grows; the state of a task is read from the log.
 - `preflight` names each shell command of the plan that an allow rule of
   the settings does not cover, by the wildcard rules of the Claude Code
-  permissions page. Only `allowed` is a pass.
+  permissions page. Only `allowed` is a pass. A rule that allows is read
+  narrowly and a rule that stops (deny, ask) widely, and a command that is
+  not plain words (one with a quote, an operator, a wildcard or a variable)
+  is `unsure`, so that a doubt does not end as `allowed`.
 - `start` removes runs that ended more than 14 days ago, and `prune` does
   the same on request.
 

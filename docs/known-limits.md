@@ -2804,12 +2804,22 @@ test checks that on random lines in five languages.
   folder is `~/.claude/unattended/<session>/<start time>/`. The session id
   comes from `CLAUDE_CODE_SESSION_ID`, which Claude Code sets for each
   shell command of a session (Claude Code docs, read 2026-11-17). Outside a
-  session the script ends with exit 2. Nothing is written into a project,
+  session `start`, `log`, `status` and `close` end with exit 2; `preflight`
+  and `prune` need no session. A run whose contract names another session
+  is not taken: on a disk that takes `abc` and `ABC` for one name, two ids
+  would share a folder. Nothing is written into a project,
   so the faults of a note in a work tree (a file of the user hidden or
   replaced, a note that came with a repo) have no place here.
 - **The contract is written one time, and the log only grows.** The state
   of a task is what its last `done` or `skipped` line says. A step that was
-  skipped can be done later.
+  skipped can be done later. The contract gets its name when it is whole,
+  so a start that fails halfway leaves a folder that is no run; `prune`
+  removes such a folder 14 days after the time in its name.
+- **`log` and `close` hold the folder of the run while they work,** and
+  read the log again under that lock. So a line is never written after the
+  close: a `log` that comes second is refused (found by the adversary,
+  2026-11-17; 3 of 25 runs lost a line before). A command waits 10 seconds
+  for the lock, then ends with exit 2.
 - **The log is what the session wrote.** No code checks that a task which
   is logged as done is done: the check of the task does, and the report
   says so.
@@ -2818,33 +2828,63 @@ test checks that on random lines in five languages.
   the report under "Blocked on me", so an early end is seen, not stopped.
 - **`preflight` is advice, and it errs toward "would prompt".** It reads
   the allow, ask and deny rules for `Bash` in `~/.claude/settings.json` and
-  in the two settings files of the project. It does not know the
-  permission mode, hooks, the sandbox, whether the project is trusted (an
-  allow rule of an untrusted project does not count for Claude Code, and it
-  counts here), the wrappers that Claude Code strips
-  (`timeout`, `nice`), or the read-only commands that Claude Code runs
-  without asking. It does not split a command: one with `&&`, `|`, `;`,
-  `&`, a line break, a redirection or a command substitution is `unsure`.
-  A command is judged letter for letter as the plan holds it, and one
-  with a control character is `unsure` too. So `git status` with no allow
-  rule is reported as `would-prompt` although it would run, and so is a
-  command with two spaces where its rule has one. A deny or ask rule that Claude Code applies to a
-  part inside a longer command is not seen for a command that is
-  `unsure`; that state is no pass either. A deny or ask rule of the form
-  `prefix:*` is read in its wider sense (any command that starts with the
-  prefix), an allow rule in the sense of the docs (`prefix *`).
+  in the two settings files of the project. The two kinds of rule are read
+  in opposite ways, so that a doubt does not end as `allowed`:
+  - A rule that stops (deny, ask) is read widely: as written, and with each
+    run of spaces and tabs made one space in the rule and in the command,
+    as Claude Code 2.1.325 does it (the adversary ran that program's own
+    matcher, 2026-11-17). `prefix:*` counts for any command that starts
+    with the prefix. The rule is also tried on the command from each of
+    its words on, and with that word as a bare program name: a rule for
+    `rm` holds for `FOO=1 rm`, `timeout 30 rm` and `/bin/rm`, and also
+    for `echo rm`, which is called `denied` although it would run.
+  - A rule that allows is read narrowly: letter for letter, by the three
+    wildcard rules of the permissions page. A `:*` beside another `*`
+    allows nothing here.
+  - A command that is not plain words is `unsure`, after the rules that
+    stop were read. Plain words are letters, digits and
+    `_ @ % + = : , . / ~ -`, with spaces or tabs between the words, and no
+    word starts with `=`. So a command with an operator, a quote, a
+    wildcard, a variable, a bracket, a backslash, a control character or a
+    letter outside ASCII is never `allowed`: `git commit -m "text"` is
+    `unsure` although an allow rule may cover it. The script does not parse
+    a shell command. A list of the marks that it could not read was tried
+    first, and it was open at one end (quotes, `(rm x)`, `=rm`); the list
+    of what it can read is closed.
+
+  What it does not know: the permission mode, hooks, the sandbox, whether
+  the project is trusted (an allow rule of an untrusted project counts
+  here), the wrappers that Claude Code strips (`timeout`, `nice`), the
+  read-only commands that Claude Code runs without asking, managed
+  settings, and `CLAUDE_CONFIG_DIR`. So `git status` with no allow rule is
+  `would-prompt` although it would run. Not covered, and a possible way to
+  a wrong `allowed`: what a plain word does when it runs. A script, an
+  alias or a shell function with a plain name can run any program, and
+  neither this script nor a permission rule sees inside it.
 - **A text from the plan or the log is printed as one line.** Control
-  characters become spaces and a text is cut at 2,000 characters, so a log
-  line cannot add a second result line to the output.
+  characters become spaces and a line is cut at 2,000 characters, so a log
+  line cannot add a second result line to the output. In the contract and
+  the log each run of spaces is one space; a command of `preflight` is
+  printed with the spaces that were judged. A letter that the terminal
+  cannot show is printed in escaped form.
 - **Runs are removed 14 days after they ended:** a closed run by the time
   of its close, a run that was never closed by its time limit. `start` does
-  this for all sessions of the user. `prune --days N` shortens the time for
+  this for all sessions of the user. `prune --days N` sets the time for
   closed runs only: a run that was never closed can still have a session
-  that writes to it. A run that cannot be read is left alone, by `prune`
-  and by every `start`.
+  that writes to it, and it stays 14 days. A run or a session folder that
+  cannot be read or removed is left alone and stops nothing else (found by
+  the adversary: one such folder ended every `start`). An empty session
+  folder is removed only by the `prune` that took its last run.
 
 ### Minor
 
+- **The folders above the root are made as the system makes them.** With
+  `UNATTENDED_ROOT` several levels deep, the missing parents get mode 755,
+  and a link above the root is followed. The default root is in
+  `~/.claude`.
+- **A `start` while another session's `prune` removes the last run of the
+  same session folder** can end with exit 2; a second try works. Not
+  reproduced in 335 tries by the adversary.
 - **Two starts of one session in the same second** end the second one with
   exit 2 ("File exists"): the name of a run folder is its start second.
 - **The script trusts its own folder.** Another program of the same user

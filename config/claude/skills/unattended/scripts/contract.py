@@ -16,13 +16,16 @@ Exit 0: done, and the last line says what. Exit 1: a result that needs action (a
 close that the contract does not allow, no open run). Exit 2: `unattended: error ...`, which is not a result.
 """
 import argparse
+import contextlib
 import datetime
+import fcntl
 import json
 import os
 import re
 import shutil
 import stat
 import sys
+import time
 from pathlib import Path
 
 ROOT_ENV = "UNATTENDED_ROOT"        # tests put the runs somewhere else; a session never sets it
@@ -36,7 +39,8 @@ DEFAULT_HOURS = 8.0
 MAX_HOURS = 72.0
 KEEP_DAYS = 14
 MAX_TEXT = 2000
-SEPARATORS = ("&&", "||", ";", "|", "&", "\n", "$(", "`", ">", "<")
+LOCK_WAIT_S = 10.0
+WORD = re.compile(r"[A-Za-z0-9_@%+:,./~-][A-Za-z0-9_@%+=:,./~-]*")
 
 
 class Failed(Exception):
@@ -55,11 +59,17 @@ def moment_of(text):
     return datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
 
 
-def one_line(text):
-    """Text for one log field or one output line: no line break, no control character, a fixed length at most."""
+def shown(text):
+    """Text for one line of output: no line break, no control character, a fixed length at most. The spaces stay
+    as they are."""
     text = "".join(ch if ch.isprintable() else " " for ch in str(text))
-    text = " ".join(text.split())
     return text if len(text) <= MAX_TEXT else text[:MAX_TEXT - 1] + "…"
+
+
+def one_line(text):
+    """Text for one field of the contract or the log: as `shown`, and with each run of spaces made one."""
+    text = "".join(ch if ch.isprintable() else " " for ch in str(text))
+    return shown(" ".join(text.split()))
 
 
 # ── where a run is ───────────────────────────────────────────────────────────
@@ -105,17 +115,23 @@ def session_folder(session, make):
     return folder if plain_folder(folder, make) else None
 
 
-def runs_of(folder):
-    """The run folders of one session, the oldest first. A name that is no start time is not a run."""
-    names = []
+def stamped(folder):
+    """The folders of one session whose name is a start time, the oldest first, each with that time."""
+    found = []
     for name in os.listdir(folder):
         try:
-            datetime.datetime.strptime(name, STAMP)
+            began = datetime.datetime.strptime(name, STAMP).replace(tzinfo=datetime.timezone.utc)
         except ValueError:
             continue
         if stat.S_ISDIR(os.lstat(folder / name).st_mode):
-            names.append(name)
-    return [folder / name for name in sorted(names)]
+            found.append((name, began))
+    return [(folder / name, began) for name, began in sorted(found)]
+
+
+def runs_of(folder):
+    """The runs of one session, the oldest first. A folder that never got its contract is no run: a start that
+    failed halfway leaves one."""
+    return [path for path, _ in stamped(folder) if os.path.lexists(path / CONTRACT)]
 
 
 def read_file(path):
@@ -133,7 +149,7 @@ class Run:
         self.folder = folder
         try:
             self.contract = json.loads(read_file(folder / CONTRACT))
-            lines = read_file(folder / LOG).splitlines() if (folder / LOG).exists() else []
+            lines = read_file(folder / LOG).splitlines() if os.path.lexists(folder / LOG) else []
             self.log = [json.loads(line) for line in lines if line.strip()]
             for line in self.log:
                 if not isinstance(line, dict) or not isinstance(line.get("kind"), str):
@@ -141,17 +157,20 @@ class Run:
                 moment_of(line["t"])
             self.tasks = [(str(task["id"]), str(task["title"]), str(task["check"])) for task in self.contract["tasks"]]
             self.ends = moment_of(self.contract["ends"])
-        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-            raise Failed(f"cannot read the run in {folder}: {exc}")
+            self.session = self.contract["session"]
+        except Failed:
+            raise
+        except Exception as exc:      # whatever a damaged file does to the reader, the answer is the same
+            raise Failed(f"cannot read the run in {folder}: {type(exc).__name__}: {exc}")
 
     def closed(self):
-        return any(line.get("kind") == "closed" for line in self.log)
+        return any(line["kind"] == "closed" for line in self.log)
 
     def state_of(self, task):
         """done, skipped or left: what the last done or skipped line of the task says."""
         state = "left"
         for line in self.log:
-            if line.get("task") == task and line.get("kind") in ("done", "skipped"):
+            if line.get("task") == task and line["kind"] in ("done", "skipped"):
                 state = line["kind"]
         return state
 
@@ -173,8 +192,9 @@ class Run:
         self.log.append(line)
 
 
-def open_run(session):
-    """The run of this session that is not closed, or None."""
+def last_run(session):
+    """The newest run of this session, or None. A run in this folder that names another session is not this
+    session's: on a disk that takes `abc` and `ABC` for one name, two ids share a folder."""
     folder = session_folder(session, make=False)
     if folder is None:
         return None
@@ -182,7 +202,42 @@ def open_run(session):
     if not runs:
         return None
     run = Run(runs[-1])
-    return None if run.closed() else run
+    if run.session != session:
+        raise Failed(f"the run in {run.folder} belongs to another session")
+    return run
+
+
+def open_run(session):
+    """The run of this session that is not closed, or None."""
+    run = last_run(session)
+    return None if run is None or run.closed() else run
+
+
+@contextlib.contextmanager
+def the_open_run():
+    """The open run of this session, read while this command alone holds its folder. A command that changes the
+    run reads it under that lock: `log` and `close` at the same time then see each other, and no line is written
+    after the close."""
+    run = open_run(session_id())
+    if run is None:
+        raise Failed("this session has no open run")
+    held = os.open(run.folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        deadline = time.monotonic() + LOCK_WAIT_S
+        while True:
+            try:
+                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise Failed(f"another command holds the run for longer than {LOCK_WAIT_S:g} s")
+                time.sleep(0.05)
+        run = Run(run.folder)
+        if run.closed():
+            raise Failed("this session has no open run")
+        yield run
+    finally:
+        os.close(held)
 
 
 # ── the plan ─────────────────────────────────────────────────────────────────
@@ -190,7 +245,7 @@ def open_run(session):
 def read_plan(path):
     try:
         plan = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         raise Failed(f"cannot read the plan {path}: {exc}")
     if not isinstance(plan, dict):
         raise Failed("the plan is no JSON object")
@@ -213,7 +268,7 @@ def texts(plan, name, fields, as_written=False):
         values = []
         for field in fields:
             value = entry.get(field)
-            if not isinstance(value, str) or not value.strip():
+            if not isinstance(value, str) or not one_line(value):
                 raise Failed(f"`{name}` entry {number} has no `{field}`")
             values.append(value if as_written else one_line(value))
         out.append(values)
@@ -235,6 +290,11 @@ def checked_plan(plan):
 
 
 # ── which command would prompt ───────────────────────────────────────────────
+#
+# The two kinds of rule are read in opposite ways, so that a doubt never ends as `allowed`. A rule that allows is
+# read narrowly: letter for letter, and a form that this script does not know for sure allows nothing. A rule
+# that stops (deny, ask) is read widely: with the spaces made even, as Claude Code does it, and `prefix:*` in
+# both senses that it has had.
 
 def rule_matches(rule, command):
     """Whether a Bash rule covers this command text, by the three wildcard rules of the permissions page: a `*`
@@ -250,11 +310,37 @@ def rule_matches(rule, command):
     return re.fullmatch(pattern, command, re.DOTALL) is not None
 
 
+def even(text):
+    """The text with each run of spaces and tabs made one space, and none at its ends."""
+    return " ".join(part for part in re.split(r"[ \t]+", text) if part)
+
+
+def allows(rule, command):
+    """Whether an allow rule covers the command, read narrowly. Claude Code reads a `:*` beside another `*` as
+    plain text; this script does not take that form for one that it knows. (A rule with a backslash needs no
+    line here: it can only cover a command with a backslash, and such a command is not plain words, so it is
+    `unsure` before any allow rule is read.)"""
+    if rule.endswith(":*") and "*" in rule[:-2]:
+        return False
+    return rule_matches(rule, command)
+
+
 def stops(rule, command):
-    """Whether a deny or ask rule covers the command. `prefix:*` is read in both senses that it has had, as
-    `prefix *` and as any command that starts with the prefix: a rule that stops a command must not be read too
-    narrowly."""
-    return rule_matches(rule, command) or (rule.endswith(":*") and command.startswith(rule[:-2]))
+    """Whether a deny or ask rule covers the command, read widely. The rule is tried on the command as written,
+    and on the command from each of its words on, with the spaces made even and with that word also as a bare
+    program name. So a rule for `rm` holds for `FOO=1 rm`, `timeout 30 rm` and `/bin/rm`, as it does in Claude
+    Code, and for `echo rm` too, which errs to the safe side. `prefix:*` also takes any text that starts with
+    the prefix."""
+    if rule_matches(rule, command):
+        return True
+    rule = even(rule)
+    words = even(command).split(" ")
+    for start in range(len(words)):
+        for first in {words[start], words[start].rsplit("/", 1)[-1]}:
+            form = " ".join([first] + words[start + 1:])
+            if rule_matches(rule, form) or (rule.endswith(":*") and form.startswith(rule[:-2])):
+                return True
+    return False
 
 
 def bash_rules(settings, name):
@@ -269,21 +355,30 @@ def bash_rules(settings, name):
     return whole, patterns
 
 
+def plain(command):
+    """Whether the command is words of letters, digits and `_ @ % + = : , . / ~ -`, with spaces or tabs between
+    them, and no word starts with `=`. Such a text reads in one way only. A quote, an operator, a wildcard, a
+    variable, a bracket or a character outside ASCII can make Claude Code or the shell read another command
+    than this script does."""
+    return all(WORD.fullmatch(word) for word in re.split(r"[ \t]+", command) if word)
+
+
 def judge(command, settings_list):
     """allowed, would-prompt, unsure or denied, and the rule that says so. Only `allowed` is a pass. A command
-    with a shell operator is unsure: Claude Code judges each part of it on its own, and this script does not
-    split commands."""
+    that is not plain words is unsure: this script does not parse a shell command, and Claude Code judges each
+    part of a command on its own."""
     for name, verdict in (("deny", "denied"), ("ask", "would-prompt")):
         for settings in settings_list:
             whole, patterns = bash_rules(settings, name)
             hit = "Bash" if whole else next((p for p in patterns if stops(p, command)), None)
             if hit:
                 return verdict, f"{name}: {hit}"
-    if any(mark in command for mark in SEPARATORS) or not command.isprintable():
-        return "unsure", "it has a shell operator, a line break or a control character; write each part as its own command"
+    if not plain(command):
+        return "unsure", ("it is not plain words: a quote, an operator, a wildcard, a variable or a control "
+                          "character can make Claude Code read another command than this script")
     for settings in settings_list:
         whole, patterns = bash_rules(settings, "allow")
-        hit = "Bash" if whole else next((p for p in patterns if rule_matches(p, command)), None)
+        hit = "Bash" if whole else next((p for p in patterns if allows(p, command)), None)
         if hit:
             return "allowed", f"allow: {hit}"
     return "would-prompt", "no allow rule covers it"
@@ -299,7 +394,7 @@ def settings_files(project):
             data = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             continue
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, RecursionError) as exc:
             raise Failed(f"cannot read {path}: {exc}")
         if isinstance(data, dict):
             out.append(data)
@@ -315,7 +410,7 @@ def preflight(args):
     for command in commands:
         verdict, why = judge(command, settings_list)
         counts[verdict] += 1
-        lines.append(f"{verdict} {command}  [{why}]")
+        lines.append(f"{verdict} {command} [{why}]")
     summary = " ".join(f"{name}={count}" for name, count in counts.items())
     return (0 if counts["allowed"] == len(commands) else 1), lines + [f"unattended: preflight {summary}"]
 
@@ -328,40 +423,36 @@ def start(args):
     if open_run(session) is not None:
         raise Failed("this session has an open run already: close it first")
     prune_runs(KEEP_DAYS)
-    folder = session_folder(session, make=True)
     began = now()
-    run_folder = folder / began.strftime(STAMP)
-    os.mkdir(run_folder, 0o700)
     ends = began + datetime.timedelta(hours=hours)
     contract = {
         "version": 1, "session": session, "started": iso(began), "ends": iso(ends), "cwd": os.getcwd(),
         "tasks": [{"id": str(number), "title": title, "check": check} for number, (title, check) in enumerate(tasks, 1)],
         "approvals": [{"what": what, "answer": answer} for what, answer in approvals],
     }
-    fd = os.open(run_folder / CONTRACT, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    folder = session_folder(session, make=True)
+    run_folder = folder / began.strftime(STAMP)
+    os.mkdir(run_folder, 0o700)
+    # The contract gets its name when it is whole: a folder with no contract.json is no run.
+    fd = os.open(run_folder / (CONTRACT + ".new"), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(json.dumps(contract, ensure_ascii=False, indent=2) + "\n")
+    os.replace(run_folder / (CONTRACT + ".new"), run_folder / CONTRACT)
     Run(run_folder).add("started")
     return 0, [f"run folder: {run_folder}", f"unattended: started tasks={len(tasks)} ends={iso(ends)}"]
 
 
-def the_open_run():
-    run = open_run(session_id())
-    if run is None:
-        raise Failed("this session has no open run")
-    return run
-
-
 def log(args):
-    run = the_open_run()
-    if args.kind in ("skipped", "done") or args.task is not None:
-        if args.task not in [task[0] for task in run.tasks]:
-            raise Failed(f"the contract has no task `{args.task}`")
-    if args.kind == "skipped" and not (args.needs or "").strip():
-        raise Failed("a skipped step says what it needs from the user: add --needs")
-    if not args.text.strip():
-        raise Failed("--text is empty")
-    run.add(args.kind, task=args.task, text=args.text, needs=args.needs if args.kind == "skipped" else None)
+    text, needs = one_line(args.text), one_line(args.needs or "")
+    with the_open_run() as run:
+        if args.kind in ("skipped", "done") or args.task is not None:
+            if args.task not in [task[0] for task in run.tasks]:
+                raise Failed(f"the contract has no task `{args.task}`")
+        if args.kind == "skipped" and not needs:
+            raise Failed("a skipped step says what it needs from the user: add --needs")
+        if not text:
+            raise Failed("--text is empty")
+        run.add(args.kind, task=args.task, text=text, needs=needs if args.kind == "skipped" else None)
     return 0, [f"unattended: logged {args.kind}"]
 
 
@@ -378,15 +469,15 @@ def report(run):
     title = {task: name for task, name, _ in run.tasks}
     last = {}
     for line in run.log:
-        if line.get("kind") in ("done", "skipped") and line.get("task") in title:
+        if line["kind"] in ("done", "skipped") and line.get("task") in title:
             last[line["task"]] = line
     blocked = [f"- Task {task} ({title[task]}): {line.get('text', '')} Needs: {line.get('needs', '')}"
                for task, line in last.items() if line["kind"] == "skipped"]
     changed = [f"- Task {task} ({title[task]}): {line.get('text', '')}"
                for task, line in last.items() if line["kind"] == "done"]
-    found = [f"- {line.get('text', '')}" for line in run.log if line.get("kind") == "decision"]
+    found = [f"- {line.get('text', '')}" for line in run.log if line["kind"] == "decision"]
     left = [f"- Task {task} ({name}): not done." for task, name, _ in run.left()]
-    count = {kind: sum(1 for line in run.log if line.get("kind") == kind) for kind in ("heartbeat", "refused")}
+    count = {kind: sum(1 for line in run.log if line["kind"] == kind) for kind in ("heartbeat", "refused")}
     out = ["## Blocked on me"] + (blocked + left or ["- Nothing."])
     out += ["", "## Changed"] + (changed or ["- Nothing."])
     out += ["", "## Found"] + (found or ["- Nothing."])
@@ -396,42 +487,56 @@ def report(run):
 
 
 def close(args):
-    run = the_open_run()
-    left = run.left()
-    why = (args.why or "").strip()
-    if left and not run.late() and not why:
-        lines = [f"left {task} {title}" for task, title, _ in left]
-        return 1, lines + [f"unattended: summary left={len(left)}"]
-    run.add("closed", text=why or ("the time limit is reached" if left else "every task is done or skipped"))
-    states = [run.state_of(task) for task, _, _ in run.tasks]
-    counts = " ".join(f"{name}={states.count(name)}" for name in ("done", "skipped", "left"))
-    return 0, report(run) + [f"unattended: closed {counts}"]
+    why = one_line(args.why or "")
+    with the_open_run() as run:
+        left = run.left()
+        if left and not run.late() and not why:
+            lines = [f"left {task} {title}" for task, title, _ in left]
+            return 1, lines + [f"unattended: summary left={len(left)}"]
+        run.add("closed", text=why or ("the time limit is reached" if left else "every task is done or skipped"))
+        states = [run.state_of(task) for task, _, _ in run.tasks]
+        counts = " ".join(f"{name}={states.count(name)}" for name in ("done", "skipped", "left"))
+        return 0, report(run) + [f"unattended: closed {counts}"]
+
+
+def prune_session(folder, days):
+    """Remove the runs of one session that ended long ago, and return how many. A closed run goes `days` days
+    after its close. A run that was never closed can still have a session that writes to it, and a folder that
+    never got its contract can belong to a start that is under way: both stay for 14 days, whatever `days` says.
+    A run that cannot be read, or cannot be removed, is left alone."""
+    removed = 0
+    keep_until = now() - datetime.timedelta(days=KEEP_DAYS)
+    for run_folder, began in stamped(folder):
+        try:
+            if not os.path.lexists(run_folder / CONTRACT):
+                old = began <= keep_until
+            else:
+                run = Run(run_folder)
+                closes = [moment_of(line["t"]) for line in run.log if line["kind"] == "closed"]
+                old = closes[-1] <= now() - datetime.timedelta(days=days) if closes else run.ends <= keep_until
+            if old:
+                shutil.rmtree(run_folder)
+                removed += 1
+        except (Failed, OSError):
+            continue
+    if removed and not os.listdir(folder):
+        os.rmdir(folder)        # only a folder that this call emptied: another one may be a start under way
+    return removed
 
 
 def prune_runs(days):
-    """Remove the runs that ended long ago, and return how many. A closed run goes `days` days after its close.
-    A run that was never closed can still have a session that writes to it, so it stays for the full 14 days
-    after its time limit, whatever `days` says. A run that cannot be read is left alone."""
+    """Prune every session folder of the root. A fault in one of them stops at that folder."""
     top = root()
     if not plain_folder(top, make=False):
         return 0
-    limit = now() - datetime.timedelta(days=days)
     removed = 0
     for name in os.listdir(top):
-        folder = top / name
-        if not SESSION.fullmatch(name) or not stat.S_ISDIR(os.lstat(folder).st_mode):
+        try:
+            folder = top / name
+            if SESSION.fullmatch(name) and stat.S_ISDIR(os.lstat(folder).st_mode):
+                removed += prune_session(folder, days)
+        except (Failed, OSError):
             continue
-        for run_folder in runs_of(folder):
-            try:
-                run = Run(run_folder)
-            except Failed:
-                continue
-            closes = [moment_of(line["t"]) for line in run.log if line["kind"] == "closed"]
-            if closes[-1] <= limit if closes else run.ends <= now() - datetime.timedelta(days=max(days, KEEP_DAYS)):
-                shutil.rmtree(run_folder)
-                removed += 1
-        if not os.listdir(folder):
-            os.rmdir(folder)
     return removed
 
 
@@ -476,8 +581,10 @@ def main(argv=None):
         code, lines = 2, [f"unattended: error {one_line(exc.strerror or exc)}"]
     except Exception as exc:   # a fault of this script is an error line too, never a traceback in place of a result
         code, lines = 2, [f"unattended: error {type(exc).__name__}: {one_line(exc)}"]
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="backslashreplace")   # a terminal that cannot show a letter gets it escaped
     for line in lines:
-        print(one_line(line), flush=True)   # a log or a plan cannot put a second line, or a result line, into the output
+        print(shown(line), flush=True)   # a log or a plan cannot put a second line, or a result line, into the output
     return code
 
 

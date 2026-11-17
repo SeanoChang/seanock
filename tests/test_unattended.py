@@ -9,6 +9,8 @@ import importlib.util
 import json
 import os
 import random
+import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -177,6 +179,9 @@ def test_the_state_of_a_task_is_what_its_last_line_says(runs):
     (("--kind", "heartbeat", "--task", "9", "--text", "x"), "the contract has no task `9`"),
     (("--kind", "skipped", "--task", "2", "--text", "x"), "add --needs"),
     (("--kind", "skipped", "--task", "2", "--text", "x", "--needs", " "), "add --needs"),
+    (("--kind", "skipped", "--task", "2", "--text", "x", "--needs", "\x01\u200b"), "add --needs"),
+    (("--kind", "skipped", "--text", "x", "--needs", "y"), "the contract has no task `None`"),
+    (("--kind", "decision", "--text", "\x01\x02\u200b"), "--text is empty"),
     (("--kind", "decision", "--text", "  "), "--text is empty"),
     (("--kind", "closed", "--text", "x"), "invalid choice"),
     (("--kind", "refused", "--text", "x"), "invalid choice"),
@@ -251,6 +256,38 @@ def test_a_close_with_a_reason_lists_the_tasks_that_are_left_under_blocked_on_me
     assert runs.log_lines(folder)[-1]["text"] == "the user is back"
 
 
+@pytest.mark.parametrize("why", ["  ", "\u200b", "\x01"])
+def test_a_reason_that_holds_no_letter_is_no_reason(runs, why):
+    runs.started()
+    code, lines = runs.run("close", "--why", why)
+    assert code == 1 and lines[-1] == "unattended: summary left=3"
+
+
+def test_the_report_takes_the_last_line_of_each_task_and_no_heartbeat(runs):
+    runs.started()
+    runs.run("log", "--kind", "skipped", "--task", "1", "--text", "first try failed", "--needs", "a key")
+    runs.run("log", "--kind", "heartbeat", "--task", "1", "--text", "a heartbeat text")
+    runs.run("log", "--kind", "done", "--task", "1", "--text", "second try passed")
+    runs.run("log", "--kind", "done", "--task", "2", "--text", "pushed")
+    runs.run("log", "--kind", "skipped", "--task", "2", "--text", "the push was rejected after all", "--needs", "a rebase")
+    code, lines = runs.run("close", "--why", "x")
+    text = "\n".join(lines)
+    assert code == 0 and "first try failed" not in text and "a heartbeat text" not in text and "- Task 2 (push the branch): pushed" not in text
+    assert text.count("Task 1 (") == 1 and text.count("Task 2 (") == 1 and text.count("Task 3 (") == 1
+    assert "- Task 1 (add the parser): second try passed" in text.split("## Changed")[1]
+    assert "the push was rejected after all Needs: a rebase" in text.split("## Changed")[0]
+
+
+def test_a_terminal_that_cannot_show_a_letter_gets_it_in_escaped_form(runs):
+    runs.started()
+    runs.run("log", "--kind", "decision", "--text", "修 the parser")
+    env = dict(runs.env(), LC_ALL="en_US.US-ASCII")
+    done = subprocess.run([PY, "-I", str(SCRIPT), "close", "--why", "x"], cwd=runs.cwd, env=env, capture_output=True)
+    assert done.returncode == 0 and done.stderr == b"", done.stderr
+    out = done.stdout.decode("ascii")
+    assert "- \\u4fee the parser" in out and out.splitlines()[-1] == "unattended: closed done=0 skipped=0 left=3"
+
+
 def test_after_the_time_limit_close_needs_no_reason(runs):
     folder = runs.started(hours=0.0000001)
     code, lines = runs.run("status")
@@ -258,6 +295,42 @@ def test_after_the_time_limit_close_needs_no_reason(runs):
     code, lines = runs.run("close")
     assert code == 0 and lines[-1] == "unattended: closed done=0 skipped=0 left=3"
     assert runs.log_lines(folder)[-1]["text"] == "the time limit is reached"
+
+
+def test_a_line_is_never_written_after_the_close(runs):
+    """Found by the adversary: `log` read the state, `close` closed the run, and `log` then wrote its line. The
+    line was in no report. With the lock, a `log` that comes second sees the close and is refused."""
+    script = load_script()
+    for attempt in range(12):
+        session = f"session-race{attempt:02d}"
+        folder = runs.started(session=session)
+        both = [subprocess.Popen([PY, "-I", str(SCRIPT), *args], cwd=runs.cwd, env=runs.env(session), stdout=subprocess.PIPE,
+                                 text=True)
+                for args in (("close", "--why", "back"), ("log", "--kind", "done", "--task", "2", "--text", "t2"))]
+        (closed, _), (logged, _) = [one.communicate(timeout=60) for one in both]
+        kinds = [line["kind"] for line in runs.log_lines(folder)]
+        assert kinds[-1] == "closed", (attempt, kinds)
+        if "done" in kinds:
+            assert "Task 2 (push the branch): t2" in closed and both[1].returncode == 0
+        else:
+            assert both[1].returncode == 2 and "no open run" in logged
+
+
+def test_a_command_waits_for_the_lock_of_the_run_and_gives_up_with_an_error(runs, monkeypatch):
+    import fcntl
+    script = load_script()
+    folder = runs.started()
+    monkeypatch.setenv("UNATTENDED_ROOT", str(runs.root))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SESSION)
+    monkeypatch.setattr(script, "LOCK_WAIT_S", 0.3)
+    held = os.open(folder, os.O_RDONLY)
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert script.main(["log", "--kind", "decision", "--text", "x"]) == 2
+    finally:
+        os.close(held)
+    assert script.main(["log", "--kind", "decision", "--text", "x"]) == 0
+    assert [line["kind"] for line in runs.log_lines(folder)] == ["started", "decision"]
 
 
 def test_a_new_run_can_start_after_a_close(runs, monkeypatch):
@@ -282,6 +355,12 @@ def test_a_link_in_the_place_of_a_folder_or_of_a_file_is_not_followed(runs, tmp_
     code, lines = runs.run("start", "--plan", runs.plan())
     assert code == 2 and "is no plain folder" in lines[0] and list(target.iterdir()) == []
     runs.root.unlink()
+    runs.root.mkdir()
+    (runs.root / SESSION).symlink_to(target)                        # the same for the folder of the session
+    for args in (("start", "--plan", runs.plan()), ("status",)):
+        code, lines = runs.run(*args)
+        assert code == 2 and "is no plain folder" in lines[0] and list(target.iterdir()) == [], (args, lines)
+    (runs.root / SESSION).unlink()
     folder = runs.started()
     victim = tmp_path / "victim.txt"
     victim.write_text("a file of the user\n")
@@ -372,7 +451,9 @@ def test_a_run_that_was_never_closed_is_removed_fourteen_days_after_its_time_lim
     for days, gone in ((13, False), (15, True)):
         contract["ends"] = script.iso(script.now() - script.datetime.timedelta(days=days))
         (late / "contract.json").write_text(json.dumps(contract))
-        assert runs.run("prune", "--days", "0", session="session-0009") == (0, [f"unattended: pruned {int(gone)}"])
+        for wanted in ("0", "30"):
+            assert runs.run("prune", "--days", wanted, session="session-0009") == (0, [f"unattended: pruned {int(gone)}"]) \
+                or not late.exists()
         assert late.exists() is not gone
     assert not (runs.root / "session-late").exists(), "a session folder with nothing left is removed"
 
@@ -401,6 +482,111 @@ def test_a_run_that_cannot_be_read_stops_no_other_session(runs, damage):
     assert bad.exists(), "what cannot be read is left alone"
     code, lines = runs.run("status", session="session-bad1")
     assert code in (1, 2) and len(lines) == 1 and lines[0].startswith("unattended: "), lines
+
+
+def old_closed_run(runs, session):
+    """A run of another session that was closed 20 days ago."""
+    script = load_script()
+    folder = runs.started(session=session)
+    runs.run("close", "--why", "x", session=session)
+    lines = runs.log_lines(folder)
+    lines[-1]["t"] = script.iso(script.now() - script.datetime.timedelta(days=20))
+    (folder / "log.jsonl").write_text("".join(json.dumps(line) + "\n" for line in lines))
+    return folder
+
+
+@pytest.mark.parametrize("fault", ["a session folder that cannot be read", "an old run that cannot be removed",
+                                   "a contract that is nested very deep"])
+def test_a_folder_that_cannot_be_read_or_removed_stops_no_other_session(runs, fault):
+    """Found by the adversary: each of these ended `start` and `prune` of every session with exit 2."""
+    bad = old_closed_run(runs, "session-bad1")
+    locked = bad.parent if fault == "a session folder that cannot be read" else bad
+    try:
+        if fault == "a contract that is nested very deep":
+            (bad / "contract.json").write_text("[" * 200000 + "]" * 200000)
+        else:
+            locked.chmod(0o000 if locked == bad.parent else 0o500)
+        good = old_closed_run(runs, "session-good")
+        assert runs.run("prune") == (0, ["unattended: pruned 1"]), "the run beside the fault is still pruned"
+        assert not good.exists()
+        runs.started()
+        assert runs.run("status")[0] == 0
+    finally:
+        locked.chmod(0o700)
+    assert bad.exists()
+
+
+def test_prune_follows_no_link_and_removes_no_folder_that_is_not_a_run(runs, tmp_path):
+    outside = old_closed_run(runs, "session-out1")
+    moved = tmp_path / "outside-session"
+    outside.parent.rename(moved)
+    (runs.root / "session-out1").symlink_to(moved)                  # a link in the place of a session folder
+    inside = old_closed_run(runs, "session-in01")
+    target = tmp_path / "outside-run"
+    inside.rename(target)
+    inside.symlink_to(target)                                       # a link in the place of a run folder
+    (runs.root / "session-empty").mkdir()
+    (runs.root / "keepThisFolder").mkdir()
+    assert runs.run("prune", "--days", "0") == (0, ["unattended: pruned 0"])
+    assert (moved / outside.name / "contract.json").exists() and (target / "contract.json").exists()
+    assert (runs.root / "session-empty").is_dir() and (runs.root / "keepThisFolder").is_dir(), \
+        "an empty folder is removed only when this prune took the last run out of it"
+
+
+def test_a_start_that_fails_halfway_does_not_block_its_session(runs):
+    """Found by both reviewers: the run folder was made before the contract, and a folder with no contract made
+    every later command of the session end with exit 2."""
+    gone = runs.tmp / "gone"
+    gone.mkdir()
+    plan = runs.plan()
+    done = subprocess.run([PY, "-I", str(SCRIPT), "start", "--plan", plan], cwd=gone, env=runs.env(), capture_output=True,
+                          text=True, preexec_fn=lambda: os.rmdir(os.getcwd()))
+    assert done.returncode == 2 and done.stdout.startswith("unattended: error "), done.stdout
+    assert runs.run("status") == (1, ["unattended: none"])
+    half = runs.root / SESSION / "20200101T000000Z"                 # a run folder that never got its contract
+    half.mkdir(parents=True)
+    assert runs.run("status") == (1, ["unattended: none"])
+    folder = runs.started()
+    assert not half.exists(), "the next start removes a folder that is older than 14 days and never got a contract"
+    fresh = folder.parent / "20990101T000000Z"                      # one that a start under way could have made
+    fresh.mkdir()
+    assert runs.run("prune", "--days", "0", session="session-0009") == (0, ["unattended: pruned 0"])
+    assert fresh.is_dir() and runs.run("status")[0] == 0
+
+
+def test_a_link_in_the_place_of_a_run_folder_is_no_run(runs, tmp_path):
+    """The files of a run are opened with no link followed, but that holds for the last part of a path only."""
+    folder = runs.started()
+    elsewhere = tmp_path / "elsewhere-run"
+    folder.rename(elsewhere)
+    folder.symlink_to(elsewhere)
+    assert runs.run("status") == (1, ["unattended: none"])
+    code, lines = runs.run("log", "--kind", "decision", "--text", "x")
+    assert code == 2 and "no open run" in lines[0]
+    assert [line["kind"] for line in runs.log_lines(elsewhere)] == ["started"]
+
+
+def test_a_run_that_cannot_be_removed_does_not_keep_the_next_run_of_its_session(runs):
+    stuck = old_closed_run(runs, "session-two1")
+    second = stuck.parent / "20200202T020202Z"
+    shutil.copytree(stuck, second)
+    stuck.chmod(0o500)
+    try:
+        assert runs.run("prune") == (0, ["unattended: pruned 1"])
+    finally:
+        stuck.chmod(0o700)
+    assert stuck.exists() and not second.exists()
+
+
+def test_a_run_belongs_to_the_session_that_its_contract_names(runs):
+    """On a disk that takes `abc` and `ABC` for one name, two session ids could share a folder."""
+    folder = runs.started()
+    other = runs.root / "session-0002"
+    other.mkdir()
+    (folder).rename(other / folder.name)
+    for args in (("status",), ("close", "--why", "mine"), ("log", "--kind", "decision", "--text", "x")):
+        code, lines = runs.run(*args, session="session-0002")
+        assert code == 2 and "belongs to another session" in lines[0], (args, lines)
 
 
 def test_start_prunes_what_is_older_than_fourteen_days(runs):
@@ -507,6 +693,59 @@ def test_a_deny_or_ask_rule_with_a_colon_is_read_in_its_wider_sense(runs):
     assert lines[3] == "denied rmdir build [deny: rm:*]"
 
 
+@pytest.mark.parametrize("deny, ask, command, verdict", [
+    (["Bash( rm -rf *)"], [], "rm -rf build", "denied"),            # a stray space in the rule
+    (["Bash(git  push *)"], [], "git push origin main", "denied"),
+    (["Bash(git push *)"], [], "git  push origin main", "denied"),  # two spaces in the command
+    (["Bash(git push *)"], [], " git push origin main", "denied"),
+    (["Bash(git push *)"], [], "git\tpush origin main", "denied"),
+    ([], ["Bash(git push *)"], "git  push origin main", "would-prompt"),
+    ([], ["Bash(  gh pr merge * )"], "gh pr merge 7", "would-prompt"),
+    (["Bash(rm *)"], [], "FOO=1 rm -rf build", "denied"),            # behind a variable: the docs say a deny rule holds
+    (["Bash(rm *)"], [], "FOO=1 BAR=2 rm -rf build", "denied"),
+    (["Bash(rm *)"], [], "timeout 30 rm -rf build", "denied"),      # behind a wrapper that Claude Code strips
+    (["Bash(git push *)"], [], "nice -n 5 git push origin", "denied"),
+    (["Bash(rm *)"], [], "/bin/rm -rf build", "denied"),            # the program written with its path
+    (["Bash(rm:*)"], [], "xargs rm", "denied"),
+    ([], ["Bash(git push *)"], "GIT_TRACE=1 git push origin", "would-prompt"),
+    (["Bash"], [], "git status", "denied"),                         # the whole tool
+    ([], ["Bash"], "git status", "would-prompt"),
+])
+def test_a_rule_that_stops_a_command_is_read_with_its_spaces_made_even(runs, deny, ask, command, verdict):
+    """Found by the adversary: Claude Code makes each run of spaces one space, in the rule and in the command,
+    before it matches. Read letter for letter, a deny rule missed the command and a wide allow rule passed it."""
+    settings(runs, "user", allow=["Bash", "Bash(*)", "Bash(git *)"], deny=deny, ask=ask)
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[command]))
+    assert code == 1 and lines[0].split(" ", 1)[0] == verdict, lines
+
+
+def test_a_rule_that_stops_counts_from_each_of_the_three_settings_files(runs):
+    settings(runs, "user", allow=["Bash"])
+    settings(runs, "project", allow=["Bash"], ask=["Bash(make deploy)"])
+    settings(runs, "local", allow=["Bash"], deny=["Bash(git push *)"])
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git push origin x", "make deploy", "make test"]),
+                           "--project", str(runs.cwd))
+    assert [line.split(" ", 1)[0] for line in lines[:-1]] == ["denied", "would-prompt", "allowed"], lines
+
+
+@pytest.mark.parametrize("allow, command", [
+    ("Bash(git * push:*)", "git -C repo push origin main"),   # Claude Code reads a `:*` beside another `*` as plain text
+    ("Bash(echo \\*)", "echo \\hello"),                       # `\*` is a star as a letter there
+    ("Bash(git push *)", "git  push origin main"),            # allow rules stay letter for letter
+    ("Bash( git push *)", "git push origin main"),
+    ("Bash(rm *)", "\\rm -rf x"),
+])
+def test_an_allow_rule_in_a_form_that_the_script_does_not_know_for_sure_allows_nothing(runs, allow, command):
+    settings(runs, "user", allow=[allow])
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[command]))
+    assert code == 1 and lines[0].split(" ", 1)[0] in ("would-prompt", "unsure"), lines
+
+
+def test_preflight_prints_the_command_with_the_spaces_that_were_judged(runs):
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git  push   origin"]))
+    assert lines[0].startswith("would-prompt git  push   origin [")
+
+
 def test_preflight_passes_only_when_every_command_is_allowed(runs):
     settings(runs, "user", allow=["Bash"])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git push origin work", "anything at all"]))
@@ -520,12 +759,105 @@ def test_without_the_project_only_the_settings_of_the_user_count(runs):
     assert code == 1 and lines[0].startswith("would-prompt git push origin work")
 
 
-@pytest.mark.parametrize("command", ["a && b", "a || b", "a; b", "a | b", "a & b", "a\nb", "echo $(b)", "echo `b`", "a > f", "a < f"])
+@pytest.mark.parametrize("command", ["a && b", "a || b", "a; b", "a | b", "a & b", "a\nb", "echo $(b)", "echo `b`", "a > f", "a < f",
+                                     "a\x00b", "a\x01b", "a\x1fb", "a\x7fb", "a\x85b", "a\u2028b", "a\u200bb", "a\rb", "a\\b"])
 def test_a_command_with_a_shell_operator_is_never_called_allowed(runs, command):
     script = load_script()
     everything = [{"permissions": {"allow": ["Bash(*)", "Bash"]}}]
     assert script.judge("a", everything)[0] == "allowed"
     assert script.judge(command, everything)[0] == "unsure"
+
+
+@pytest.mark.parametrize("command", [
+    "'rm' -rf build", '"rm" -rf build', "r''m -rf build",       # a quote hides the name of the program
+    "(rm -rf build)", "{rm,-rf,build}", "=rm -rf build",        # a subshell, a brace list, the `=name` of zsh
+    "echo $HOME", "echo ${IFS}rm", "rm build/*", "ls ?", "ls [ab]", "echo hi #x", "!rm", "^a^b",
+    "git commit -m 'a message'", "echo caf\u00e9", "echo a\u00a0b", "echo a\u3000b",
+])
+def test_a_command_that_is_not_plain_words_is_never_called_allowed(runs, command):
+    """The script does not parse a shell command, so it reads only what cannot be read in two ways: words of
+    letters, digits and `_ @ % + = : , . / ~ -`. A list of the marks that are not read was open at one end."""
+    settings(runs, "user", allow=["Bash", "Bash(*)"])
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[command]))
+    assert code == 1 and lines[0].split(" ", 1)[0] == "unsure", lines
+    assert "not plain words" in lines[0]
+
+
+OUTSIDE = list("'\"$*(){}[];&|<>\\`#!?^") + ["\n", "\r", "\x00", "\x0b", "\x7f", "\x85", "\u00a0", "\u2028", "\u3000", "\u00e9", "\uff52"]
+
+
+@pytest.mark.parametrize("mark", OUTSIDE)
+def test_each_mark_outside_plain_words_makes_a_command_unsure_wherever_it_stands(mark):
+    script = load_script()
+    everything = [{"permissions": {"allow": ["Bash(*)", "Bash"]}}]
+    for command in (f"{mark}a b", f"a{mark}b c", f"a b{mark}", f"a {mark} b", f"a {mark}", mark):
+        assert script.judge(command, everything)[0] == "unsure", command
+    assert script.judge("=a b", everything)[0] == "unsure" and script.judge("a =b", everything)[0] == "unsure"
+    assert script.judge("a=b c=d", everything)[0] == "allowed", "an equals sign inside a word is plain"
+
+
+def plain_by_hand(command):
+    """A second version of `plain`, with no regular expression: one pass, letter by letter."""
+    inside = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./~-"
+    at_start = True
+    for ch in command:
+        if ch in " \t":
+            at_start = True
+            continue
+        if ch not in inside or (at_start and ch == "="):
+            return False
+        at_start = False
+    return True
+
+
+def test_plain_words_against_a_second_version_on_random_commands():
+    script = load_script()
+    rng = random.Random(20261117)
+    letters = list("ab0_@%+=:,./~- \t") * 6 + OUTSIDE
+    yes = 0
+    for _ in range(40000):
+        command = "".join(rng.choice(letters) for _ in range(rng.randint(0, 9)))
+        expected = plain_by_hand(command)
+        yes += expected
+        assert bool(script.plain(command)) == expected, repr(command)
+    assert 4000 < yes < 36000, "the random cases must hold both answers"
+
+
+def test_no_random_command_that_runs_a_denied_program_is_called_allowed():
+    """A model of what Claude Code stops: a deny rule for `rm` holds when any word of the command, with its
+    quotes, brackets and path taken away, is `rm`. Whatever the script calls `allowed` must be free of that."""
+    script = load_script()
+    rules = [{"permissions": {"allow": ["Bash", "Bash(*)"], "deny": ["Bash(rm *)"]}}]
+    rng = random.Random(20261117)
+    parts = ["rm", "/bin/rm", "./rm", "'rm'", '"rm"', "(rm", "rm)", "{rm,", "=rm", "r''m", "\\rm", "FOO=1", "timeout", "30", "echo", "-rf",
+             "build", "rmdir", "arm", "rm.txt", ";", "&&", "|", "$(rm", "`rm`"]
+    gaps = [" ", "  ", "\t", "\n", ""]
+    seen = dict.fromkeys(("allowed", "denied", "unsure"), 0)
+    for _ in range(20000):
+        command = "".join(rng.choice(parts) + rng.choice(gaps) for _ in range(rng.randint(1, 5)))
+        verdict = script.judge(command, rules)[0]
+        seen[verdict] += 1
+        if verdict == "allowed":
+            words = [re.sub(r"""['"(){},=`$\\]""", "", word).rsplit("/", 1)[-1] for word in command.split()]
+            assert "rm" not in words, repr(command)
+    assert all(count > 500 for count in seen.values()), seen
+
+
+@pytest.mark.parametrize("command", [
+    "git push origin work", "python3 -m pytest tests/test_a.py -q -p no:cacheprovider", "FOO=1 make test",
+    "gh pr merge 7 --squash --match-head-commit 0a1b2c3", "python3 ~/.claude/skills/x/run.py --at=1,2 a@b 50%+1",
+    "make\ttest", "make  test ",
+])
+def test_a_command_of_plain_words_can_be_allowed(runs, command):
+    settings(runs, "user", allow=["Bash"])
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[command]))
+    assert code == 0 and lines[0].split(" ", 1)[0] == "allowed", lines
+
+
+def test_a_rule_that_stops_is_read_before_the_command_is_called_unsure(runs):
+    settings(runs, "user", allow=["Bash"], deny=["Bash(git push *)"])
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git push origin 'work'", "git status && git push origin work"]))
+    assert [line.split(" ", 1)[0] for line in lines[:-1]] == ["denied", "denied"], lines
 
 
 @pytest.mark.parametrize("command", [
