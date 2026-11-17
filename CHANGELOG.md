@@ -6,6 +6,107 @@ the tag `vX.Y.Z`. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says how it moves. The newest
 entry is first.
 
+## 0.11.0 (2026-11-17)
+
+Changed:
+
+- `handoff`: the note has a folder of its own. `frame` writes
+  `.claude/handoff/note.md` and keeps the last note as
+  `.claude/handoff/prev.md`. It makes the folder with a `.gitignore` of one
+  line, `*`, so the folder ignores itself, and it no longer writes into the
+  exclude file of the repo. The script reads, writes and renames every file
+  through the folder that it opened one time, with no link followed.
+  Both commands end with exit 2 when git tracks a file in the folder (under
+  any letter case), when git finds another repo from inside `.claude` or
+  the folder than from the top of the work tree (another git folder, or
+  another top), and when the folder holds files of the user and is not one
+  that `frame` made.
+
+Fixed:
+
+- `handoff` of 0.8.0 wrote three names into `.git/info/exclude`, which all
+  work trees of a repo share. A file of the user with one of those names in
+  another work tree (`.claude/handoff.md`, or `HANDOFF.md` on a Mac) was
+  gone from `git status`, and `git worktree remove` then deleted it with no
+  warning. A test holds the case for six names; four of them fail on the
+  script of 0.8.0.
+
+A note that 0.8.0 wrote at `.claude/handoff.md` is not read and not moved,
+and the lines of 0.8.0 in an exclude file stay. 0.8.0 was in no release.
+
+## 0.10.0 (2026-11-17)
+
+Added:
+
+- Two live tests of the reference rule on a reviewer, behind
+  `REFERENCE_RULE_LIVE=1`, which now starts five sessions. A session with
+  the verifier's instructions gets a page that was built with two parts of
+  the prototype dropped. Without the rule it does not fail the page; with
+  the rule its verdict is "fail" and it names both parts. The page is one a
+  real session built before the rule, kept in `tests/reference_fixture.py`.
+  In 15 runs before the first review, 0 of 9 reviewers failed the page
+  without the rule and 6 of 6 failed it with the rule.
+
+Changed:
+
+- `docs/known-limits.md`, on reference builds: the counts of the reviewer
+  runs, and why the instructions of the builder and the verifier stay as
+  they are. One sentence from the review of 0.9.0 is corrected: a list of
+  parts that misses a view "can pass" the check, not "passes" it.
+
+## 0.9.0 (2026-11-17)
+
+Added:
+
+- A rule for reference builds, in `config/claude/CLAUDE.md` and in both
+  modes of the Codex file. When Sean points at a prototype, a design or a
+  screenshot, or says "exactly as", that reference is the spec. The agent
+  lists its parts first. Each part ends built, as an empty state when its
+  data does not exist yet, or cut with his yes. No other rule gives leave to
+  cut a part, and an agent with a brief builds the rest and reports the part.
+  An approved design goes into the plan as a build task, a part that needs
+  tier 2 review gets its own task, a brief hands over the reference itself,
+  and the report starts with what is missing. The source is a measured
+  session: twice in it, an agent built its own summary of an approved
+  prototype and left out the parts the app had no data for, with no word of
+  the cuts in its report. `tests/test_reference_rule.py` pins the sentences
+  and has three live sessions behind `REFERENCE_RULE_LIVE=1`.
+
+Changed:
+
+- Unattended mode: after a blocked step the agent takes the next task in the
+  plan. When the plan has none, it ends the run and does not pick work of
+  its own. In the same session, an agent with its task blocked started a
+  refactor that nobody had asked for.
+- The size caps of the two rules files are raised for the new rule: the
+  Claude file from 15,650 to 16,450 characters and from 230 to 241 lines,
+  the Codex file from 16,000 to 16,384 bytes.
+
+## 0.8.0 (2026-11-15)
+
+Added:
+
+- `handoff`, a skill that writes a resume note for the work in a work tree,
+  and that starts a session from such a note. Its script `handoff.py frame`
+  writes `.claude/handoff.md` with what git knows (the branch, the commit,
+  each file that is not committed) and the empty parts of the hand-off
+  outline of `writing-markdown-docs`. The agent writes the parts.
+  `handoff.py check` lists what the note lacks (a part with no text, no open
+  next action, a first action with no command, a path of the tree that is
+  gone) and where the tree is no longer as the note says (another commit,
+  another branch, other changes). It exits 0 with `handoff: ok`, 1 with a
+  summary, and 2 when it could not finish. Git does not see the note: the
+  script adds its name to the repo's exclude file. The fact block ends with
+  a check value, so a block that was changed by hand is an error and the
+  way from a stale note to `ok` is a new `frame`. One `frame` at a time
+  works in `.claude/`. `frame` moves and replaces only a note that `frame`
+  wrote, and both commands refuse a note that git tracks (in any letter
+  case), a note behind a link, and a `.claude` that is a repo of its own.
+  The list of changes is the one of `git status`, and the settings of the
+  repo for new files, renames and submodules do not change it. The commands of the skill text start Python in
+  isolated mode, so no file of the work tree is loaded as a module. A note
+  carries no approval, and the skill commits and pushes nothing.
+
 ## 0.7.0 (2026-11-15)
 
 Changed:
