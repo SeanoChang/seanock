@@ -41,8 +41,8 @@ these is exit 2, for frame and for check:
   - git tracks .claude/handoff or a file in it, also under a name that
     differs only in letter case (the same place on a disk that does not keep
     case apart), or git tracks .claude as one entry (a link, a submodule);
-  - git finds another repo from inside the folder than from the top of the
-    work tree (.claude is a repo of its own, for one);
+  - .claude or the folder holds a .git of its own, as a folder or as a file:
+    it is the top of another repo, and a note there is a file of that repo;
   - .claude, the folder, its .gitignore, the note or the kept note is a link;
   - the folder holds files and its .gitignore is not the one line `*`: it is
     a folder of the user, and a .gitignore there would hide those files.
@@ -193,29 +193,19 @@ def fold(name):
 def refuse_another_owner(top):
     """The folder must be this work tree's own. What git tracks there came with the repo, under its own name or
     under one that is the same place on some disk, and so did each file of a `.claude` that git tracks as one
-    entry (a link, a submodule). A folder that lies in another repo, as git finds it from inside, belongs to that
-    repo. No session of this work tree wrote a note there: check does not read it, and frame does not write there."""
+    entry (a link, a submodule). A `.claude` or a folder with a `.git` in it is the top of another repo, whatever
+    the settings of that repo say about its work tree. No session of this work tree wrote a note there: check
+    does not read it, and frame does not write there."""
     place = fold(PLACE)
     _, out = git(top, "ls-files", "-z", "--", f":(top,icase){FOLDER}")
     for name in out.decode("utf-8", "surrogateescape").split("\0"):
         if fold(name) in (fold(FOLDER), place) or fold(name).startswith(place + "/"):
             raise Failed(f"git tracks {name} in this repo: a note at that place came with the repo, and this script "
                          "neither reads nor replaces it")
-    inner = top
     for rel in (FOLDER, PLACE):
-        try:
-            mode = os.lstat(top / rel).st_mode
-        except FileNotFoundError:
-            break
-        if not stat.S_ISDIR(mode):
-            raise Failed(f"{rel} is no plain folder")
-        inner = top / rel
-    if inner != top:
-        _, out = git(inner, "rev-parse", "--show-toplevel")
-        found = one_path(out)
-        if not out.strip() or not found.is_dir() or not os.path.samefile(found, top):
-            raise Failed(f"{inner.relative_to(top)} lies in another repo than this work tree: a note there is a "
-                         "file of that repo, and this script neither reads nor writes it")
+        if os.path.lexists(top / rel / ".git"):
+            raise Failed(f"{rel} is a repo of its own: a note there is a file of that repo, and this script neither "
+                         "reads nor writes it")
 
 
 # ── the folder ───────────────────────────────────────────────────────────────

@@ -94,8 +94,8 @@ From another folder, add `--repo <work tree>`.
 7. **Exit 2:** the script gave no result, and the line says why. There is
    no note, or the script cannot read it, or its fact block was changed, or
    git tracks a file in the note's folder, or that folder is not one that
-   `frame` made, or `.claude` is a link or lies in another repo. Say so, and
-   do not act on the note.
+   `frame` made, or `.claude` is a link or a repo of its own. Say so, and do
+   not act on the note.
    A note that git tracks came with the repo: no session of this work tree
    wrote it. Use
    `.claude/handoff/prev.md` only when the user says so: it is the note

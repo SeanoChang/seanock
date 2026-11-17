@@ -17,9 +17,9 @@ Changed:
   exclude file of the repo. The script reads, writes and renames every file
   through the folder that it opened one time, with no link followed.
   Both commands end with exit 2 when git tracks a file in the folder (under
-  any letter case), when git finds another repo from inside the folder than
-  from the top of the work tree, and when the folder holds files of the
-  user and is not one that `frame` made.
+  any letter case), when `.claude` or the folder holds a `.git` of its own,
+  and when the folder holds files of the user and is not one that `frame`
+  made.
 
 Fixed:
 

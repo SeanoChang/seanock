@@ -404,14 +404,15 @@ def keeps_letter_case_apart(folder):
 
 
 @pytest.mark.parametrize("name", ["note.md", "prev.md", "NOTE.md", "Prev.md"])
-@pytest.mark.parametrize("content", ["my own notes, not a frame\n", ""])
+@pytest.mark.parametrize("content", ["my own notes, not a frame\n", "", "---\ntitle: a note of mine with a block on top\n---\n",
+                                     "---\ntype: handoffs\n", "---\r\ntype: handoff\r\n"])
 def test_a_file_that_frame_did_not_write_is_never_moved_or_replaced(repo, tmp_path, name, content):
     """A file of the user at the note's path or at the kept note's path, also under a name in other letter case
     on a disk that takes it for the same file. Frame moved such a file to the kept note, and the frame after that
     replaced it there. Now frame ends before its first write."""
     same_file = name in ("note.md", "prev.md") or not keeps_letter_case_apart(tmp_path)
     mine = repo.make_place() / name
-    mine.write_text(content)
+    mine.write_bytes(content.encode())
     exclude = repo.exclude()
     for _ in range(2):
         code, lines = repo.run("frame")
@@ -420,7 +421,7 @@ def test_a_file_that_frame_did_not_write_is_never_moved_or_replaced(repo, tmp_pa
         else:
             assert code == 0
             repo.fill()
-    assert mine.read_text() == content and name in os.listdir(repo.place)
+    assert mine.read_bytes() == content.encode() and name in os.listdir(repo.place)
     assert repo.exclude() == exclude
     if same_file:
         assert sorted(os.listdir(repo.place)) == sorted([".gitignore", name])
@@ -428,14 +429,15 @@ def test_a_file_that_frame_did_not_write_is_never_moved_or_replaced(repo, tmp_pa
 
 @pytest.mark.parametrize("folder", ["handoff", "Handoff"])
 @pytest.mark.parametrize("rule", [None, "*.log\n", "*", "*\n\n", "*\n!plan.txt\n"])
-def test_a_folder_of_the_user_at_the_place_is_never_taken_over(repo, tmp_path, folder, rule):
+@pytest.mark.parametrize("own", ["plan.txt", ".plan"])
+def test_a_folder_of_the_user_at_the_place_is_never_taken_over(repo, tmp_path, folder, rule, own):
     """The user can have a folder with that name, with files in it. A .gitignore with `*` there would hide those
     files from git, and `git clean` or the removal of the work tree would then delete them with no warning. Frame
     takes a folder as its own only when its .gitignore is the one line `*`."""
     same_folder = folder == "handoff" or not keeps_letter_case_apart(tmp_path)
     mine = repo.root / ".claude" / folder
     mine.mkdir(parents=True)
-    (mine / "plan.txt").write_text("my plan\n")
+    (mine / own).write_text("my plan\n")   # a name with a dot in front is a file of the user like any other
     if rule is not None:
         (mine / ".gitignore").write_text(rule)
     before = {path.name: path.read_bytes() for path in mine.iterdir()}
@@ -489,11 +491,11 @@ def test_the_folder_is_taken_or_left_as_a_second_version_says_on_random_folders(
     rng = random.Random(20261117)
     note = "---\ntype: handoff\nwhat is left of an older note\n"
     rules = [None, None, b"*\n", b"*\n", b"*\n", b"*", b"", b"*\n*\n", b"*.md\n", b"\n*\n", b"* \n"]
-    files = [None, None, note, "my own text\n", ""]
+    files = [None, None, note, "my own text\n", "", "---\ntitle: mine\n"]
     for number in range(40):
         repo = Repo(tmp_path, f"r{number}")
         rule, kept, extra = rng.choice(rules), {name: rng.choice(files) for name in ("note.md", "prev.md")}, rng.random() < 0.4
-        there = rng.random() < 0.85
+        there, plan = rng.random() < 0.85, rng.choice(["plan.txt", ".plan"])
         if there:
             repo.place.mkdir(parents=True)
             if rule is not None:
@@ -502,7 +504,7 @@ def test_the_folder_is_taken_or_left_as_a_second_version_says_on_random_folders(
                 if text is not None:
                     (repo.place / name).write_text(text)
             if extra:
-                (repo.place / "plan.txt").write_text("my plan\n")
+                (repo.place / plan).write_text("my plan\n")
         before = {path.name: path.read_bytes() for path in repo.place.iterdir()} if there else None
         if not there or not before:
             expected = 0
@@ -520,7 +522,7 @@ def test_the_folder_is_taken_or_left_as_a_second_version_says_on_random_folders(
             assert after[".gitignore"] == b"*\n" and after["note.md"].startswith(b"---\ntype: handoff\nwritten: "), state
             assert repo.status() == "", state
             if there and extra:
-                assert after["plan.txt"] == b"my plan\n", state
+                assert after[plan] == b"my plan\n", state
 
 
 def test_an_empty_folder_at_the_place_becomes_the_folder_of_the_note(repo):
@@ -582,9 +584,9 @@ def clone_into(repo, tmp_path, target, *options):
 
 @pytest.mark.parametrize("git_folder", ["a folder", "a file"])
 def test_a_claude_folder_that_is_a_repo_of_its_own_holds_no_note(repo, tmp_path, git_folder):
-    """A `.claude` that was cloned from elsewhere can bring a folder and a note that look like frame's own. Git
-    finds that repo from inside the folder, with `.git` as a folder or as a file that names one, and the script
-    stops: the note is a file of the other repo."""
+    """A `.claude` that was cloned from elsewhere can bring a folder and a note that look like frame's own. It
+    has a `.git`, as a folder or as a file that names one, and the script stops: the note is a file of the other
+    repo."""
     options = [] if git_folder == "a folder" else ["--separate-git-dir", str(tmp_path / "kept-apart.git")]
     clone_into(repo, tmp_path, repo.root / ".claude", *options)
     assert (repo.root / ".claude" / ".git").is_dir() is (git_folder == "a folder")
@@ -594,27 +596,59 @@ def test_a_claude_folder_that_is_a_repo_of_its_own_holds_no_note(repo, tmp_path,
     for command in ("frame", "check"):
         code, lines = repo.run(command)
         assert code == 2 and len(lines) == 1, (command, lines)
-        assert lines[0].startswith(f"handoff: error {PLACE} lies in another repo than this work tree"), lines
+        assert lines[0].startswith("handoff: error .claude is a repo of its own"), lines
     after = {str(path.relative_to(repo.root)): path.read_bytes() for path in sorted((repo.root / ".claude").rglob("*"))
              if path.is_file() and ".git/" not in str(path.relative_to(repo.root)) + "/"}
     assert after == before and repo.exclude() == exclude
 
 
-def test_a_place_that_is_a_repo_of_its_own_or_holds_a_git_file_that_names_none_is_an_error(repo, tmp_path):
-    repo.framed()
-    subprocess.run(["git", "init", "-q", str(repo.place)], check=True, env=repo.env, capture_output=True)
+def test_a_claude_folder_that_is_a_repo_of_its_own_stops_both_commands_before_any_folder_is_made(repo, tmp_path):
+    subprocess.run(["git", "init", "-q", str(repo.root / ".claude")], check=True, env=repo.env, capture_output=True)
     for command in ("frame", "check"):
         code, lines = repo.run(command)
-        assert code == 2 and len(lines) == 1 and "lies in another repo" in lines[0], (command, lines)
+        assert code == 2 and len(lines) == 1 and lines[0].startswith("handoff: error .claude is a repo of its own"), lines
+    assert os.listdir(repo.root / ".claude") == [".git"]
 
-    other = Repo(tmp_path, "other")
-    other.framed()
-    (other.root / ".claude" / ".git").write_text("not the name of a git folder\n")
-    note = other.note.read_bytes()
+
+@pytest.mark.parametrize("where", [".claude", PLACE])
+@pytest.mark.parametrize("kind", ["a repo", "an empty folder", "a file that names no git folder"])
+def test_a_git_entry_in_the_claude_folder_or_in_the_place_stops_both_commands(repo, where, kind):
+    """The script looks for the name. It does not ask what is behind it: what git makes of a `.git` depends on
+    the settings in it."""
+    repo.framed()
+    note = repo.note.read_bytes()
+    if kind == "a repo":
+        subprocess.run(["git", "init", "-q", str(repo.root / where)], check=True, env=repo.env, capture_output=True)
+    elif kind == "an empty folder":
+        (repo.root / where / ".git").mkdir()
+    else:
+        (repo.root / where / ".git").write_text("not the name of a git folder\n")
     for command in ("frame", "check"):
-        code, lines = other.run(command)
-        assert code == 2 and len(lines) == 1 and lines[0].startswith("handoff: error git rev-parse failed"), (command, lines)
-    assert other.note.read_bytes() == note
+        code, lines = repo.run(command)
+        assert code == 2 and len(lines) == 1, (command, lines)
+        assert lines[0].startswith(f"handoff: error {where} is a repo of its own"), (command, lines)
+    assert repo.note.read_bytes() == note and not (repo.root / PREV).exists()
+
+
+def test_a_repo_in_the_claude_folder_that_names_the_outer_tree_as_its_work_tree_is_another_repo_too(repo):
+    """Found in review. Asked from inside `.claude`, git then names the outer tree as the top, the same one as for
+    the work tree itself. The inner repo can track a note at the note's path, and frame moved and replaced it."""
+    inner = repo.root / ".claude"
+    subprocess.run(["git", "init", "-q", str(inner)], check=True, env=repo.env, capture_output=True)
+    for args in (["config", "core.worktree", str(repo.root)], ["config", "user.email", "t@example.invalid"],
+                 ["config", "user.name", "t"]):
+        git_in(inner, repo.env, *args)
+    repo.make_place()
+    theirs = "---\ntype: handoff\nthe note of the team, kept in the inner repo\n"
+    repo.note.write_text(theirs)
+    git_in(inner, repo.env, "add", "-f", "handoff/note.md")
+    git_in(inner, repo.env, "commit", "-q", "-m", "a note that the inner repo tracks")
+    top = git_in(inner, repo.env, "rev-parse", "--show-toplevel").stdout.decode().strip()
+    assert os.path.samefile(top, repo.root), "the control: git names the outer tree from inside .claude"
+    for command in ("frame", "check"):
+        code, lines = repo.run(command)
+        assert code == 2 and len(lines) == 1 and lines[0].startswith("handoff: error .claude is a repo of its own"), lines
+    assert repo.note.read_text() == theirs and sorted(os.listdir(repo.place)) == [".gitignore", "note.md"]
 
 
 def test_a_claude_folder_that_is_the_work_tree_of_a_git_folder_elsewhere_is_not_seen(repo, tmp_path):
