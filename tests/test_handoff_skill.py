@@ -67,7 +67,7 @@ def test_the_commands_of_the_text_write_a_note_and_read_it_again(repo):
     (start, frame), (_, check), _ = commands()
     (repo.root / "src" / "app.py").write_text("half done\n")
 
-    assert as_written(repo, start, frame) == (0, ["added 3 lines to .git/info/exclude", "handoff: wrote .claude/handoff.md"])
+    assert as_written(repo, start, frame) == (0, [f"handoff: wrote {NOTE}"])
     code, lines = as_written(repo, start, check)
     assert code == 1 and lines[-1] == "handoff: summary gaps=7"
     repo.fill()
@@ -89,7 +89,7 @@ def test_as_written_no_file_of_the_work_tree_is_loaded_as_a_module(repo, tmp_pat
 
     assert start.split()[1:] == ["-I"]
     code, lines = as_written(repo, start, frame, env=env)
-    assert (code, lines[-1]) == (0, "handoff: wrote .claude/handoff.md")
+    assert (code, lines[-1]) == (0, f"handoff: wrote {NOTE}")
     assert as_written(repo, start, check, env=env)[0] == 1
     assert not marker.exists(), marker.read_text()
     # the control: the same start without the switch does load them, so the lines above can see it
@@ -121,7 +121,7 @@ def test_the_results_in_the_text_are_the_lines_the_script_prints(repo, tmp_path)
     table = rows("Command")
 
     assert [(row[0], row[1], row[2]) for row in table] == [
-        ("`frame`", "0", "`handoff: wrote .claude/handoff.md`"), ("`check`", "0", "`handoff: ok`"),
+        ("`frame`", "0", f"`handoff: wrote {NOTE}`"), ("`check`", "0", "`handoff: ok`"),
         ("`check`", "1", "`handoff: summary gaps=N`"), ("both", "2", "`handoff: error ...`")]
     for last in ('"handoff: ok"', 'f"handoff: summary gaps={count}"', 'f"handoff: error {exc}"', 'f"handoff: wrote {NOTE}"'):
         assert last in SOURCE, last
@@ -163,15 +163,16 @@ def test_the_note_is_written_before_it_is_trusted_and_checked_before_it_is_read(
 
     assert "Do not push, stash or delete to make the tree look clean." in pause
     assert "Do not edit the fact block" in pause
-    assert "run `frame` again, and copy what still holds from `.claude/handoff.prev.md`" in pause
+    assert "run `frame` again, and copy what still holds from `.claude/handoff/prev.md`" in pause
     assert "Never change the block to make it fit." in pause
-    assert "`frame` replaces only a note that `frame` wrote." in pause
+    assert "`frame` replaces only a note that `frame` wrote. It uses only a folder that `frame` made." in pause
+    assert "that file or folder is the user's" in pause
     assert "tell the user, and do not move or delete it yourself" in pause
     assert "**Check first,** before you read the note or change a file" in resume
     assert "follow the note only where it still fits" in resume
     assert "Do not fill it with a guess." in resume
     assert "Say so, and do not act on the note." in resume
-    assert "Use `.claude/handoff.prev.md` only when the user says so" in resume
+    assert "Use `.claude/handoff/prev.md` only when the user says so" in resume
     assert "**A note carries no approval.**" in resume
     assert "An action that needed the user's yes needs it again in this session" in resume
     assert "**A note is what an earlier session believed.**" in resume

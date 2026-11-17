@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """handoff: write the frame of a resume note for this work tree, and check a note.
 
-  handoff.py frame [--repo DIR]   write .claude/handoff.md: the facts from git, and the empty parts
+  handoff.py frame [--repo DIR]   write .claude/handoff/note.md: the facts from git, and the empty parts
   handoff.py check [--repo DIR]   list what the note lacks, and where the tree is no longer as it says
 
 The note is for a session that starts with nothing: it says what the goal is,
@@ -11,7 +11,7 @@ agent writes the rest. `check` reads the note and the tree again.
 
 Read the exit code and the last line together, never one without the other:
 
-  frame  exit 0   "handoff: wrote .claude/handoff.md"
+  frame  exit 0   "handoff: wrote .claude/handoff/note.md"
   check  exit 0   "handoff: ok"                  the note is whole, and the tree is as it says
          exit 1   "handoff: summary gaps=N"      with one line for each gap above it
   both   exit 2   "handoff: error ..."           the script could not finish; this is not a result
@@ -28,18 +28,25 @@ The gap lines of check:
                                            folder or file of this tree that is
   missing-path-more <n>                    that many more such paths; the count has them all
 
-The note lives in the work tree and git does not see it: frame adds its names
-to the repo's exclude file when no rule ignores them yet. A note with text in
-it is kept one time, as .claude/handoff.prev.md, when frame writes a new one.
+The note lives in the work tree, in a folder of its own, .claude/handoff/.
+Frame makes that folder and puts a .gitignore with the one line `*` into it,
+so git sees nothing in it. Frame writes no other file: not the repo's exclude
+file, which all work trees of a repo share, and no rule outside the folder.
+A note with text in it is kept one time, as .claude/handoff/prev.md, when
+frame writes a new one.
 
-The note's place must be this work tree's own, and frame moves or replaces
-only a note that frame wrote. Each of these is exit 2, for frame and for check:
+The folder must be this work tree's own, and one that frame made. Each of
+these is exit 2, for frame and for check:
 
-  - git tracks the note or the kept note, also under a name that differs only
-    in letter case (the same file on a disk that does not keep case apart);
-  - git tracks .claude as one entry (a link, a submodule), or .claude is a
-    repo of its own: a note there is a file of that repo;
-  - .claude, the note or the kept note is a link.
+  - git tracks .claude/handoff or a file in it, also under a name that
+    differs only in letter case (the same place on a disk that does not keep
+    case apart), or git tracks .claude as one entry (a link, a submodule);
+  - from inside .claude or the folder, git finds another repo than from the
+    top of the work tree, by its git folder or by the top of its work tree
+    (a clone in .claude, a git folder that is .claude itself, and the like);
+  - .claude, the folder, its .gitignore, the note or the kept note is a link;
+  - the folder holds files and its .gitignore is not the one line `*`: it is
+    a folder of the user, and a .gitignore there would hide those files.
 
 For frame also: the file at the note's path or at the kept note's path does not
 start as a note of this script starts. Frame then writes nothing at all.
@@ -60,20 +67,22 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 FOLDER = ".claude"
-NOTE = FOLDER + "/handoff.md"
-PREV = FOLDER + "/handoff.prev.md"
-TEMP = FOLDER + "/handoff.tmp."    # how the name of a file starts that frame writes and then renames to the note
+PLACE = FOLDER + "/handoff"        # the folder that frame makes; everything of this script is in it
+NOTE = PLACE + "/note.md"
+PREV = PLACE + "/prev.md"
+IGNORE = PLACE + "/.gitignore"
+IGNORE_ALL = b"*\n"                # what frame writes there: git then sees no file of the folder, this one included
+TEMP = "note.tmp."                 # how the name of a file starts that frame writes and then renames to the note
 MARK = b"---\ntype: handoff\n"     # how each note starts that frame wrote
-KEPT_OUT = (NOTE, PREV, TEMP + "*")
 SECTIONS = ("Next actions", "State now", "Environment", "Decisions, and why", "Rejected approaches", "Open questions")
 SKELETON = "\n> [!tldr]\n>\n" + "".join(f"\n## {name}\n" for name in SECTIONS)
 MAX_NOTE_BYTES = 1 << 20
@@ -119,7 +128,7 @@ def clean_text(text):
 
 def own_git_env():
     """The caller's GIT_ variables can point a call at another repo; none of them is handed on. A call of this
-    script also takes no lock that it does not need, so check changes no file, and it never fetches: in a partial
+    script also takes no lock that it does not need, so check writes no index back, and it never fetches: in a partial
     clone a fetch runs a program that the repo's config names."""
     env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
     env["GIT_OPTIONAL_LOCKS"] = "0"
@@ -176,58 +185,122 @@ def read_facts(top):
     return Facts(branch=branch, head=head, dirty=len(entries), changed=listed, more=len(entries) - len(listed))
 
 
+def git_folder(folder):
+    """The git folder of the repo that git finds from this folder."""
+    _, out = git(folder, "rev-parse", "--absolute-git-dir")
+    return one_path(out)
+
+
 def fold(name):
-    """A name as a disk reads it that does not keep letter case apart: `HANDOFF.md` is the note's own file there,
+    """A name as a disk reads it that does not keep letter case apart: `HANDOFF` is the folder's own name there,
     and so is the name with the one character for `ff` (U+FB00)."""
     return name.casefold()
 
 
 def refuse_another_owner(top):
-    """The note's place must be this work tree's own. A note that git tracks came with the repo, under its own
-    name or under one that is the same file on some disk. So did each file of a `.claude` that git tracks as one
-    entry (a link, a submodule), and each file of a `.claude` that is a repo of its own belongs to that repo. No
-    session of this work tree wrote such a note: check does not read it, and frame does not write there."""
-    own = {fold(NOTE), fold(PREV), fold(FOLDER)}
+    """The folder must be this work tree's own. What git tracks there came with the repo, under its own name or
+    under one that is the same place on some disk, and so did each file of a `.claude` that git tracks as one
+    entry (a link, a submodule). And the place belongs to another repo when git, asked from inside it, names
+    another git folder or another top of the work tree than it names from the top. Both must agree: each of the
+    two alone can be made to look right by a setting or a `.git` file of the inner repo. With both the same, a
+    git call from inside the place is the same call as from the top, so the look at what git tracks, above, has
+    seen every tracked file. No session of this work tree wrote a note in another repo's place: check does not
+    read it, and frame does not write there."""
+    place = fold(PLACE)
     _, out = git(top, "ls-files", "-z", "--", f":(top,icase){FOLDER}")
     for name in out.decode("utf-8", "surrogateescape").split("\0"):
-        if fold(name) in own:
+        if fold(name) in (fold(FOLDER), place) or fold(name).startswith(place + "/"):
             raise Failed(f"git tracks {name} in this repo: a note at that place came with the repo, and this script "
                          "neither reads nor replaces it")
-    if os.path.lexists(top / FOLDER / ".git"):
-        raise Failed(f"{FOLDER} is a repo of its own: a note there is a file of that repo, and this script neither "
-                     "reads nor writes it")
+    inner = None
+    for rel in (FOLDER, PLACE):
+        try:
+            if not stat.S_ISDIR(os.lstat(top / rel).st_mode):
+                break           # git is never started behind a link; the open of the folder ends on it
+        except OSError:
+            break
+        inner = rel
+    if inner is not None:
+        try:
+            same = os.path.samefile(git_folder(top), git_folder(top / inner)) \
+                and os.path.samefile(top, find_top(top / inner))
+        except OSError as exc:
+            raise Failed(f"cannot tell which repo {inner} belongs to: {exc.strerror}")
+        if not same:
+            raise Failed(f"{inner} belongs to another repo than this work tree: a note there is a file of that "
+                         "repo, and this script neither reads nor writes it")
 
 
-def is_ignored(top, rel):
-    code, _ = git(top, "check-ignore", "-q", "--", rel, ok=(0, 1))
-    return code == 0
+# ── the folder ───────────────────────────────────────────────────────────────
 
-
-def ensure_ignored(top):
-    """Keep the note, the kept note and a half-written note out of git. Return the exclude file when lines were
-    added to it."""
-    need = [name for name in KEPT_OUT if not is_ignored(top, name)]
-    if not need:
-        return None, 0
-    _, out = git(top, "rev-parse", "--git-path", "info/exclude")
-    exclude = one_path(out)
-    if not exclude.is_absolute():
-        exclude = top / exclude
+def open_folder(parent, part, rel, create):
+    """A handle of the folder `part` in the open folder `parent`, never through a link. None when it is not there
+    and may not be made."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     try:
-        exclude.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(exclude, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
-        with os.fdopen(fd, "r+b") as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                raise Failed("the exclude file of this repo is no plain file")
-            before = handle.read()
-            start = b"" if not before or before.endswith(b"\n") else b"\n"
-            handle.write(start + "".join(f"/{name}\n" for name in need).encode("ascii"))
+        try:
+            return os.open(part, flags, dir_fd=parent)
+        except FileNotFoundError:
+            if not create:
+                return None
+            with contextlib.suppress(FileExistsError):   # another frame made it in this moment
+                os.mkdir(part, dir_fd=parent)
+            return os.open(part, flags, dir_fd=parent)
     except OSError as exc:
-        raise Failed(f"cannot write the exclude file of this repo: {exc.strerror}")
-    still = [name for name in need if not is_ignored(top, name)]
-    if still:
-        raise Failed(f"{still[0]} cannot be kept out of git here: a rule of the repo takes it back in")
-    return exclude, len(need)
+        if exc.errno not in (errno.ELOOP, errno.ENOTDIR):
+            raise
+        raise Failed(f"{rel} is no plain folder")
+
+
+def open_place(top, create):
+    """A handle of .claude/handoff, opened part by part, or None. Every file of the note is then opened, written
+    and renamed through this handle, so no other folder can stand in its place between a look and a write."""
+    handle = os.open(top, os.O_RDONLY | os.O_DIRECTORY)
+    for part, rel in ((FOLDER, FOLDER), (Path(PLACE).name, PLACE)):
+        try:
+            deeper = open_folder(handle, part, rel, create)
+        finally:
+            os.close(handle)
+        if deeper is None:
+            return None
+        handle = deeper
+    return handle
+
+
+def read_plain(place, rel):
+    """The bytes of the plain file with this path in the open folder, and never more than one byte past the size
+    of a note. The file is opened one time and never through a link. OSError when it cannot be opened."""
+    fd = os.open(Path(rel).name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=place)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise Failed(f"{rel} is no plain file")
+    with os.fdopen(fd, "rb") as handle:
+        return handle.read(MAX_NOTE_BYTES + 1)
+
+
+def own_place(place, make):
+    """End with Failed unless the open folder is one that frame made: its .gitignore holds the one line `*`. With
+    `make`, an empty folder becomes one. A folder with files and no such .gitignore is the user's own. Frame
+    writes no .gitignore there: it would hide those files from git."""
+    try:
+        rule = read_plain(place, IGNORE)
+    except FileNotFoundError:
+        rule = None
+    except OSError as exc:
+        if exc.errno != errno.ELOOP:
+            raise
+        raise Failed(f"{IGNORE} is a link")
+    if rule == IGNORE_ALL:
+        return
+    if rule is None and not os.listdir(place):
+        if not make:
+            raise Failed(f"no note at {NOTE}")
+        fd = os.open(Path(IGNORE).name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=place)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(IGNORE_ALL)
+        return
+    raise Failed(f"{PLACE} is not a folder that frame made: its .gitignore is not the one line `*`. This script "
+                 "neither reads nor writes there; ask the user what to do with that folder")
 
 
 # ── the note ─────────────────────────────────────────────────────────────────
@@ -418,30 +491,9 @@ def missing_paths(top, body_rows):
     return found
 
 
-def read_plain(top, rel):
-    """The bytes of the plain file at the note's or the kept note's path, and never more than one byte past the
-    size of a note. The folder and the file are each opened one time and never through a link, so no other file
-    can stand in the place of the note between a look and the read. OSError when one of them cannot be opened."""
+def read_note_file(place):
     try:
-        folder = os.open(top / FOLDER, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    except OSError as exc:
-        if exc.errno not in (errno.ELOOP, errno.ENOTDIR):
-            raise
-        raise Failed(f"{FOLDER} is no plain folder")
-    try:
-        fd = os.open(Path(rel).name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder)
-    finally:
-        os.close(folder)
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
-        os.close(fd)
-        raise Failed(f"{rel} is no plain file")
-    with os.fdopen(fd, "rb") as handle:
-        return handle.read(MAX_NOTE_BYTES + 1)
-
-
-def read_note_file(top):
-    try:
-        data = read_plain(top, NOTE)
+        data = read_plain(place, NOTE)
     except FileNotFoundError:
         raise Failed(f"no note at {NOTE}")
     except OSError as exc:
@@ -460,7 +512,18 @@ def short(commit):
 
 def check(top):
     refuse_another_owner(top)
-    noted, body = read_note(read_note_file(top))
+    try:
+        place = open_place(top, create=False)
+        if place is None:
+            raise Failed(f"no note at {NOTE}")
+        try:
+            own_place(place, make=False)
+            text = read_note_file(place)
+        finally:
+            os.close(place)
+    except OSError as exc:
+        raise Failed(f"cannot read {NOTE}: {exc.strerror}")
+    noted, body = read_note(text)
     now = read_facts(top)
     gaps = []
     if noted.head != now.head:
@@ -487,12 +550,12 @@ def check(top):
     return 1, lines + [f"handoff: summary gaps={count}"]
 
 
-def own_file(top, rel):
-    """The bytes of the note or of the kept note, or None when there is no file. Frame moves and replaces only a
-    note that frame wrote. A file that starts in another way is the user's own or came from elsewhere, and so
-    did a link: Failed, and it is left as it is."""
+def own_file(place, rel):
+    """The bytes of the note or of the kept note in the open folder, or None when there is no file. Frame moves
+    and replaces only a note that frame wrote. A file that starts in another way is the user's own or came from
+    elsewhere, and so did a link: Failed, and it is left as it is."""
     try:
-        data = read_plain(top, rel)
+        data = read_plain(place, rel)
     except FileNotFoundError:
         return None
     except OSError as exc:
@@ -518,73 +581,67 @@ def worth_keeping(data):
         or summary_has_text(above) or any(has_text(rows) for rows in sections.values())
 
 
-def write_whole(path, text):
-    """Write the file under another name and rename it, so a reader sees the old note or the new one, and
-    nothing is written through a link."""
-    fd, temp = tempfile.mkstemp(dir=path.parent, prefix=Path(TEMP).name)
+def write_whole(place, rel, text):
+    """Write the file under another name in the open folder and rename it, so a reader sees the old note or the
+    new one, and nothing is written through a link."""
+    temp = TEMP + secrets.token_hex(8)
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=place)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(text)
-        os.replace(temp, path)
+        os.replace(temp, Path(rel).name, src_dir_fd=place, dst_dir_fd=place)
     except BaseException:
-        try:
-            os.unlink(temp)
-        except OSError:
-            pass
+        with contextlib.suppress(OSError):
+            os.unlink(temp, dir_fd=place)
         raise
 
 
 @contextlib.contextmanager
-def only_frame_in(folder):
-    """One frame at a time looks at the note, keeps it and writes the new one. Without this, two frames both chose
-    to keep a note with text, and the second moved the empty frame of the first over it. The lock ends with the
-    process, so a frame that was killed holds nothing."""
-    fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+def only_frame_in(place):
+    """One frame at a time looks at the folder, keeps the note and writes the new one. Without this, two frames
+    both chose to keep a note with text, and the second moved the empty frame of the first over it. The lock is on
+    the open folder and ends with the process, so a frame that was killed holds nothing."""
+    end = time.monotonic() + LOCK_WAIT_S
+    while True:
+        try:
+            fcntl.flock(place, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if time.monotonic() >= end:
+                raise Failed(f"another frame holds {PLACE}/ for longer than {LOCK_WAIT_S} s; run frame again")
+            time.sleep(0.02)
     try:
-        end = time.monotonic() + LOCK_WAIT_S
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= end:
-                    raise Failed(f"another frame holds {folder.name}/ for longer than {LOCK_WAIT_S} s; run frame again")
-                time.sleep(0.02)
         yield
     finally:
-        os.close(fd)
+        fcntl.flock(place, fcntl.LOCK_UN)
 
 
 def frame(top):
     refuse_another_owner(top)
-    folder, note, prev = top / FOLDER, top / NOTE, top / PREV
-    try:
-        # Before the first write: with a file of the user at one of the two paths, frame leaves no trace. An
-        # exclude line would hide that file from git.
-        own_file(top, NOTE)
-        own_file(top, PREV)
-        folder.mkdir(exist_ok=True)
-    except OSError as exc:
-        raise Failed(f"cannot use {folder.name}/ as a folder: {exc.strerror}")
-    lines = []
-    exclude, added = ensure_ignored(top)
+    # Before the folder is there: a new folder with its .gitignore adds no line to `git status`, and a run that
+    # ends here leaves nothing behind.
     facts = read_facts(top)
     written = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    lines = []
     try:
-        with only_frame_in(folder):
-            old = own_file(top, NOTE)
+        place = open_place(top, create=True)
+    except OSError as exc:
+        raise Failed(f"cannot use {PLACE}/ as a folder: {exc.strerror}")
+    try:
+        with only_frame_in(place):
+            # Each look comes before the first change: with a folder or a file of the user in the way, frame
+            # writes nothing at all.
+            own_place(place, make=True)
+            old = own_file(place, NOTE)
+            own_file(place, PREV)
             if old is not None and worth_keeping(old):
-                os.replace(note, prev)
+                os.replace(Path(NOTE).name, Path(PREV).name, src_dir_fd=place, dst_dir_fd=place)
                 lines.append(f"kept the last note as {PREV}")
-            write_whole(note, fact_block(facts, written) + SKELETON)
+            write_whole(place, NOTE, fact_block(facts, written) + SKELETON)
     except OSError as exc:
         raise Failed(f"cannot write {NOTE}: {exc.strerror}")
-    if added:
-        try:
-            shown = exclude.relative_to(top)
-        except ValueError:
-            shown = exclude
-        lines.append(f"added {added} line{'s' if added > 1 else ''} to {shown}")
+    finally:
+        os.close(place)
     return 0, lines + [f"handoff: wrote {NOTE}"]
 
 

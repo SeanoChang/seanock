@@ -6,6 +6,34 @@ the tag `vX.Y.Z`. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says how it moves. The newest
 entry is first.
 
+## 0.11.0 (2026-11-17)
+
+Changed:
+
+- `handoff`: the note has a folder of its own. `frame` writes
+  `.claude/handoff/note.md` and keeps the last note as
+  `.claude/handoff/prev.md`. It makes the folder with a `.gitignore` of one
+  line, `*`, so the folder ignores itself, and it no longer writes into the
+  exclude file of the repo. The script reads, writes and renames every file
+  through the folder that it opened one time, with no link followed.
+  Both commands end with exit 2 when git tracks a file in the folder (under
+  any letter case), when git finds another repo from inside `.claude` or
+  the folder than from the top of the work tree (another git folder, or
+  another top), and when the folder holds files of the user and is not one
+  that `frame` made.
+
+Fixed:
+
+- `handoff` of 0.8.0 wrote three names into `.git/info/exclude`, which all
+  work trees of a repo share. A file of the user with one of those names in
+  another work tree (`.claude/handoff.md`, or `HANDOFF.md` on a Mac) was
+  gone from `git status`, and `git worktree remove` then deleted it with no
+  warning. A test holds the case for six names; four of them fail on the
+  script of 0.8.0.
+
+A note that 0.8.0 wrote at `.claude/handoff.md` is not read and not moved,
+and the lines of 0.8.0 in an exclude file stay. 0.8.0 was in no release.
+
 ## 0.10.0 (2026-11-17)
 
 Added:

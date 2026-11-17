@@ -27,8 +27,9 @@ ROOT = Path(__file__).resolve().parent.parent
 SKILL = ROOT / "config" / "claude" / "skills" / "handoff"
 SCRIPT = SKILL / "scripts" / "handoff.py"
 PY = sys.executable
-NOTE = ".claude/handoff.md"
-PREV = ".claude/handoff.prev.md"
+PLACE = ".claude/handoff"
+NOTE = PLACE + "/note.md"
+PREV = PLACE + "/prev.md"
 SECTIONS = ("Next actions", "State now", "Environment", "Decisions, and why", "Rejected approaches", "Open questions")
 BODY = {
     "tldr": "Add the `double` function. The test for it is written and fails.",
@@ -77,6 +78,25 @@ class Repo:
     @property
     def note(self):
         return self.root / NOTE
+
+    @property
+    def place(self):
+        return self.root / PLACE
+
+    def make_place(self):
+        """The folder as frame makes it, with no note in it yet."""
+        self.place.mkdir(parents=True)
+        (self.place / ".gitignore").write_bytes(b"*\n")
+        return self.place
+
+    def exclude(self):
+        return (self.root / ".git" / "info" / "exclude").read_bytes()
+
+    def status(self, folder=None):
+        done = subprocess.run(["git", "-C", str(folder or self.root), "status", "--porcelain", "--untracked-files=all"],
+                              capture_output=True, text=True, env=self.env, timeout=60)
+        assert done.returncode == 0, done.stderr
+        return done.stdout
 
     def block(self):
         text = self.note.read_text(encoding="utf-8")
@@ -151,7 +171,7 @@ def load_script():
 def test_pause_writes_a_note_that_checks_and_resume_sees_that_the_tree_moved(repo):
     (repo.root / "src" / "app.py").write_text("def greet():\n    return 'hello'\n\n# double: next\n")
     code, lines = repo.run("frame")
-    assert (code, lines[-1]) == (0, "handoff: wrote .claude/handoff.md")
+    assert (code, lines[-1]) == (0, f"handoff: wrote {NOTE}")
 
     # the frame alone is no note: every part is still to write
     code, lines = repo.run("check")
@@ -238,77 +258,116 @@ def test_the_callers_git_variables_do_not_pick_the_repo(repo, tmp_path):
 
 def test_the_repo_is_the_one_of_the_current_folder_when_none_is_named(repo):
     code, lines = repo.run("frame", cwd=repo.root / "src", repo=False)
-    assert (code, lines[-1]) == (0, "handoff: wrote .claude/handoff.md")
+    assert (code, lines[-1]) == (0, f"handoff: wrote {NOTE}")
     assert repo.note.is_file() and not (repo.root / "src" / ".claude").exists()
 
 
 # ── where the note lives ─────────────────────────────────────────────────────
 
-def test_git_does_not_see_the_note_and_the_exclude_lines_are_written_once(repo):
-    code, lines = repo.run("frame")
-    assert code == 0 and "added 3 lines to .git/info/exclude" in lines
-    exclude = (repo.root / ".git" / "info" / "exclude").read_text()
-    assert exclude.endswith("/.claude/handoff.md\n/.claude/handoff.prev.md\n/.claude/handoff.tmp.*\n")
+def test_git_does_not_see_the_note_and_frame_writes_into_no_file_of_the_repo(repo):
+    """The folder ignores itself. Frame writes no rule anywhere else: not into the exclude file, which every work
+    tree of the repo shares, and not into a .gitignore of the tree."""
+    exclude = repo.exclude()
+    assert repo.run("frame") == (0, [f"handoff: wrote {NOTE}"])
+    assert sorted(os.listdir(repo.place)) == [".gitignore", "note.md"]
+    assert (repo.place / ".gitignore").read_bytes() == b"*\n"
+    assert sorted(os.listdir(repo.root)) == [".claude", ".git", "src", "tests"] and os.listdir(repo.root / ".claude") == ["handoff"]
+    assert repo.status() == "" and repo.exclude() == exclude
     repo.fill()
-    code, lines = repo.run("frame")
-    assert code == 0 and not any(line.startswith("added") for line in lines)
-    assert (repo.root / ".git" / "info" / "exclude").read_text() == exclude
-    assert repo.git("status", "--porcelain") == "" and (repo.root / PREV).is_file()
+    assert repo.run("frame") == (0, [f"kept the last note as {PREV}", f"handoff: wrote {NOTE}"])
+    assert sorted(os.listdir(repo.place)) == [".gitignore", "note.md", "prev.md"]
+    assert repo.status() == "" and repo.exclude() == exclude
 
 
-def test_a_repo_that_ignores_the_note_already_gets_no_exclude_line(repo):
+def test_a_repo_that_ignores_the_claude_folder_gets_the_same_folder(repo):
     (repo.root / ".gitignore").write_text(".claude/\n")
     repo.commit("ignore")
-    before = (repo.root / ".git" / "info" / "exclude").read_bytes()
-    code, lines = repo.run("frame")
-    assert code == 0 and lines == ["handoff: wrote .claude/handoff.md"]
-    assert (repo.root / ".git" / "info" / "exclude").read_bytes() == before
+    exclude = repo.exclude()
+    assert repo.run("frame") == (0, [f"handoff: wrote {NOTE}"])
+    assert (repo.place / ".gitignore").read_bytes() == b"*\n"
+    assert repo.status() == "" and repo.exclude() == exclude
 
 
-def test_an_exclude_file_with_no_line_end_keeps_its_last_line(repo):
-    exclude = repo.root / ".git" / "info" / "exclude"
-    exclude.write_text("*.log")
-    assert repo.run("frame")[0] == 0
-    assert exclude.read_text() == "*.log\n/.claude/handoff.md\n/.claude/handoff.prev.md\n/.claude/handoff.tmp.*\n"
+def test_no_rule_of_the_repo_takes_the_note_back_in(repo):
+    """A rule that is nearer to a file wins in git, and none is nearer than the .gitignore of the folder. So a
+    `!` rule of the tree, of the exclude file or of the user's own ignore file does not show the note to git."""
+    (repo.root / ".gitignore").write_text(f"!/{NOTE}\n!/{PLACE}/*\n!*\n")
+    repo.commit("rules that take everything back in")
+    with open(repo.root / ".git" / "info" / "exclude", "a") as handle:
+        handle.write(f"!/{NOTE}\n")
+    (repo.home / "ignore").write_text(f"!/{NOTE}\n")
+    repo.git("config", "core.excludesFile", str(repo.home / "ignore"))
+    repo.framed()
+    (repo.place / "extra.txt").write_text("what a session put beside the note\n")
+    assert repo.status() == ""
+    assert repo.run("check") == (0, ["handoff: ok"])
+
+
+def linked_tree(repo, tmp_path, name="linked"):
+    linked = tmp_path / name
+    repo.git("worktree", "add", "-q", str(linked), "-b", f"claude/{name}")
+    return linked
 
 
 def test_a_linked_work_tree_has_a_note_of_its_own(repo, tmp_path):
-    linked = tmp_path / "linked"
-    repo.git("worktree", "add", "-q", str(linked), "-b", "claude/other")
+    linked = linked_tree(repo, tmp_path)
+    exclude = repo.exclude()
     done = subprocess.run([PY, str(SCRIPT), "frame", "--repo", str(linked)], capture_output=True, text=True, env=repo.env)
     assert done.returncode == 0, done.stdout
-    assert (linked / NOTE).is_file() and not repo.note.exists()
-    status = subprocess.run(["git", "-C", str(linked), "status", "--porcelain"], capture_output=True, text=True, env=repo.env)
-    assert status.stdout == ""
-    assert "/.claude/handoff.md\n" in (repo.root / ".git" / "info" / "exclude").read_text()
+    assert (linked / NOTE).is_file() and not (repo.root / ".claude").exists()
+    assert repo.status(linked) == "" and repo.status() == ""
+    assert repo.exclude() == exclude, "the exclude file is one for all work trees of the repo"
+
+
+@pytest.mark.parametrize("name", ["handoff.md", "HANDOFF.md", "handoff.prev.md", "handoff.tmp.notes", "handoff/plan.txt",
+                                  "handoff/note.md"])
+def test_a_file_of_the_user_in_another_work_tree_stays_in_the_sight_of_git(repo, tmp_path, name):
+    """Frame once wrote three names into the exclude file of the repo. All work trees share that file, so a file
+    of the user with such a name in another work tree was gone from `git status`, and `git worktree remove` then
+    deleted it with no warning. Frame writes no rule outside its own folder now."""
+    linked = linked_tree(repo, tmp_path)
+    mine = linked / ".claude" / name
+    mine.parent.mkdir(parents=True)
+    mine.write_text("my own notes\n")
+    seen = repo.status(linked)
+    assert seen == f"?? .claude/{name}\n"
+    for _ in range(2):
+        assert repo.run("frame")[0] == 0
+    assert repo.status(linked) == seen, "git no longer sees the user's file in the other work tree"
+    removed = subprocess.run(["git", "-C", str(repo.root), "worktree", "remove", str(linked)], capture_output=True,
+                             text=True, env=repo.env)
+    assert removed.returncode != 0 and "untracked" in removed.stderr, "git removed a work tree with the user's file in it"
+    assert mine.read_text() == "my own notes\n"
+
+
+def test_a_note_goes_with_its_work_tree_when_git_removes_the_tree(repo, tmp_path):
+    """Git does not count an ignored file as work. The skill text and the known limits say so; this run holds
+    the sentence."""
+    linked = linked_tree(repo, tmp_path)
+    done = subprocess.run([PY, str(SCRIPT), "frame", "--repo", str(linked)], capture_output=True, text=True, env=repo.env)
+    assert done.returncode == 0 and (linked / NOTE).is_file()
+    repo.git("worktree", "remove", str(linked))
+    assert not linked.exists()
 
 
 def test_a_note_that_git_tracks_is_never_replaced(repo):
-    repo.note.parent.mkdir()
+    repo.place.mkdir(parents=True)
     repo.note.write_text("a tracked file\n")
     repo.commit("someone tracks it")
     code, lines = repo.run("frame")
     assert code == 2 and lines[-1].startswith("handoff: error ") and "tracks" in lines[-1]
-    assert repo.note.read_text() == "a tracked file\n"
-
-
-def test_a_rule_of_the_repo_that_keeps_the_note_visible_is_an_error(repo):
-    (repo.root / ".gitignore").write_text("!/.claude/handoff.md\n")
-    repo.commit("a rule that takes the note back in")
-    code, lines = repo.run("frame")
-    assert code == 2 and "out of git" in lines[-1]
-    assert not repo.note.exists()
+    assert repo.note.read_text() == "a tracked file\n" and os.listdir(repo.place) == ["note.md"]
 
 
 def test_a_note_with_text_is_kept_once_and_an_empty_frame_is_not(repo):
     repo.framed(tldr="the first note")
     first = repo.note.read_text()
     code, lines = repo.run("frame")
-    assert code == 0 and lines[0] == "kept the last note as .claude/handoff.prev.md"
+    assert code == 0 and lines[0] == f"kept the last note as {PREV}"
     assert (repo.root / PREV).read_text() == first
     # the new note is an empty frame: a third frame replaces it and leaves the kept note alone
     code, lines = repo.run("frame")
-    assert code == 0 and lines == ["handoff: wrote .claude/handoff.md"]
+    assert code == 0 and lines == [f"handoff: wrote {NOTE}"]
     assert (repo.root / PREV).read_text() == first
 
 
@@ -317,7 +376,7 @@ def test_a_note_that_is_too_large_to_read_is_kept_and_not_thrown_away(repo):
     large = repo.note.read_bytes() + b"x" * (1 << 20)
     repo.note.write_bytes(large)
     code, lines = repo.run("frame")
-    assert code == 0 and lines[0] == "kept the last note as .claude/handoff.prev.md"
+    assert code == 0 and lines[0] == f"kept the last note as {PREV}"
     assert (repo.root / PREV).read_bytes() == large
 
 
@@ -331,12 +390,12 @@ def test_an_error_that_the_script_did_not_expect_is_exit_2_and_never_a_result(re
 
 
 def test_a_note_that_frame_wrote_and_that_cannot_be_read_any_more_is_kept_too(repo):
-    """It starts as a note of this script starts, so it is one. The repo has no exclude line yet."""
-    repo.note.parent.mkdir()
+    """It starts as a note of this script starts, so it is one."""
+    repo.make_place()
     repo.note.write_text("---\ntype: handoff\nthe rest of the block is lost, and this text is not\n")
     assert repo.run("frame")[0] == 0
     assert (repo.root / PREV).read_text() == "---\ntype: handoff\nthe rest of the block is lost, and this text is not\n"
-    assert repo.block()["dirty"] == 0, "the facts must be read after the note is kept out of git"
+    assert repo.block()["dirty"] == 0
 
 
 def keeps_letter_case_apart(folder):
@@ -344,17 +403,17 @@ def keeps_letter_case_apart(folder):
     return not (folder / "PROBE-A").exists()
 
 
-@pytest.mark.parametrize("name", ["handoff.md", "handoff.prev.md", "HANDOFF.md", "Handoff.Prev.md"])
-@pytest.mark.parametrize("content", ["my own notes, not a frame\n", ""])
+@pytest.mark.parametrize("name", ["note.md", "prev.md", "NOTE.md", "Prev.md"])
+@pytest.mark.parametrize("content", ["my own notes, not a frame\n", "", "---\ntitle: a note of mine with a block on top\n---\n",
+                                     "---\ntype: handoffs\n", "---\r\ntype: handoff\r\n"])
 def test_a_file_that_frame_did_not_write_is_never_moved_or_replaced(repo, tmp_path, name, content):
     """A file of the user at the note's path or at the kept note's path, also under a name in other letter case
     on a disk that takes it for the same file. Frame moved such a file to the kept note, and the frame after that
-    replaced it there. Now frame ends before its first write: an exclude line would hide the file from git."""
-    same_file = name in ("handoff.md", "handoff.prev.md") or not keeps_letter_case_apart(tmp_path)
-    mine = repo.root / ".claude" / name
-    mine.parent.mkdir()
-    mine.write_text(content)
-    exclude = (repo.root / ".git" / "info" / "exclude").read_text()
+    replaced it there. Now frame ends before its first write."""
+    same_file = name in ("note.md", "prev.md") or not keeps_letter_case_apart(tmp_path)
+    mine = repo.make_place() / name
+    mine.write_bytes(content.encode())
+    exclude = repo.exclude()
     for _ in range(2):
         code, lines = repo.run("frame")
         if same_file:
@@ -362,11 +421,118 @@ def test_a_file_that_frame_did_not_write_is_never_moved_or_replaced(repo, tmp_pa
         else:
             assert code == 0
             repo.fill()
-    assert mine.read_text() == content and name in os.listdir(mine.parent)
+    assert mine.read_bytes() == content.encode() and name in os.listdir(repo.place)
+    assert repo.exclude() == exclude
     if same_file:
-        assert os.listdir(mine.parent) == [name]
-        assert (repo.root / ".git" / "info" / "exclude").read_text() == exclude
-        assert repo.git("status", "--porcelain", "--untracked-files=all") == f"?? .claude/{name}\n"
+        assert sorted(os.listdir(repo.place)) == sorted([".gitignore", name])
+
+
+@pytest.mark.parametrize("folder", ["handoff", "Handoff"])
+@pytest.mark.parametrize("rule", [None, "*.log\n", "*", "*\n\n", "*\n!plan.txt\n"])
+@pytest.mark.parametrize("own", ["plan.txt", ".plan"])
+def test_a_folder_of_the_user_at_the_place_is_never_taken_over(repo, tmp_path, folder, rule, own):
+    """The user can have a folder with that name, with files in it. A .gitignore with `*` there would hide those
+    files from git, and `git clean` or the removal of the work tree would then delete them with no warning. Frame
+    takes a folder as its own only when its .gitignore is the one line `*`."""
+    same_folder = folder == "handoff" or not keeps_letter_case_apart(tmp_path)
+    mine = repo.root / ".claude" / folder
+    mine.mkdir(parents=True)
+    (mine / own).write_text("my plan\n")   # a name with a dot in front is a file of the user like any other
+    if rule is not None:
+        (mine / ".gitignore").write_text(rule)
+    before = {path.name: path.read_bytes() for path in mine.iterdir()}
+    seen, exclude = repo.status(), repo.exclude()
+    for command in ("frame", "check"):
+        code, lines = repo.run(command)
+        if same_folder:
+            assert code == 2 and len(lines) == 1 and "is not a folder that frame made" in lines[0], (command, lines)
+            assert "ask the user what to do with that folder" in lines[0]
+        elif command == "frame":
+            assert code == 0
+    assert {path.name: path.read_bytes() for path in mine.iterdir()} == before
+    assert repo.exclude() == exclude
+    if same_folder:
+        assert repo.status() == seen and os.listdir(repo.root / ".claude") == [folder]
+
+
+def test_a_folder_where_the_user_wrote_the_same_rule_reads_as_a_folder_of_frame(repo):
+    """Git did not see the files of such a folder before, so frame hides nothing. It adds its note beside them."""
+    (repo.make_place() / "plan.txt").write_text("my plan\n")
+    assert repo.run("frame") == (0, [f"handoff: wrote {NOTE}"])
+    assert sorted(os.listdir(repo.place)) == [".gitignore", "note.md", "plan.txt"]
+    assert (repo.place / "plan.txt").read_text() == "my plan\n" and repo.status() == ""
+
+
+def test_a_gitignore_with_nothing_in_it_stops_both_commands(repo):
+    """What a frame leaves that was stopped between the making of the file and the write of its two bytes. The
+    known limits say that this state needs a hand."""
+    repo.place.mkdir(parents=True)
+    (repo.place / ".gitignore").write_bytes(b"")
+    for command in ("frame", "check"):
+        code, lines = repo.run(command)
+        assert code == 2 and len(lines) == 1 and "is not a folder that frame made" in lines[0], (command, lines)
+    assert os.listdir(repo.place) == [".gitignore"] and (repo.place / ".gitignore").read_bytes() == b""
+
+
+def test_a_note_whose_first_line_was_damaged_is_an_error_for_both_and_frame_says_to_ask(repo):
+    repo.framed()
+    damaged = b"\xef\xbb\xbf" + repo.note.read_bytes()
+    repo.note.write_bytes(damaged)
+    assert repo.run("check") == (2, ["handoff: error the fact block is not as frame wrote it (line 1: the first line)"])
+    code, lines = repo.run("frame")
+    assert code == 2 and len(lines) == 1 and lines[0].endswith("ask the user what to do with that file"), lines
+    assert repo.note.read_bytes() == damaged and sorted(os.listdir(repo.place)) == [".gitignore", "note.md"]
+
+
+def test_the_folder_is_taken_or_left_as_a_second_version_says_on_random_folders(tmp_path):
+    """The rule in one line: frame takes the folder when it is not there, when it is empty, or when its
+    .gitignore is the one line `*` and the files at the note's two paths are notes of frame. In every other case
+    it changes nothing."""
+    rng = random.Random(20261117)
+    note = "---\ntype: handoff\nwhat is left of an older note\n"
+    rules = [None, None, b"*\n", b"*\n", b"*\n", b"*", b"", b"*\n*\n", b"*.md\n", b"\n*\n", b"* \n"]
+    files = [None, None, note, "my own text\n", "", "---\ntitle: mine\n"]
+    for number in range(40):
+        repo = Repo(tmp_path, f"r{number}")
+        rule, kept, extra = rng.choice(rules), {name: rng.choice(files) for name in ("note.md", "prev.md")}, rng.random() < 0.4
+        there, plan = rng.random() < 0.85, rng.choice(["plan.txt", ".plan"])
+        if there:
+            repo.place.mkdir(parents=True)
+            if rule is not None:
+                (repo.place / ".gitignore").write_bytes(rule)
+            for name, text in kept.items():
+                if text is not None:
+                    (repo.place / name).write_text(text)
+            if extra:
+                (repo.place / plan).write_text("my plan\n")
+        before = {path.name: path.read_bytes() for path in repo.place.iterdir()} if there else None
+        if not there or not before:
+            expected = 0
+        elif rule != b"*\n":
+            expected = 2
+        else:
+            expected = 0 if all(text in (None, note) for text in kept.values()) else 2
+        code, lines = repo.run("frame")
+        state = (number, there, rule, kept, extra, lines)
+        assert code == expected, state
+        after = {path.name: path.read_bytes() for path in repo.place.iterdir()} if repo.place.exists() else None
+        if expected == 2:
+            assert after == before, state
+        else:
+            assert after[".gitignore"] == b"*\n" and after["note.md"].startswith(b"---\ntype: handoff\nwritten: "), state
+            assert repo.status() == "", state
+            if there and extra:
+                assert after[plan] == b"my plan\n", state
+
+
+def test_an_empty_folder_at_the_place_becomes_the_folder_of_the_note(repo):
+    """An empty folder holds no file that a .gitignore could hide. A frame that was stopped right after it made
+    the folder leaves this state, and the next frame goes on from it."""
+    repo.place.mkdir(parents=True)
+    assert repo.run("check") == (2, [f"handoff: error no note at {NOTE}"])
+    assert os.listdir(repo.place) == []
+    assert repo.run("frame") == (0, [f"handoff: wrote {NOTE}"])
+    assert (repo.place / ".gitignore").read_bytes() == b"*\n" and repo.status() == ""
 
 
 @pytest.mark.parametrize("rel", [NOTE, PREV])
@@ -381,59 +547,288 @@ def test_a_link_at_the_path_of_the_note_or_of_the_kept_note_is_never_replaced_or
     code, lines = repo.run("frame")
     assert (code, lines) == (2, [f"handoff: error {rel} is a link, and frame replaces only a note that frame wrote"])
     assert (repo.root / rel).is_symlink() and target.read_bytes() == whole
-    assert sorted(os.listdir(repo.note.parent)) == sorted({"handoff.md", Path(rel).name})
+    assert sorted(os.listdir(repo.place)) == sorted({".gitignore", "note.md", Path(rel).name})
 
 
-def test_a_claude_folder_that_is_a_repo_of_its_own_holds_no_note(repo, tmp_path):
-    """The exclude lines keep the note out of one repo. In a `.claude` with its own `.git`, the other repo sees the
-    note, can commit it, and can track the file that frame replaces."""
-    shared = Repo(tmp_path, "shared")
-    subprocess.run(["git", "clone", "-q", str(shared.root), str(repo.root / ".claude")], check=True, env=repo.env,
-                   capture_output=True)
-    exclude = (repo.root / ".git" / "info" / "exclude").read_text()
-    inner = sorted(os.listdir(repo.root / ".claude"))
-    (repo.root / ".claude" / "handoff.md").write_text("---\ntype: handoff\n")
-    for command in ("frame", "check"):
-        code, lines = repo.run(command)
-        assert code == 2 and len(lines) == 1 and lines[0].startswith("handoff: error .claude is a repo of its own"), lines
-    assert sorted(os.listdir(repo.root / ".claude")) == sorted(inner + ["handoff.md"])
-    assert (repo.root / ".git" / "info" / "exclude").read_text() == exclude
-
-
-def test_a_link_at_the_exclude_file_or_at_the_claude_folder_is_an_error_and_nothing_is_written(repo, tmp_path):
-    shared = tmp_path / "shared-exclude"
-    shared.write_text("*.log\n")
-    exclude = repo.root / ".git" / "info" / "exclude"
-    exclude.unlink()
-    exclude.symlink_to(shared)
-    code, lines = repo.run("frame")
-    assert code == 2 and "exclude file" in lines[-1]
-    assert shared.read_text() == "*.log\n" and not repo.note.exists()
-
-    other = Repo(tmp_path, "other")
+def test_a_link_at_the_folder_or_at_its_gitignore_is_never_followed(repo, tmp_path):
+    """Behind a link, the folder or its rule can be any folder or file of the machine."""
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    (other.root / ".claude").symlink_to(elsewhere)
-    assert other.run("frame") == (2, ["handoff: error .claude is no plain folder"])
-    assert list(elsewhere.iterdir()) == []
-    assert "handoff" not in (other.root / ".git" / "info" / "exclude").read_text()
+    (elsewhere / ".gitignore").write_bytes(b"*\n")
+    (repo.root / ".claude").mkdir()
+    repo.place.symlink_to(elsewhere)
+    for command in ("frame", "check"):
+        assert repo.run(command) == (2, [f"handoff: error {PLACE} is no plain folder"]), command
+    assert os.listdir(elsewhere) == [".gitignore"]
+
+    other = Repo(tmp_path, "other")
+    rule = tmp_path / "rule"
+    rule.write_bytes(b"*\n")
+    other.place.mkdir(parents=True)
+    (other.place / ".gitignore").symlink_to(rule)
+    for command in ("frame", "check"):
+        assert other.run(command) == (2, [f"handoff: error {PLACE}/.gitignore is a link"]), command
+    assert os.listdir(other.place) == [".gitignore"] and rule.read_bytes() == b"*\n"
 
 
-def test_a_folder_at_the_note_path_or_a_file_at_the_claude_path_is_an_error(repo, tmp_path):
-    (repo.root / NOTE).mkdir(parents=True)
+def clone_into(repo, tmp_path, target, *options):
+    shared = Repo(tmp_path, "shared")
+    (shared.root / "handoff").mkdir()
+    (shared.root / "handoff" / ".gitignore").write_bytes(b"*\n")
+    (shared.root / "handoff" / "note.md").write_text("---\ntype: handoff\na note that came with the other repo\n")
+    shared.git("add", "-f", "handoff")
+    shared.commit("a note that comes with this repo")
+    subprocess.run(["git", "clone", "-q", *options, str(shared.root), str(target)], check=True, env=repo.env,
+                   capture_output=True)
+
+
+@pytest.mark.parametrize("git_folder", ["a folder", "a file"])
+def test_a_claude_folder_that_is_a_repo_of_its_own_holds_no_note(repo, tmp_path, git_folder):
+    """A `.claude` that was cloned from elsewhere can bring a folder and a note that look like frame's own. Git
+    finds the git folder of that clone from inside it, through a `.git` that is a folder or a file that names
+    one, and the script stops: the note is a file of the other repo."""
+    options = [] if git_folder == "a folder" else ["--separate-git-dir", str(tmp_path / "kept-apart.git")]
+    clone_into(repo, tmp_path, repo.root / ".claude", *options)
+    assert (repo.root / ".claude" / ".git").is_dir() is (git_folder == "a folder")
+    exclude = repo.exclude()
+    before = {str(path.relative_to(repo.root)): path.read_bytes() for path in sorted((repo.root / ".claude").rglob("*"))
+              if path.is_file() and ".git/" not in str(path.relative_to(repo.root)) + "/"}
+    for command in ("frame", "check"):
+        code, lines = repo.run(command)
+        assert code == 2 and len(lines) == 1, (command, lines)
+        assert lines[0].startswith(f"handoff: error {PLACE} belongs to another repo than this work tree"), lines
+    after = {str(path.relative_to(repo.root)): path.read_bytes() for path in sorted((repo.root / ".claude").rglob("*"))
+             if path.is_file() and ".git/" not in str(path.relative_to(repo.root)) + "/"}
+    assert after == before and repo.exclude() == exclude
+
+
+OTHER_REPO = "belongs to another repo than this work tree"
+
+
+def inner_git(repo, folder, *args, git_dir=None):
+    """One git call for a repo inside the work tree, named by its folder or by its git folder."""
+    where = ["--git-dir", str(git_dir)] if git_dir else ["-C", str(folder)]
+    return subprocess.run(["git", *where, *args], check=True, env=repo.env, capture_output=True, text=True, timeout=60)
+
+
+def name_who_commits(repo, folder, git_dir=None):
+    inner_git(repo, folder, "config", "user.email", "t@example.invalid", git_dir=git_dir)
+    inner_git(repo, folder, "config", "user.name", "t", git_dir=git_dir)
+
+
+def test_a_claude_folder_that_is_a_repo_of_its_own_stops_both_commands_before_any_folder_is_made(repo, tmp_path):
+    inner_git(repo, repo.root, "init", "-q", str(repo.root / ".claude"))
+    for command in ("frame", "check"):
+        code, lines = repo.run(command)
+        assert code == 2 and len(lines) == 1 and lines[0].startswith(f"handoff: error .claude {OTHER_REPO}"), lines
+    assert os.listdir(repo.root / ".claude") == [".git"]
+
+
+FORMS = ["a repo", "a bare git folder", "a repo that names the outer tree as its work tree",
+         "a .git file that names another repo", "a .git file that names the git folder of the outer repo"]
+
+
+@pytest.mark.parametrize("where", [".claude", PLACE])
+@pytest.mark.parametrize("form", FORMS)
+def test_each_form_of_another_repo_at_the_claude_folder_or_at_the_place_stops_both_commands(repo, tmp_path, where, form):
+    """Git names a repo by two things, its git folder and the top of its work tree. Each form here differs from
+    the work tree's own repo in one of the two, and three earlier forms of the check each let one of them
+    through. The last form has the outer repo's own git folder and `.claude` (or the folder) as its top."""
+    repo.framed()
+    note = repo.note.read_bytes()
+    there = repo.root / where
+    if form == "a repo":
+        inner_git(repo, repo.root, "init", "-q", str(there))
+    elif form == "a bare git folder":
+        inner_git(repo, repo.root, "init", "-q", "--bare", str(there))
+    elif form == "a repo that names the outer tree as its work tree":
+        inner_git(repo, repo.root, "init", "-q", str(there))
+        inner_git(repo, there, "config", "core.worktree", str(repo.root))
+    elif form == "a .git file that names another repo":
+        other = Repo(tmp_path, "another")
+        (there / ".git").write_text(f"gitdir: {other.root / '.git'}\n")
+    else:
+        (there / ".git").write_text(f"gitdir: {repo.root / '.git'}\n")
+    for command in ("frame", "check"):
+        code, lines = repo.run(command)
+        assert code == 2 and len(lines) == 1 and lines[0].startswith(f"handoff: error {PLACE} {OTHER_REPO}"), (command, lines)
+    assert repo.note.read_bytes() == note and not (repo.root / PREV).exists()
+
+
+def test_a_git_file_that_names_the_outer_git_folder_does_not_get_a_tracked_note_replaced(repo):
+    """Found in review. From inside `.claude` git then has the outer repo's git folder and `.claude` as the top.
+    A note that is added from there is in the index of the outer repo under a path that the look at the tracked
+    names of `.claude` does not list, and frame moved and replaced it."""
+    repo.make_place()
+    theirs = "---\ntype: handoff\na note that was added from inside .claude\n"
+    repo.note.write_text(theirs)
+    (repo.root / ".claude" / ".git").write_text(f"gitdir: {repo.root / '.git'}\n")
+    inner_git(repo, repo.root / ".claude", "add", "-f", "handoff/note.md")
+    assert "handoff/note.md" in repo.git("ls-files"), "the control: the index of the outer repo holds the note"
+    assert repo.git("ls-files", "--", ".claude") == "", "the control: and not under the name of the folder"
+    for command in ("frame", "check"):
+        code, lines = repo.run(command)
+        assert code == 2 and len(lines) == 1 and OTHER_REPO in lines[0], (command, lines)
+    assert repo.note.read_text() == theirs and sorted(os.listdir(repo.place)) == [".gitignore", "note.md"]
+
+
+@pytest.mark.parametrize("where", [".claude", PLACE])
+def test_a_program_that_the_settings_of_a_repo_at_the_place_name_does_not_run(repo, tmp_path, where):
+    """To learn whose the place is, the script starts git inside it. Git then reads the settings of a repo that
+    is there, and such settings can name a program (the file monitor). The other repo is not this user's own."""
+    repo.framed()
+    there = repo.root / where
+    inner_git(repo, repo.root, "init", "-q", str(there))
+    (there / "theirs.txt").write_text("a file of the other repo\n")
+    inner_git(repo, there, "add", "-f", "theirs.txt")
+    trap = Trap(tmp_path)
+    inner_git(repo, there, "config", "core.fsmonitor", str(trap.program))
+    trap.live_under(lambda: git_in(there, repo.env, "status", check=False))
+    for command in ("frame", "check"):
+        code, lines = repo.run(command)
+        assert code == 2 and len(lines) == 1 and OTHER_REPO in lines[0], (command, lines)
+    assert not trap.ran()
+
+
+@pytest.mark.parametrize("where", [".claude", PLACE])
+def test_a_git_entry_that_is_no_repo_is_read_as_git_reads_it(repo, where):
+    """Git decides what a repo is. A file named `.git` that names no git folder is an error of git, and so of
+    both commands. An empty folder with that name is no repo for git, and the commands work."""
+    repo.framed()
+    note = repo.note.read_bytes()
+    (repo.root / where / ".git").write_text("not the name of a git folder\n")
+    for command in ("frame", "check"):
+        code, lines = repo.run(command)
+        assert code == 2 and len(lines) == 1 and lines[0].startswith("handoff: error git rev-parse failed"), lines
+    assert repo.note.read_bytes() == note and not (repo.root / PREV).exists()
+    (repo.root / where / ".git").unlink()
+    (repo.root / where / ".git").mkdir()
+    assert repo.run("check") == (0, ["handoff: ok"])
+    assert repo.run("frame")[0] == 0
+
+
+def test_a_repo_in_the_claude_folder_that_names_the_outer_tree_as_its_work_tree_is_another_repo_too(repo):
+    """Found in review. Asked from inside `.claude` for the top of the tree, git names the outer tree, the same
+    one as for the work tree itself. The inner repo can track a note at the note's path, and frame moved and
+    replaced it. Its git folder is another one, and that is what the script asks for."""
+    inner = repo.root / ".claude"
+    inner_git(repo, repo.root, "init", "-q", str(inner))
+    inner_git(repo, inner, "config", "core.worktree", str(repo.root))
+    name_who_commits(repo, inner)
+    repo.make_place()
+    theirs = "---\ntype: handoff\nthe note of the team, kept in the inner repo\n"
+    repo.note.write_text(theirs)
+    inner_git(repo, inner, "add", "-f", "handoff/note.md")
+    inner_git(repo, inner, "commit", "-q", "-m", "a note that the inner repo tracks")
+    top = inner_git(repo, inner, "rev-parse", "--show-toplevel").stdout.strip()
+    assert os.path.samefile(top, repo.root), "the control: git names the outer tree from inside .claude"
+    for command in ("frame", "check"):
+        code, lines = repo.run(command)
+        assert code == 2 and len(lines) == 1 and lines[0].startswith(f"handoff: error {PLACE} {OTHER_REPO}"), lines
+    assert repo.note.read_text() == theirs and sorted(os.listdir(repo.place)) == [".gitignore", "note.md"]
+
+
+@pytest.mark.parametrize("work_tree", ["none", "the outer tree"])
+def test_a_git_folder_that_is_the_claude_folder_itself_is_another_repo_too(repo, work_tree):
+    """Found in review. Such a repo has no entry named `.git`: its git folder is `.claude`. With the outer tree
+    as its work tree it can track a note at the note's path, and frame moved and replaced it. With no work tree,
+    frame made the note's folder inside the git folder."""
+    inner = repo.root / ".claude"
+    inner_git(repo, repo.root, "init", "-q", "--bare", str(inner))
+    theirs = None
+    if work_tree == "the outer tree":
+        inner_git(repo, inner, "config", "core.bare", "false", git_dir=inner)
+        inner_git(repo, inner, "config", "core.worktree", str(repo.root), git_dir=inner)
+        name_who_commits(repo, inner, git_dir=inner)
+        repo.make_place()
+        theirs = "---\ntype: handoff\nthe note of the team, kept in the inner repo\n"
+        repo.note.write_text(theirs)
+        for args in (["add", "-f", NOTE], ["commit", "-q", "-m", "a note that the inner repo tracks"]):
+            subprocess.run(["git", "--git-dir", str(inner), *args], check=True, env=repo.env, capture_output=True,
+                           cwd=repo.root)
+    before = sorted(os.listdir(inner))
+    for command in ("frame", "check"):
+        code, lines = repo.run(command)
+        assert code == 2 and len(lines) == 1 and OTHER_REPO in lines[0], (command, lines)
+    assert sorted(os.listdir(inner)) == before
+    if theirs is not None:
+        assert repo.note.read_text() == theirs and sorted(os.listdir(repo.place)) == [".gitignore", "note.md"]
+
+
+def test_a_claude_folder_that_is_the_work_tree_of_a_git_folder_elsewhere_is_not_seen(repo, tmp_path):
+    """The known limits name this case. A git folder outside the tree can take `.claude` as its work tree, and
+    nothing inside `.claude` says so. Frame writes its note there. The other repo does not see the note: the
+    folder ignores itself for every repo."""
+    (repo.root / ".claude").mkdir()
+    (repo.root / ".claude" / "settings.json").write_text("{}\n")
+    apart = tmp_path / "apart.git"
+    env = dict(repo.env, GIT_DIR=str(apart), GIT_WORK_TREE=str(repo.root / ".claude"))
+    for args in (["init", "-q"], ["config", "user.email", "t@example.invalid"], ["config", "user.name", "t"],
+                 ["add", "-A"], ["commit", "-q", "-m", "the settings"]):
+        subprocess.run(["git", *args], check=True, env=env, capture_output=True, cwd=repo.root / ".claude")
+    repo.framed()
+    assert repo.run("check") == (0, ["handoff: ok"])
+    other = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"], env=env, capture_output=True,
+                           text=True, cwd=repo.root / ".claude")
+    assert (other.returncode, other.stdout) == (0, "")
+
+
+def test_the_folder_is_opened_with_no_link_followed(repo, tmp_path):
+    """The look at who owns the place comes first and stops at a link. The open comes after it, and it must not
+    follow a link either: a folder can be swapped for a link between the two. This test calls the open alone."""
+    script = load_script()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (repo.root / ".claude").symlink_to(elsewhere)
+    for create in (True, False):
+        with pytest.raises(script.Failed, match=r"^\.claude is no plain folder$"):
+            script.open_place(repo.root, create)
+    (repo.root / ".claude").unlink()
+    (repo.root / ".claude").mkdir()
+    repo.place.symlink_to(elsewhere)
+    for create in (True, False):
+        with pytest.raises(script.Failed, match=r"^\.claude/handoff is no plain folder$"):
+            script.open_place(repo.root, create)
+    assert os.listdir(elsewhere) == []
+
+
+def test_the_note_is_for_its_user_alone(repo):
+    """The known limits say that the note has mode 600."""
+    repo.framed()
+    assert stat.S_IMODE(repo.note.stat().st_mode) == 0o600
+    assert repo.run("frame")[0] == 0
+    assert stat.S_IMODE(repo.note.stat().st_mode) == 0o600 and stat.S_IMODE((repo.root / PREV).stat().st_mode) == 0o600
+
+
+def test_a_link_at_the_claude_folder_is_an_error_and_nothing_is_written(repo, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (repo.root / ".claude").symlink_to(elsewhere)
+    exclude = repo.exclude()
+    for command in ("frame", "check"):
+        assert repo.run(command) == (2, ["handoff: error .claude is no plain folder"]), command
+    assert list(elsewhere.iterdir()) == [] and repo.exclude() == exclude
+
+
+def test_a_folder_at_the_note_path_or_a_file_at_a_folder_path_is_an_error(repo, tmp_path):
+    (repo.make_place() / "note.md").mkdir()
     for command in ("frame", "check"):
         assert repo.run(command) == (2, [f"handoff: error {NOTE} is no plain file"]), command
-    other = Repo(tmp_path, "other")
-    (other.root / ".claude").write_text("a file\n")
-    code, lines = other.run("frame")
-    assert code == 2 and lines[-1].startswith("handoff: error ")
+    for number, rel in enumerate((".claude", PLACE)):
+        other = Repo(tmp_path, f"other{number}")
+        (other.root / rel).parent.mkdir(exist_ok=True)
+        (other.root / rel).write_text("a file\n")
+        for command in ("frame", "check"):
+            assert other.run(command) == (2, [f"handoff: error {rel} is no plain folder"]), (rel, command)
+        assert (other.root / rel).read_text() == "a file\n"
 
 
 def test_frame_leaves_no_temp_file_and_many_at_once_leave_one_whole_note(repo):
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(lambda _: repo.run("frame"), range(16)))
     assert all(code == 0 for code, _ in results), results
-    assert sorted(entry.name for entry in repo.note.parent.iterdir()) == ["handoff.md"]
+    assert sorted(entry.name for entry in repo.place.iterdir()) == [".gitignore", "note.md"]
+    assert (repo.place / ".gitignore").read_bytes() == b"*\n"
     code, lines = repo.run("check")
     assert code == 1 and lines[-1] == "handoff: summary gaps=7", "the note must be one whole frame"
 
@@ -456,20 +851,21 @@ def test_two_frames_at_one_time_do_not_lose_a_note_with_text(repo):
         assert repo.run("check")[1][-1] == "handoff: summary gaps=7"
 
 
-@pytest.mark.parametrize("tracked", [".claude/HANDOFF.md", ".Claude/handoff.md", ".claude/Handoff.Prev.md",
-                                     ".claude/hando\ufb00.md"])
-def test_a_tracked_file_whose_name_differs_only_in_letter_case_is_never_replaced(repo, tracked):
-    """On a disk that does not keep letter case apart, that file is the note's own path. The last name has the
-    one character for `ff`: the disk of a Mac reads it as the two letters."""
+@pytest.mark.parametrize("tracked", [".claude/handoff/NOTE.md", ".Claude/handoff/note.md", ".claude/Handoff/Prev.md",
+                                     ".claude/hando\ufb00/note.md", ".claude/handoff/other.txt", ".claude/HANDOFF"])
+def test_a_tracked_file_in_the_folder_under_any_letter_case_stops_both_commands(repo, tracked):
+    """What git tracks in the folder came with the repo. On a disk that does not keep letter case apart, a name
+    in other case is the same place. One name has the one character for `ff`: the disk of a Mac reads it as the
+    two letters. The last name is a file where the folder would be."""
     path = repo.root / tracked
-    path.parent.mkdir(exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("a tracked document of the team\n")
     repo.commit("someone tracks it")
     for command in ("frame", "check"):
         code, lines = repo.run(command)
         assert code == 2 and len(lines) == 1 and f"git tracks {tracked}" in lines[0], (command, lines)
     assert path.read_text() == "a tracked document of the team\n"
-    assert repo.git("status", "--porcelain") == ""
+    assert repo.status() == ""
 
 
 def test_a_note_behind_a_link_or_in_a_submodule_at_the_claude_path_is_never_read(repo, tmp_path):
@@ -478,27 +874,31 @@ def test_a_note_behind_a_link_or_in_a_submodule_at_the_claude_path_is_never_read
     repo.framed()
     whole = repo.note.read_bytes()
     assert repo.run("check") == (0, ["handoff: ok"])
-    (repo.root / "docs").mkdir()
-    (repo.root / "docs" / "handoff.md").write_bytes(whole)
-    os.rename(repo.note.parent, repo.root / ".claude.real")
+    (repo.root / "docs" / "handoff").mkdir(parents=True)
+    (repo.root / "docs" / "handoff" / ".gitignore").write_bytes(b"*\n")
+    (repo.root / "docs" / "handoff" / "note.md").write_bytes(whole)
+    os.rename(repo.root / ".claude", repo.root / ".claude.real")
     (repo.root / ".claude").symlink_to("docs")
     assert repo.run("check") == (2, ["handoff: error .claude is no plain folder"]), "a link that git does not track"
-    repo.commit("the repo tracks the link and the note behind it")
+    repo.commit("the repo tracks the link")
     for command in ("check", "frame"):
         code, lines = repo.run(command)
         assert code == 2 and len(lines) == 1 and lines[0].startswith("handoff: error git tracks .claude in"), lines
-    assert (repo.root / "docs" / "handoff.md").read_bytes() == whole
+    assert (repo.root / "docs" / "handoff" / "note.md").read_bytes() == whole
+    assert sorted(os.listdir(repo.root / "docs" / "handoff")) == [".gitignore", "note.md"]
 
     other = Repo(tmp_path, "other")
     add_submodule(other, tmp_path, at=".claude")
     for command in ("check", "frame"):
         code, lines = other.run(command)
         assert code == 2 and len(lines) == 1 and lines[0].startswith("handoff: error git tracks .claude in"), lines
-    assert other.note.read_text() == "a note that came with the inner repo\n"
+    assert (other.root / ".claude" / "handoff.md").read_text() == "a note that came with the inner repo\n"
+    assert not other.place.exists()
 
 
 def test_other_tracked_files_of_the_claude_folder_do_not_stop_a_note(repo):
-    names = (".claude/settings.json", ".claude/handoff.txt", ".claude/skills/handoff.md", "docs/.claude/handoff.md")
+    names = (".claude/settings.json", ".claude/handoff.txt", ".claude/handoff.md", ".claude/handoff.prev.md",
+             ".claude/skills/handoff/note.md", "docs/.claude/handoff/note.md", ".claude/handoffs/note.md")
     for name in names:
         path = repo.root / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -514,7 +914,7 @@ def test_a_frame_waits_while_another_one_works_in_the_folder(repo):
     first is done."""
     repo.framed()
     text = repo.note.read_bytes()
-    held = os.open(repo.note.parent, os.O_RDONLY)
+    held = os.open(repo.place, os.O_RDONLY)
     try:
         fcntl.flock(held, fcntl.LOCK_EX)
         waiting = subprocess.Popen([PY, str(SCRIPT), "frame", "--repo", str(repo.root)], stdout=subprocess.PIPE,
@@ -535,17 +935,17 @@ def test_a_frame_that_does_not_get_the_folder_in_time_is_an_error_and_writes_not
     monkeypatch.setenv("HOME", str(repo.home))
     repo.framed()
     text = repo.note.read_bytes()
-    held = os.open(repo.note.parent, os.O_RDONLY)
+    held = os.open(repo.place, os.O_RDONLY)
     try:
         fcntl.flock(held, fcntl.LOCK_EX)
         start = time.monotonic()
-        with pytest.raises(script.Failed, match=r"another frame holds \.claude/ for longer than 0\.3 s"):
+        with pytest.raises(script.Failed, match=r"another frame holds \.claude/handoff/ for longer than 0\.3 s"):
             script.frame(repo.root)
         assert 0.3 <= time.monotonic() - start < 10
     finally:
         os.close(held)
     assert repo.note.read_bytes() == text and not (repo.root / PREV).exists()
-    assert [path.name for path in repo.note.parent.iterdir()] == ["handoff.md"]
+    assert sorted(path.name for path in repo.place.iterdir()) == [".gitignore", "note.md"]
 
 
 def test_a_file_monitor_that_the_settings_of_the_repo_name_does_not_run(repo, tmp_path):
@@ -577,7 +977,7 @@ def test_a_partial_clone_does_not_fetch_what_it_lacks(repo, tmp_path):
     code, lines = repo.run("frame", "--repo", str(clone), repo=False)
     assert not trap.ran()
     assert code == 2 and len(lines) == 1 and lines[0].startswith("handoff: error git status failed: "), lines
-    assert not (clone / NOTE).exists()
+    assert not (clone / ".claude").exists(), "a frame that cannot read the tree leaves no folder behind"
 
 
 def test_a_change_inside_a_submodule_counts_whatever_the_settings_say(repo, tmp_path):
@@ -669,22 +1069,23 @@ def test_a_fact_block_that_is_edited_to_say_what_the_tree_says_now_is_an_error(r
 
 
 def test_what_a_killed_frame_left_is_not_seen_by_git_and_no_file_is_deleted_by_its_name(repo):
-    """Frame writes the note under a name that starts with `handoff.tmp.` and renames it. A frame that is killed
-    between the two leaves that file. Git must not see it. Frame deletes nothing by the form of a name: a file
-    with such a name can be the user's own."""
-    code, lines = repo.run("frame")
-    assert code == 0 and not [path.name for path in repo.note.parent.iterdir() if path.name != "handoff.md"]
+    """Frame writes the note under a name that starts with `note.tmp.` and renames it. A frame that is killed
+    between the two leaves that file. It is in the folder, so git does not see it. Frame deletes nothing by the
+    form of a name."""
+    assert repo.run("frame")[0] == 0
     script = load_script()
     seen = []
     real = os.replace
-    script.os.replace = lambda temp, path: seen.append(Path(temp).name)
+    script.os.replace = lambda temp, path, **where: seen.append(temp)
+    place = os.open(repo.place, os.O_RDONLY)
     try:
-        script.write_whole(repo.note, "half a note\n")
+        script.write_whole(place, NOTE, "half a note\n")
     finally:
         script.os.replace = real
-    assert len(seen) == 1 and seen[0].startswith("handoff.tmp.") and (repo.note.parent / seen[0]).is_file()
-    assert repo.git("status", "--porcelain", "--untracked-files=all") == ""
-    assert repo.run("frame")[0] == 0 and (repo.note.parent / seen[0]).read_text() == "half a note\n"
+        os.close(place)
+    assert len(seen) == 1 and seen[0].startswith("note.tmp.") and (repo.place / seen[0]).read_text() == "half a note\n"
+    assert repo.status() == ""
+    assert repo.run("frame")[0] == 0 and (repo.place / seen[0]).read_text() == "half a note\n"
     assert repo.run("check")[1][-1] == "handoff: summary gaps=7"
 
 
@@ -699,9 +1100,8 @@ def test_a_name_that_the_terminal_cannot_show_is_still_a_result(repo):
 def test_a_work_tree_whose_name_ends_in_a_line_break_gets_its_own_note(tmp_path):
     first, second = Repo(tmp_path, "w"), Repo(tmp_path, "w\n")
     code, lines = second.run("frame")
-    assert (code, lines[-1]) == (0, "handoff: wrote .claude/handoff.md")
-    assert second.note.is_file() and not first.note.exists()
-    assert "handoff" not in (first.root / ".git" / "info" / "exclude").read_text()
+    assert (code, lines[-1]) == (0, f"handoff: wrote {NOTE}")
+    assert second.note.is_file() and not (first.root / ".claude").exists()
 
 
 # ── check: what is a gap ─────────────────────────────────────────────────────
@@ -836,7 +1236,11 @@ def test_a_character_that_moves_the_cursor_is_not_printed(repo):
 
 def test_no_note_is_an_error_and_not_a_result(repo):
     code, lines = repo.run("check")
-    assert (code, lines) == (2, ["handoff: error no note at .claude/handoff.md"])
+    assert (code, lines) == (2, [f"handoff: error no note at {NOTE}"])
+    assert not (repo.root / ".claude").exists(), "check made a folder"
+    (repo.root / ".claude").mkdir()
+    assert repo.run("check") == (2, [f"handoff: error no note at {NOTE}"])
+    assert os.listdir(repo.root / ".claude") == [], "check made the folder of the note"
 
 
 EDITS = {
@@ -927,10 +1331,10 @@ def test_a_note_that_git_tracks_is_not_read(repo):
     assert repo.run("check") == (0, ["handoff: ok"])
     repo.git("add", "-f", NOTE)
     code, lines = repo.run("check")
-    assert code == 2 and len(lines) == 1 and "git tracks .claude/handoff.md" in lines[0]
+    assert code == 2 and len(lines) == 1 and f"git tracks {NOTE}" in lines[0]
     repo.git("commit", "-q", "-m", "the note comes with the repo")
     code, lines = repo.run("check")
-    assert code == 2 and len(lines) == 1 and "git tracks .claude/handoff.md" in lines[0]
+    assert code == 2 and len(lines) == 1 and f"git tracks {NOTE}" in lines[0]
 
 
 def test_a_folder_that_is_no_work_tree_and_a_command_that_is_none_are_errors(repo, tmp_path):
