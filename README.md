@@ -1,7 +1,7 @@
 # seanock
 
 An agent harness for Claude Code and Codex: global working rules, six workers,
-fifteen skills, hooks that check risky steps with code, and the tests that keep
+sixteen skills, hooks that check risky steps with code, and the tests that keep
 all of it in step.
 
 It was part of the terminal setup in
@@ -154,6 +154,7 @@ and `correct`:
 | `merge-follow-up`       | Sees a merged pull request with a read-only script, then rebases your open branches and reinstalls; never merges |
 | `correct`               | Turns a correction you gave more than once into a rule with an enforcer, and keeps the table of those rules   |
 | `handoff`               | Writes a resume note for a work tree (facts from git, then the parts you fill) and checks it; never commits   |
+| `unattended`            | Runs a plan while you are away under a written contract: approvals asked first, blocked steps logged, a report from the log |
 
 ## Codex
 

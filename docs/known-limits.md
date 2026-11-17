@@ -2795,3 +2795,78 @@ test checks that on random lines in five languages.
 - **A hyphen between two names in capitals reads as one name** in
   pseudocode (same review): in `z = LO-MAX(x)`, `LO` shows blue as a part
   of the function name.
+
+## Unattended run (`config/claude/skills/unattended`, 2026-11-17)
+
+### By design
+
+- **A run belongs to a session, and its files are in the user's home.** The
+  folder is `~/.claude/unattended/<session>/<start time>/`. The session id
+  comes from `CLAUDE_CODE_SESSION_ID`, which Claude Code sets for each
+  shell command of a session (Claude Code docs, read 2026-11-17). Outside a
+  session the script ends with exit 2. Nothing is written into a project,
+  so the faults of a note in a work tree (a file of the user hidden or
+  replaced, a note that came with a repo) have no place here.
+- **The contract is written one time, and the log only grows.** The state
+  of a task is what its last `done` or `skipped` line says. A step that was
+  skipped can be done later.
+- **The log is what the session wrote.** No code checks that a task which
+  is logged as done is done: the check of the task does, and the report
+  says so.
+- **`close` with a reason always works.** A session can end a run early
+  with `--why`. The reason is in the log and the tasks that are left are in
+  the report under "Blocked on me", so an early end is seen, not stopped.
+- **`preflight` is advice, and it errs toward "would prompt".** It reads
+  the allow, ask and deny rules for `Bash` in `~/.claude/settings.json` and
+  in the two settings files of the project. It does not know the
+  permission mode, hooks, the sandbox, the wrappers that Claude Code strips
+  (`timeout`, `nice`), or the read-only commands that Claude Code runs
+  without asking. It does not split a command: one with `&&`, `|`, `;`,
+  `&`, a line break, a redirection or a command substitution is `unsure`.
+  So `git status` with no allow rule is reported as `would-prompt`
+  although it would run. A deny or ask rule that Claude Code applies to a
+  part inside a longer command is not seen for a command that is
+  `unsure`; that state is no pass either.
+- **A text from the plan or the log is printed as one line.** Control
+  characters become spaces and a text is cut at 2,000 characters, so a log
+  line cannot add a second result line to the output.
+- **Runs are removed 14 days after they ended:** a closed run by the time
+  of its close, a run that was never closed by its time limit. `start` does
+  this for all sessions of the user.
+
+### Minor
+
+- **Two starts of one session in the same second** end the second one with
+  exit 2 ("File exists"): the name of a run folder is its start second.
+- **The script trusts its own folder.** Another program of the same user
+  can change a contract or a log. The folders are mode 700 and the files
+  600; a link in the place of a folder or a file is not followed.
+- **The time limit is not enforced by this version.** `status` and `close`
+  read it, and the skill text tells the session to close at the limit.
+  Nothing stops a session that goes on.
+
+### What the live test shows, and what it does not
+
+- The live test (`UNATTENDED_LIVE=1`, two sessions on Sonnet, not in CI)
+  shows that a session which is given the skill text writes the contract,
+  logs the blocked step with what it needs, finishes the other two tasks,
+  closes the run and names the blocked step under "Blocked on me". It ran
+  two times; in the first run the session wrote the heading as "Blocked on
+  you", and the text was made firmer.
+- The control session, without the skill, also finished the first and the
+  third task and reported the second as blocked (one run). So this test
+  does not show that the skill prevents a stall. A headless session cannot
+  wait for a user, which is how a real run stalls. The Stop hook of the
+  next version is the part that is aimed at that, and its test must show a
+  session that stops early and is sent back.
+
+### Not tested
+
+- A real overnight run, and a run that reaches its time limit while a task
+  is in hand.
+- The dialog of the first step: the live session has no dialog tool, and
+  the request says that the user has answered already.
+- `preflight` against what Claude Code really prompts for. The matcher is
+  tested against the table of the docs and against a second version on
+  random input, not against a session.
+- Any model but Sonnet. Linux.

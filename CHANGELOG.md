@@ -6,6 +6,37 @@ the tag `vX.Y.Z`. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says how it moves. The newest
 entry is first.
 
+## 0.15.0 (2026-11-17)
+
+Added:
+
+- The `unattended` skill, for a plan that runs while the user is away.
+  Before the user leaves, the session asks every approval in one dialog and
+  writes a contract: the tasks with their checks, the approvals as the user
+  gave them, and a time limit (8 hours when none is named). During the run
+  it logs each task that is done, each step that is blocked with what it
+  needs from the user, and each decision. It does not wait for the user. At
+  the end, `close` builds the report (Blocked on me, Changed, Found) from
+  the log.
+- `contract.py`, the script of the skill: `preflight`, `start`, `log`,
+  `status`, `close` and `prune`. A run belongs to a session, and its two
+  files are in `~/.claude/unattended/<session>/<start time>/`. Nothing is
+  written into a project. The contract is written one time and the log only
+  grows; the state of a task is read from the log.
+- `preflight` names each shell command of the plan that an allow rule of
+  the settings does not cover, by the wildcard rules of the Claude Code
+  permissions page. Only `allowed` is a pass.
+- `start` removes runs that ended more than 14 days ago, and `prune` does
+  the same on request.
+
+A live test (`UNATTENDED_LIVE=1`, not in CI) gives a session three tasks, of
+which the second needs a command that is not allowed. It passes when the
+log holds the first and the third as done and the second as skipped with
+what it needs, the run is closed, and the report names the blocked step.
+
+Not in this version: a Stop hook that keeps a run going while tasks are
+left. It is the next pull request.
+
 ## 0.14.0 (2026-11-17)
 
 Changed:
