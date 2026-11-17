@@ -26,6 +26,17 @@
   interfaces as signatures with empty bodies, and what the concurrent actors
   share. Then wait for my go. An agent that works from a brief shows no page
   and does not wait: its brief has passed the gate.
+<!-- rule: working.reference -->
+- Reference builds: when I point at a prototype, a design or a screenshot, or
+  say "exactly as", that reference is the spec. A design I approve goes into
+  the plan as a build task. List its parts before you build. A part ends
+  built, as an empty state when its data does not exist yet, or cut with my
+  yes. A cut is never yours to take: not between checkpoints, not while I am
+  away, not when another rule seems to forbid the part. Ask; with a brief,
+  build the rest and report the part. A part that needs tier 2 review gets
+  its own task. A brief hands over the reference itself, not a summary. The
+  check compares the result with the reference part by part, and the report
+  starts with what is missing.
 <!-- rule: working.craft -->
 - Don't underestimate the work. Plan past the immediate request, build to
   production quality, and pick the best design for the real scale and need.
@@ -53,7 +64,8 @@
 
 - Unattended mode: before I leave, ask for every approval the run will need.
   After that, never wait without a time limit on a prompt, a person, or another
-  session. Skip the blocked step, log it, and take the next task. End with
+  session. Skip the blocked step, log it, and take the next task in the plan.
+  When the plan has none, end the run: do not pick work of your own. End with
   Blocked on me, Changed, Found.
 - Time box: fixed time, variable scope. Before you start, list the must-haves
   and a cut list, the first to drop at the top. At each milestone, report the

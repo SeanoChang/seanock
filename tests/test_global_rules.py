@@ -30,8 +30,11 @@ RULES = Path(__file__).resolve().parent.parent / "config" / "claude" / "CLAUDE.m
 # two rules that Sean decided that day: checkpoints and the design gate. The
 # planned move of the merge and delegation procedure into files that load on
 # demand is to bring both numbers down again.
-MAX_CHARS = 15_650
-MAX_LINES = 230
+# Raised on purpose again on 2026-11-17, from 15,650 characters and 230 lines,
+# for the reference rule and one more sentence on unattended runs. Both come
+# from a measured session; tests/test_reference_rule.py has the story.
+MAX_CHARS = 16_450
+MAX_LINES = 241
 
 # phrase -> what is lost when it goes missing
 PINNED = {
@@ -45,6 +48,9 @@ PINNED = {
     "do not stop to ask about reversible work": "between checkpoints the agent decides and goes on",
     "signatures with empty bodies": "the design gate shows the interfaces before any code",
     "After three, stop and ask me": "a fix that fails three times goes back to Sean",
+    "that reference is the spec": "a prototype Sean points at decides what is built",
+    "A cut is never yours to take": "a part of a reference is dropped only with Sean's yes",
+    "do not pick work of your own": "a blocked run ends; it does not start work nobody asked for",
 }
 
 BRIEF_LINES = ["Goal:", "Tier:", "Files:", "Done:", "Context:", "Budget:", "Do not:", "Return:"]

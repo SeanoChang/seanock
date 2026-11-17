@@ -11,6 +11,7 @@
 
 ## Shared: working
 
+{{rule: working.reference}}
 {{rule: working.craft}}
 
 ## Shared: verification
