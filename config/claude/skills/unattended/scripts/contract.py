@@ -38,6 +38,7 @@ KINDS = ("heartbeat", "decision", "skipped", "done")
 DEFAULT_HOURS = 8.0
 MAX_HOURS = 72.0
 KEEP_DAYS = 14
+MAX_DAYS = 3650
 MAX_TEXT = 2000
 LOCK_WAIT_S = 10.0
 WORD = re.compile(r"[A-Za-z0-9_@%+:,./~-][A-Za-z0-9_@%+=:,./~-]*")
@@ -306,8 +307,16 @@ def rule_matches(rule, command):
         return command == rule
     if rule.endswith(" *") and rule.count("*") == 1 and command == rule[:-2]:
         return True
-    pattern = ".*".join(re.escape(part) for part in rule.split("*"))
-    return re.fullmatch(pattern, command, re.DOTALL) is not None
+    first, *middle, last = rule.split("*")
+    if len(command) < len(first) + len(last) or not command.startswith(first) or not command.endswith(last):
+        return False
+    at, end = len(first), len(command) - len(last)
+    for part in middle:             # each part at its first place: one pass, so many `*` cost no more than one
+        found = command.find(part, at, end)
+        if found < 0:
+            return False
+        at = found + len(part)
+    return True
 
 
 def even(text):
@@ -325,21 +334,36 @@ def allows(rule, command):
     return rule_matches(rule, command)
 
 
+def names_in(word):
+    """Each text that one word of a command can hold as a program to run: the word, what follows an `=`
+    (`FOO=1`, `--command=rm`), every tail of a word that starts with `-` (`-Srm`, the value of an option written
+    onto it), and each of these without its path."""
+    found = {word}
+    parts = word.split("=")
+    found.update("=".join(parts[at:]) for at in range(1, len(parts)))
+    if word.startswith("-"):
+        found.update(word[at:] for at in range(1, len(word)))
+    found.update(name.rsplit("/", 1)[-1] for name in list(found))
+    found.discard("")
+    return found
+
+
 def stops(rule, command):
-    """Whether a deny or ask rule covers the command, read widely. The rule is tried on the command as written,
-    and on the command from each of its words on, with the spaces made even and with that word also as a bare
-    program name. So a rule for `rm` holds for `FOO=1 rm`, `timeout 30 rm` and `/bin/rm`, as it does in Claude
-    Code, and for `echo rm` too, which errs to the safe side. `prefix:*` also takes any text that starts with
-    the prefix."""
+    """Whether a deny or ask rule covers the command, read widely. The rule is tried on the command as written.
+    Then, with the spaces made even, it is tried on each program name that a word can hold (see `names_in`),
+    alone and with the rest of the command behind it. So a rule for `rm` holds for `FOO=1 rm`, `timeout 30 rm`,
+    `/bin/rm` and `env -Srm`, as it does in Claude Code, and for `echo rm` too, which errs to the safe side.
+    `prefix:*` also takes any text that starts with the prefix."""
     if rule_matches(rule, command):
         return True
     rule = even(rule)
     words = even(command).split(" ")
-    for start in range(len(words)):
-        for first in {words[start], words[start].rsplit("/", 1)[-1]}:
-            form = " ".join([first] + words[start + 1:])
-            if rule_matches(rule, form) or (rule.endswith(":*") and form.startswith(rule[:-2])):
-                return True
+    for start, word in enumerate(words):
+        rest = words[start + 1:]
+        for name in names_in(word):
+            for form in (" ".join([name] + rest), name):
+                if rule_matches(rule, form) or (rule.endswith(":*") and form.startswith(rule[:-2])):
+                    return True
     return False
 
 
@@ -366,7 +390,10 @@ def plain(command):
 def judge(command, settings_list):
     """allowed, would-prompt, unsure or denied, and the rule that says so. Only `allowed` is a pass. A command
     that is not plain words is unsure: this script does not parse a shell command, and Claude Code judges each
-    part of a command on its own."""
+    part of a command on its own. So is a command of more than 2,000 characters: nobody reads it in the list,
+    and the time of this check has a bound."""
+    if len(command) > MAX_TEXT:
+        return "unsure", "it is longer than 2,000 characters"
     for name, verdict in (("deny", "denied"), ("ask", "would-prompt")):
         for settings in settings_list:
             whole, patterns = bash_rules(settings, name)
@@ -410,7 +437,8 @@ def preflight(args):
     for command in commands:
         verdict, why = judge(command, settings_list)
         counts[verdict] += 1
-        lines.append(f"{verdict} {command} [{why}]")
+        room = MAX_TEXT - len(f"{verdict}  [{why}]")      # a long command is cut here, so that the reason stays
+        lines.append(f"{verdict} {command if len(command) <= room else command[:room - 1] + '…'} [{why}]")
     summary = " ".join(f"{name}={count}" for name, count in counts.items())
     return (0 if counts["allowed"] == len(commands) else 1), lines + [f"unattended: preflight {summary}"]
 
@@ -541,8 +569,8 @@ def prune_runs(days):
 
 
 def prune(args):
-    if args.days < 0:
-        raise Failed("--days is 0 or more")
+    if not 0 <= args.days <= MAX_DAYS:
+        raise Failed(f"--days is 0 to {MAX_DAYS}")
     return 0, [f"unattended: pruned {prune_runs(args.days)}"]
 
 

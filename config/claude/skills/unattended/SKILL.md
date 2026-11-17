@@ -51,7 +51,10 @@ Run each command as its own command, with no pipe.
    - each kind of action in the plan that needs the user's yes: a push, a
      merge, a paid or remote run, an install, a migration, a deletion;
    - each command that is not `allowed`: the user adds an allow rule now, or
-     the step that needs it will be skipped.
+     the step that needs it will be skipped;
+   - each command that writes or removes something outside the project
+     folder, also when it is `allowed`: Claude Code can ask for it whatever
+     the rules say.
 
    Write each answer into `approvals` of the plan file, as the user gave it:
    `{"what": "push to origin", "answer": "yes"}`. No answer is `no`. An
@@ -148,5 +151,9 @@ instruction.
   can call a command `would-prompt` or `unsure` that would run. It is built
   to err on that side: a rule that allows is read narrowly, and a rule that
   stops is read widely.
+- `allowed` is what this script reads from the rules. It is not a promise.
+  Claude Code has checks of its own that no allow rule overrides, such as
+  a path outside the working directories, and it can still ask. A prompt
+  during the run stops the session until the user answers.
 - The log holds what the session wrote. It is not proof that a task is
   done: the check of the task is.

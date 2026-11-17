@@ -28,7 +28,9 @@ Added:
   permissions page. Only `allowed` is a pass. A rule that allows is read
   narrowly and a rule that stops (deny, ask) widely, and a command that is
   not plain words (one with a quote, an operator, a wildcard or a variable)
-  is `unsure`, so that a doubt does not end as `allowed`.
+  is `unsure`, so that a doubt does not end as `allowed`. It is advice:
+  Claude Code has checks that no rule overrides, and it can still ask for
+  a command that `preflight` calls `allowed`.
 - `start` removes runs that ended more than 14 days ago, and `prune` does
   the same on request.
 

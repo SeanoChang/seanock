@@ -14,6 +14,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -442,6 +443,10 @@ def test_prune_removes_the_runs_that_ended_long_ago_and_keeps_the_rest(runs):
     assert late.exists(), "a run that was never closed may still have a session that writes to it"
     assert stray.exists(), "a file that is no run stays, and so does its folder"
     assert runs.run("prune", "--days", "-1")[0] == 2
+    for days in ("3651", "1000000", "99999999999999999999"):
+        code, lines = runs.run("prune", "--days", days)
+        assert code == 2 and "--days is 0 to 3650" in lines[0], lines
+    assert runs.run("prune", "--days", "3650") == (0, ["unattended: pruned 0"])
 
 
 def test_a_run_that_was_never_closed_is_removed_fourteen_days_after_its_time_limit(runs):
@@ -456,6 +461,40 @@ def test_a_run_that_was_never_closed_is_removed_fourteen_days_after_its_time_lim
                 or not late.exists()
         assert late.exists() is not gone
     assert not (runs.root / "session-late").exists(), "a session folder with nothing left is removed"
+
+
+def test_a_long_keep_time_does_not_keep_a_run_that_was_never_closed(runs):
+    """Found by the verifier: no test told 14 days from `--days` when `--days` is the longer one."""
+    script = load_script()
+    late = runs.started(session="session-late")
+    contract = json.loads((late / "contract.json").read_text())
+    contract["ends"] = script.iso(script.now() - script.datetime.timedelta(days=20))
+    (late / "contract.json").write_text(json.dumps(contract))
+    assert runs.run("prune", "--days", "30", session="session-0009") == (0, ["unattended: pruned 1"])
+    assert not late.exists()
+
+
+def test_a_folder_of_a_start_under_way_is_not_removed_by_a_keep_time_of_zero(runs):
+    script = load_script()
+    half = runs.root / "session-half" / script.now().strftime(script.STAMP)
+    half.mkdir(parents=True)
+    assert runs.run("prune", "--days", "0") == (0, ["unattended: pruned 0"])
+    assert half.exists()
+
+
+def test_a_task_whose_title_is_invisible_text_is_refused(runs):
+    code, lines = runs.run("start", "--plan", runs.plan(tasks=[{"title": "\u200b", "check": "x"}]))
+    assert code == 2 and "`tasks` entry 1 has no `title`" in lines[0], lines
+
+
+def test_a_log_that_is_a_link_to_nothing_is_a_run_that_cannot_be_read(runs):
+    folder = runs.started()
+    (folder / "log.jsonl").unlink(missing_ok=True)
+    (folder / "log.jsonl").symlink_to(runs.tmp / "nowhere")
+    code, lines = runs.run("status")
+    assert code == 2 and "cannot read the run" in lines[0], lines
+    code, lines = runs.run("log", "--kind", "decision", "--text", "x")
+    assert code == 2 and not (runs.tmp / "nowhere").exists(), lines
 
 
 @pytest.mark.parametrize("damage", ["a log line with no time", "a log line with no kind", "a log line that is no object",
@@ -708,6 +747,16 @@ def test_a_deny_or_ask_rule_with_a_colon_is_read_in_its_wider_sense(runs):
     (["Bash(rm *)"], [], "/bin/rm -rf build", "denied"),            # the program written with its path
     (["Bash(rm:*)"], [], "xargs rm", "denied"),
     ([], ["Bash(git push *)"], "GIT_TRACE=1 git push origin", "would-prompt"),
+    (["Bash(rm:*)"], [], "env -Srm -rf build", "denied"),            # a command as the value of an option: Claude Code
+    (["Bash(rm *)"], [], "env -iSrm -rf build", "denied"),           # takes it out of `env -S`, `flock -c`, `script -c`
+    (["Bash(reboot:*)"], [], "env --split-string=reboot", "denied"),
+    (["Bash(reboot:*)"], [], "flock --command=reboot /tmp/l", "denied"),
+    (["Bash(reboot:*)"], [], "flock -creboot /tmp/l", "denied"),
+    (["Bash(reboot:*)"], [], "script --command=/sbin/reboot /dev/null", "denied"),
+    (["Bash(reboot)"], [], "flock -c reboot /tmp/l", "denied"),      # a rule for one exact command, and words after it
+    (["Bash(k=v *)"], [], "run WITH=k=v now", "denied"),             # a name that holds an equals sign itself
+    ([], ["Bash(reboot)"], "flock -c reboot /tmp/l", "would-prompt"),
+    ([], ["Bash(reboot)"], "flock --command=reboot /tmp/l", "would-prompt"),
     (["Bash"], [], "git status", "denied"),                         # the whole tool
     ([], ["Bash"], "git status", "would-prompt"),
 ])
@@ -830,7 +879,8 @@ def test_no_random_command_that_runs_a_denied_program_is_called_allowed():
     rules = [{"permissions": {"allow": ["Bash", "Bash(*)"], "deny": ["Bash(rm *)"]}}]
     rng = random.Random(20261117)
     parts = ["rm", "/bin/rm", "./rm", "'rm'", '"rm"', "(rm", "rm)", "{rm,", "=rm", "r''m", "\\rm", "FOO=1", "timeout", "30", "echo", "-rf",
-             "build", "rmdir", "arm", "rm.txt", ";", "&&", "|", "$(rm", "`rm`"]
+             "build", "rmdir", "arm", "rm.txt", ";", "&&", "|", "$(rm", "`rm`", "-Srm", "-iSrm", "--command=rm", "--run=/bin/rm", "X=rm",
+             "env", "-S", "-c", "--", "-arm"]
     gaps = [" ", "  ", "\t", "\n", ""]
     seen = dict.fromkeys(("allowed", "denied", "unsure"), 0)
     for _ in range(20000):
@@ -838,8 +888,11 @@ def test_no_random_command_that_runs_a_denied_program_is_called_allowed():
         verdict = script.judge(command, rules)[0]
         seen[verdict] += 1
         if verdict == "allowed":
-            words = [re.sub(r"""['"(){},=`$\\]""", "", word).rsplit("/", 1)[-1] for word in command.split()]
-            assert "rm" not in words, repr(command)
+            for word in command.split():
+                word = re.sub(r"""['"(){},`$\\]""", "", word)
+                tails = [word] + [word.split("=", cut)[-1] for cut in range(1, word.count("=") + 1)]
+                names = {tail.rsplit("/", 1)[-1] for tail in tails}
+                assert "rm" not in names and not (word.startswith("-") and word.endswith("rm")), repr(command)
     assert all(count > 500 for count in seen.values()), seen
 
 
@@ -878,10 +931,26 @@ def test_preflight_judges_the_command_as_it_is_written_and_not_as_it_is_printed(
 
 def test_a_command_is_matched_letter_for_letter(runs):
     settings(runs, "user", allow=["Bash(git push *)", "Bash(echo *)"])
-    commands = ["git  push origin work", " git push origin work", "git push origin work", "echo " + "x" * 3000]
+    commands = ["git  push origin work", " git push origin work", "git push origin work", "echo " + "x" * 1995,
+                "echo " + "x" * 1996, "echo " + "x" * 3000]
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=commands))
-    assert [line.split(" ", 1)[0] for line in lines[:-1]] == ["would-prompt", "would-prompt", "allowed", "allowed"], lines
+    assert [line.split(" ", 1)[0] for line in lines[:-1]] == ["would-prompt", "would-prompt", "allowed", "allowed", "unsure",
+                                                             "unsure"], lines
+    assert lines[4].endswith("… [it is longer than 2,000 characters]") and lines[5].endswith("… [it is longer than 2,000 characters]")
+    assert lines[3].endswith("x… [allow: echo *]"), "a command of 2,000 characters is still judged, and its reason is printed"
     assert all(len(line) <= 2000 for line in lines), "a long command is cut when it is printed"
+
+
+def test_a_rule_with_many_wildcards_does_not_make_preflight_slow(runs):
+    """Found by the adversary: a long command against a rule with several `*` took 22 seconds. The matcher now
+    goes over the command one time for each part of the rule."""
+    stars = "Bash(a" + " *" * 14 + " b)"
+    settings(runs, "user", allow=[stars], deny=[stars], ask=[stars])
+    commands = [("a " * 999) + "aa", ("-a" * 999) + " c", "a " + "-a " * 600 + "c"]
+    began = time.monotonic()
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=commands))
+    assert time.monotonic() - began < 20
+    assert [line.split(" ", 1)[0] for line in lines[:-1]] == ["would-prompt"] * 3, [line[:40] for line in lines]
 
 
 def test_settings_that_cannot_be_read_and_a_plan_with_no_commands_are_errors(runs):

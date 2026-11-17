@@ -2826,7 +2826,36 @@ test checks that on random lines in five languages.
 - **`close` with a reason always works.** A session can end a run early
   with `--why`. The reason is in the log and the tasks that are left are in
   the report under "Blocked on me", so an early end is seen, not stopped.
-- **`preflight` is advice, and it errs toward "would prompt".** It reads
+- **`preflight` is advice. `allowed` is no promise that Claude Code will
+  not ask.** A script outside Claude Code cannot be exact about what its
+  permission engine does: the engine has checks that are no rules, and
+  they change with its version. The adversary found two kinds of wrong
+  `allowed` in two passes (2026-11-17); the first kind is fixed below, the
+  second is not and cannot be closed from outside:
+  - Claude Code 2.1.325 asks for some commands whatever the allow rules
+    say: a file command (`cp`, `mv`, `mkdir`, `touch`, `rm`, `cat`, `ls`
+    and others) with a path outside the working directories, and an `rm`
+    of the root, the home, `tmp` or a workspace folder. With allow rules
+    for `cp *` and `rm *`, `preflight` calls `cp dist/sb /usr/local/bin/sb`
+    and `rm -rf ~` `allowed`. The adversary read this in the program's
+    source and did not run it. The script models none of these checks, and
+    there can be others.
+  - Claude Code can read an allow rule more narrowly than the three
+    wildcard rules of its docs. With the allow rule `env A*`, `preflight`
+    calls `env A=1 rm x` `allowed`; the matcher of 2.1.325 refuses that
+    match. An allow rule for a wrapper (`env`, `timeout`, `nice`, `xargs`)
+    is the form to distrust.
+
+  The skill text tells the session to ask about each command that writes
+  or removes outside the project, also when it is `allowed`. What a wrong
+  `allowed` costs: a prompt during the run, and the session waits until
+  the user answers. Nothing in this version turns that prompt into a
+  skipped step. Claude Code has two ways to do it at the point of the
+  decision: the setting `permissions.denyInsteadOfPrompting`, and a
+  `PermissionRequest` hook that answers `deny` (Claude Code docs, read
+  2026-11-17). Neither is used here.
+
+  Where it can, the script errs toward "would prompt". It reads
   the allow, ask and deny rules for `Bash` in `~/.claude/settings.json` and
   in the two settings files of the project. The two kinds of rule are read
   in opposite ways, so that a doubt does not end as `allowed`:
@@ -2834,10 +2863,15 @@ test checks that on random lines in five languages.
     run of spaces and tabs made one space in the rule and in the command,
     as Claude Code 2.1.325 does it (the adversary ran that program's own
     matcher, 2026-11-17). `prefix:*` counts for any command that starts
-    with the prefix. The rule is also tried on the command from each of
-    its words on, and with that word as a bare program name: a rule for
-    `rm` holds for `FOO=1 rm`, `timeout 30 rm` and `/bin/rm`, and also
-    for `echo rm`, which is called `denied` although it would run.
+    with the prefix. The rule is also tried on each program name that a
+    word of the command can hold, alone and with the rest of the command
+    behind it: the word, what follows an `=`, every tail of a word that
+    starts with `-`, and each of these without its path. So a rule for
+    `rm` holds for `FOO=1 rm`, `timeout 30 rm`, `/bin/rm`, `env -Srm` and
+    `flock --command=rm` (Claude Code takes a command out of the value of
+    such an option; found by the adversary). It also holds for `echo rm`
+    and for `ls --confirm`, which are called `denied` although they would
+    run.
   - A rule that allows is read narrowly: letter for letter, by the three
     wildcard rules of the permissions page. A `:*` beside another `*`
     allows nothing here.
@@ -2851,11 +2885,14 @@ test checks that on random lines in five languages.
     a shell command. A list of the marks that it could not read was tried
     first, and it was open at one end (quotes, `(rm x)`, `=rm`); the list
     of what it can read is closed.
+  - A command of more than 2,000 characters is `unsure`. The matcher goes
+    over a command one time for each part of a rule, so a rule with many
+    `*` costs no more than one (a rule with several took 22 seconds on a
+    long command before; found by the adversary).
 
   What it does not know: the permission mode, hooks, the sandbox, whether
   the project is trusted (an allow rule of an untrusted project counts
-  here), the wrappers that Claude Code strips (`timeout`, `nice`), the
-  read-only commands that Claude Code runs without asking, managed
+  here), the read-only commands that Claude Code runs without asking, managed
   settings, and `CLAUDE_CONFIG_DIR`. So `git status` with no allow rule is
   `would-prompt` although it would run. Not covered, and a possible way to
   a wrong `allowed`: what a plain word does when it runs. A script, an
@@ -2869,7 +2906,7 @@ test checks that on random lines in five languages.
   cannot show is printed in escaped form.
 - **Runs are removed 14 days after they ended:** a closed run by the time
   of its close, a run that was never closed by its time limit. `start` does
-  this for all sessions of the user. `prune --days N` sets the time for
+  this for all sessions of the user. `prune --days N` (0 to 3650) sets the time for
   closed runs only: a run that was never closed can still have a session
   that writes to it, and it stays 14 days. A run or a session folder that
   cannot be read or removed is left alone and stops nothing else (found by
