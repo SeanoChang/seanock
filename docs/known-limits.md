@@ -2524,3 +2524,68 @@ has none.
   there with exit 2 and writes no note.
 - Git versions other than the local one (2.54) and the one of CI.
 - Linux. CI runs on macOS only.
+
+## Reference builds (`config/claude/CLAUDE.md`, 2026-11-17)
+
+The rule and its source are in `tests/test_reference_rule.py`. The counts
+below are from 30 live sessions on Sonnet, run on 2026-11-17 on the stand-in
+project of that test, before the first review.
+
+| The request                                           | Without the rule                       | With the rule                |
+| ----------------------------------------------------- | -------------------------------------- | ---------------------------- |
+| "exactly as the prototype"                            | 3 of 3 copied the sample content       | 3 of 3 whole, real data only |
+| the same, plus "with the real data from data/"        | 3 of 3 whole, real data only           | 3 of 3 whole, real data only |
+| the builder's instructions and a brief ("exactly as") | 3 of 9 dropped both parts with no data | 9 of 9 whole, real data only |
+
+"Whole" means that all seven parts are on the page, and the two parts with no
+data show an empty state.
+
+### By design
+
+- **The control shows another fault than the measured session.** There, the
+  agent dropped parts. In the short run without the rule, the session that
+  Sean talks to copies the prototype with its sample content, against the
+  project rule. The drop shows only in the run with a brief, the path of the
+  measured session, and only in a third of the runs.
+- **The run with a brief has no control test.** A fault in 3 of 9 runs cannot
+  be asserted in one run. With nine runs on each side, a difference of 3 to 0
+  comes by chance about one time in ten, so the table supports the rule on
+  that path and does not prove it.
+- **A request that names the real data gets the same page with and without
+  the rule.** The rule changes nothing there.
+- **The size caps of both rules files were raised:** the Claude file from
+  15,650 to 16,450 characters and from 230 to 241 lines (it is at 16,410 and
+  241), the Codex file from 16,000 to 16,384 bytes (it is at 16,278). Codex
+  reads 32 KiB of rules files, global and project together, so the global
+  file now takes half and has about 100 bytes left.
+- **The rule does not say what a part is.** The agent decides how fine the
+  list is. A script that grades a build against a list of parts is planned
+  as a skill of its own.
+
+### Minor
+
+- **The grader looks for a text, not for what a browser shows.** A heading
+  inside a comment, a hidden element or an unused string counts as a part
+  that is there.
+- **"The report starts with what is missing" is tested as "the answer names
+  both parts".** The test does not read where in the answer they stand. A
+  correct session that writes "the Plan section" and not "Plan this week"
+  fails the test; one control run wrote it that way.
+- **No run asked for a yes.** Every session with the rule built the empty
+  state, so the path "cut with my yes" was not seen.
+- **Four sentences have no live test:** an approved design becomes a build
+  task, a part under tier 2 review gets its own task, a brief hands over the
+  reference itself, and a blocked run takes no work of its own. Each is
+  pinned as text only.
+- **"A design I approve" needs judgment.** A design that Sean only wanted to
+  look at also becomes a task in the plan by this sentence.
+- **`.github/workflows/ci.yml` changed by one comment line,** the name of
+  the new switch in the list of tests that CI does not run. No step changed.
+
+### Not tested
+
+- Either Codex mode. The Codex file was built and read, not run.
+- Any model but Sonnet.
+- A reference that is not an HTML file: a screenshot, a design file.
+- A long session. The measured fault came late in a long one, through a
+  brief that the agent wrote itself; each live run here is one short request.

@@ -6,6 +6,34 @@ the tag `vX.Y.Z`. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says how it moves. The newest
 entry is first.
 
+## 0.9.0 (2026-11-17)
+
+Added:
+
+- A rule for reference builds, in `config/claude/CLAUDE.md` and in both
+  modes of the Codex file. When Sean points at a prototype, a design or a
+  screenshot, or says "exactly as", that reference is the spec. The agent
+  lists its parts first. Each part ends built, as an empty state when its
+  data does not exist yet, or cut with his yes. No other rule gives leave to
+  cut a part, and an agent with a brief builds the rest and reports the part.
+  An approved design goes into the plan as a build task, a part that needs
+  tier 2 review gets its own task, a brief hands over the reference itself,
+  and the report starts with what is missing. The source is a measured
+  session: twice in it, an agent built its own summary of an approved
+  prototype and left out the parts the app had no data for, with no word of
+  the cuts in its report. `tests/test_reference_rule.py` pins the sentences
+  and has three live sessions behind `REFERENCE_RULE_LIVE=1`.
+
+Changed:
+
+- Unattended mode: after a blocked step the agent takes the next task in the
+  plan. When the plan has none, it ends the run and does not pick work of
+  its own. In the same session, an agent with its task blocked started a
+  refactor that nobody had asked for.
+- The size caps of the two rules files are raised for the new rule: the
+  Claude file from 15,650 to 16,450 characters and from 230 to 241 lines,
+  the Codex file from 16,000 to 16,384 bytes.
+
 ## 0.8.0 (2026-11-15)
 
 Added:

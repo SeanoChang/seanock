@@ -34,8 +34,9 @@ bam = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bam)
 
 # Codex reads at most 32 KiB of AGENTS.md files, global and project together
-# (`project_doc_max_bytes`). The global file takes less than half of that.
-MAX_BYTES = 16_000
+# (`project_doc_max_bytes`). The global file takes at most half of that. The
+# budget was 16,000 until 2026-11-17, when the reference rule came in.
+MAX_BYTES = 16_384
 
 # phrase -> what is lost when it goes missing from the Codex file
 PINNED = {
@@ -54,6 +55,7 @@ PINNED = {
     "`agent_type`": "how Codex picks the builder, verifier or adversary agent",
     "list each one under Open": "where a subagent puts its assumptions",
     "the part of the change you trust least": "what a builder points the reviewer at",
+    "A cut is never yours to take": "a part of a reference is dropped only with Sean's yes",
 }
 
 
