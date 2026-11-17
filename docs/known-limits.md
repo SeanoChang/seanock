@@ -2527,6 +2527,10 @@ has none.
 
 ## Reference builds (`config/claude/CLAUDE.md`, 2026-11-17)
 
+Reviewed on 2026-11-17: verifier pass at commit `c185d7f`, tier 1, with no
+Important finding. Its two minor findings and its three notes on what the
+rule leaves open are below, marked "from the review".
+
 The rule and its source are in `tests/test_reference_rule.py`. The counts
 below are from 30 live sessions on Sonnet, run on 2026-11-17 on the stand-in
 project of that test, before the first review.
@@ -2579,6 +2583,26 @@ data show an empty state.
   pinned as text only.
 - **"A design I approve" needs judgment.** A design that Sean only wanted to
   look at also becomes a task in the plan by this sentence.
+- **A time box and the rule give opposite orders** (from the review). Time
+  box says "when behind, cut from the top and tell me". The rule says a cut
+  of a part is never the agent's, and it names checkpoints, absence and
+  other rules, but no time box. When the cut list of a time-boxed reference
+  build holds parts of the reference, the text does not say which rule
+  wins. Both readings end in a cut that Sean hears of, or in a question.
+- **One assertion pins less than its comment says** (from the review). In
+  `test_no_other_rule_gives_leave_to_cut`, the line on "placeholders" reads
+  only the craft rule and passes with or without the reference rule. The
+  other assertions of the test fail when the rule is cut.
+- **The list of parts is the agent's own** (from the review). A list that
+  misses a view of the reference, as the summary in the measured session
+  did, is then checked "part by part" and passes.
+- **"The check" is not tied to the Done line of a brief** (from the
+  review). The sentence says what the check compares. The brief rule does
+  not yet ask for that comparison in its Done line.
+- **Work nobody asked for is named only for Unattended mode** (from the
+  review). In an attended run with a blocked task, only the older sentence
+  holds ("Scope beyond the request goes in suggestions"), and that sentence
+  was in the rules of the measured session.
 - **`.github/workflows/ci.yml` changed by one comment line,** the name of
   the new switch in the list of tests that CI does not run. No step changed.
 
