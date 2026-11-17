@@ -837,12 +837,80 @@ def test_code_is_coloured_by_syntax_and_its_text_stays_the_same(browser):
     assert pg.evaluate(f"({text})('#lua')") == "-- refill\nlocal ok = tokens >= 1 -- take\nreturn { ok and 1 or 0 }"
 
 
+CALLS = """
+<figure class="fig codeblock" id="py"><pre class="code-src" data-sketch data-file="geo.py"><code>def area(r): return math.pi * sq (r)
+MAX_N = 10
+if (ok) run(x)</code></pre></figure>
+<figure class="fig codeblock" id="ps"><pre class="code-src" data-sketch><code class="language-pseudo">for each line of the block:
+    if READ(x): r = allocate(x); emit LW r // load it
+ensure(v):
+    IF v is in a register r: return r
+# don't split "a" A 12
+x = "it's" + 12
+don't stop if A
+mark r as holding v (clean)</code></pre></figure>
+"""
+
+
+@pytest.mark.slow
+def test_function_names_and_constants_are_coloured_in_real_code(browser):
+    pg = load(browser, CALLS, script="Kit.init();")
+    assert pg.errors == []
+    tk = lambda sel: pg.evaluate(f"({TOKENS})('{sel}')")
+    assert tk('#py .cl[data-n="1"]') == [["k", "def"], ["f", "area"], ["k", "return"], ["f", "sq"]], "a name before ( is a function; a field is not"
+    assert tk('#py .cl[data-n="2"]') == [["n", "MAX_N"], ["n", "10"]], "an all-caps name is a constant"
+    assert tk('#py .cl[data-n="3"]') == [["k", "if"], ["f", "run"]], "a keyword before ( stays a keyword"
+
+
+@pytest.mark.slow
+def test_pseudocode_is_coloured_and_its_text_stays_the_same(browser):
+    pg = load(browser, CALLS, script="Kit.init();")
+    assert pg.errors == []
+    tk = lambda sel: pg.evaluate(f"({TOKENS})('{sel}')")
+    assert tk('#ps .cl[data-n="1"]') == [["k", "for"], ["k", "each"], ["k", "of"]]
+    assert tk('#ps .cl[data-n="2"]') == [["k", "if"], ["n", "READ"], ["f", "allocate"], ["n", "LW"], ["c", "// load it"]], \
+        "an all-caps operation is a constant even before (; a single capital is a variable"
+    assert tk('#ps .cl[data-n="3"]') == [["f", "ensure"]]
+    assert tk('#ps .cl[data-n="4"]') == [["k", "IF"], ["k", "is"], ["k", "in"], ["k", "return"]], "pseudocode keywords match in any case"
+    assert tk('#ps .cl[data-n="5"]') == [["c", "# don't split \"a\" A 12"]]
+    assert tk('#ps .cl[data-n="6"]') == [["s", '"it\'s"'], ["n", "12"]]
+    assert tk('#ps .cl[data-n="7"]') == [["k", "if"]], "an apostrophe in prose opens no string"
+    assert tk('#ps .cl[data-n="8"]') == [], "in pseudocode a name and a ( with a space between is prose, not a call"
+    text = "sel => [...document.querySelectorAll(sel + ' .cl-t')].map(e => e.textContent).join('\\n')"
+    assert pg.evaluate(f"({text})('#ps')").split("\n")[1] == "    if READ(x): r = allocate(x); emit LW r // load it"
+
+
+COLOURS = """['k', 'f', 's', 'n', 'c', 'plain'].map(k => {
+  const e = document.createElement('span'); e.className = 'tk-' + k; document.body.appendChild(e);
+  return getComputedStyle(e).color;
+})"""
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_each_token_kind_has_its_own_colour(browser, scheme):
+    pg = load(browser, "<p>x</p>", color_scheme=scheme)
+    colours = pg.evaluate(COLOURS)
+    assert len(set(colours)) == 6, f"each kind differs from the others and from plain text: {colours}"
+
+
+@pytest.mark.slow
+def test_trace_colours_pseudocode_when_no_language_is_given(browser):
+    pg = load(browser, '<div id="t"></div><div id="u"></div>', script="""
+      Kit.trace(Kit.$('#t'), { code: 'if READ(x): r = allocate(x)', steps: [{ line: 1 }] });
+      Kit.trace(Kit.$('#u'), { lang: 'text', code: 'if READ(x): r = allocate(x)', steps: [{ line: 1 }] });""")
+    assert pg.errors == []
+    tk = lambda sel: pg.evaluate(f"({TOKENS})('{sel}')")
+    assert tk("#t .cl") == [["k", "if"], ["n", "READ"], ["f", "allocate"]]
+    assert tk("#u .cl") == [], "lang: 'text' keeps the code plain"
+
+
 @pytest.mark.slow
 def test_diff_lines_are_coloured_without_their_sign(browser):
     pg = review_page(browser)
     tk = lambda sel: pg.evaluate(f"({TOKENS})('{sel}')")
     assert tk('#code-diff .cl[data-new="11"]') == [["k", "if"]]
-    assert tk('#code-diff .cl[data-new="12"]') == [["s", '"Retry-After"']]
+    assert tk('#code-diff .cl[data-new="12"]') == [["f", "Header"], ["f", "Set"], ["s", '"Retry-After"'], ["f", "secs"]], "calls are functions; a field (d.RetryAfter) is plain"
     assert tk('#code-diff .cl[data-mark="hunk"]') == []
 
 

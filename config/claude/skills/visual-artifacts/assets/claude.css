@@ -36,6 +36,7 @@
   --warn: #9A4F12; --warn-soft: #F8EDDF; /* orange */
   --bad: #7E3870;  --bad-soft: #F4E6F1;  /* purple */
   --info: #5F5E59; --info-soft: #EFEFED; /* gray */
+  --syn-str: #1D6F69; /* code strings: teal; quotes mark them too, so teal never has to differ from blue alone */
 
   /* data series, validated with dataviz/validate_palette.js on these surfaces.
      s1–s4 pass ALL pairs (lines, scatter) in light and dark; worst CVD ΔE 11.2.
@@ -98,7 +99,7 @@
     --ink: #F5F5F3; --ink-2: #C6C5BF; --ink-3: #A5A49E; --muted: #8F8E88;
     --accent: #D97757; --accent-ink: #E58A68; --accent-soft: #35241D; --accent-btn: #D97757; --on-accent: #151515;
     --ok: #78ABE6; --ok-soft: #1C2A3B; --warn: #E39B5E; --warn-soft: #33261A;
-    --bad: #CF8FC4; --bad-soft: #33212F; --info: #A5A49E; --info-soft: #262626;
+    --bad: #CF8FC4; --bad-soft: #33212F; --info: #A5A49E; --info-soft: #262626; --syn-str: #6CC4B9;
     --s1: #4E8DD4; --s2: #D86E48; --s3: #9E4766; --s4: #A9A7A1; --s5: #3466A8; --s6: #C2825C; --s-base: #A9A7A1;
     --d-sky: #24313F; --d-clay: #3D2A22; --d-oat: #302C25; --d-gray: #2A2A2A; --d-cactus: #2A2A2A; --d-fig: #3A2730; --d-heather: #2C2A3D; --d-stroke: #C6C5BF;
     --shadow: 0 1px 2px rgba(0,0,0,.3);
@@ -112,7 +113,7 @@
   --ink: #F5F5F3; --ink-2: #C6C5BF; --ink-3: #A5A49E; --muted: #8F8E88;
   --accent: #D97757; --accent-ink: #E58A68; --accent-soft: #35241D; --accent-btn: #D97757; --on-accent: #151515;
   --ok: #78ABE6; --ok-soft: #1C2A3B; --warn: #E39B5E; --warn-soft: #33261A;
-  --bad: #CF8FC4; --bad-soft: #33212F; --info: #A5A49E; --info-soft: #262626;
+  --bad: #CF8FC4; --bad-soft: #33212F; --info: #A5A49E; --info-soft: #262626; --syn-str: #6CC4B9;
   --s1: #4E8DD4; --s2: #D86E48; --s3: #9E4766; --s4: #A9A7A1; --s5: #3466A8; --s6: #C2825C; --s-base: #A9A7A1;
   --d-sky: #24313F; --d-clay: #3D2A22; --d-oat: #302C25; --d-gray: #2A2A2A; --d-cactus: #2A2A2A; --d-fig: #3A2730; --d-heather: #2C2A3D; --d-stroke: #C6C5BF;
   --shadow: 0 1px 2px rgba(0,0,0,.3);
@@ -884,7 +885,8 @@ body.has-respond-bar::after { content: ""; display: block; height: 80px; }
 .cl[data-mark="hunk"] { color: var(--muted); background: var(--surface-3); }
 .cl.is-hl { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent-ink); } /* the bar, so a marked line never rests on colour */
 .tk-k { color: var(--bad); }  /* keyword: purple */
-.tk-s { color: var(--ok); }   /* string: blue */
+.tk-f { color: var(--ok); }   /* function name, defined or called: blue */
+.tk-s { color: var(--syn-str); } /* string: teal */
 .tk-n { color: var(--warn); } /* number or literal: orange */
 .tk-c { color: var(--ink-3); font-style: italic; } /* comment */
 .pin-dot { flex: none; display: inline-grid; place-items: center; min-width: 18px; height: 18px; margin-left: 12px; padding: 0 4px; border-radius: var(--r-pill); background: var(--ink); color: var(--bg); font: 600 10px/1 var(--font-mono); user-select: none; }

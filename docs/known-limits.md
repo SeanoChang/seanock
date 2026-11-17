@@ -2747,3 +2747,23 @@ the cuts.
 - A reviewer with a shell. The live reviewer reads files and runs nothing,
   so no run had a floor guard result or a browser.
 - The adversary, and a reviewer on Opus, the model the verifier runs on.
+
+## 0.12.0: code colour for pseudocode and function names
+
+Nits from the review of 69138a5. None changes the text of the code.
+
+- **Teal strings and gray comments look close for a protan reader** (ΔE 3.8
+  in light, 9.0 in dark). Other cues still separate them: comments are
+  italic, and strings have quotes. The colour test checks that six colours
+  differ, not that a colour-blind reader can tell them apart.
+- **SQL:** an all-caps word missing from the short SQL keyword list
+  (`COUNT`, `LIKE`, `OFFSET`, `VARCHAR`, `NULL`) shows orange as a
+  constant, while listed keywords show purple. A table name before `(` in
+  `CREATE TABLE t (` shows blue as a function.
+- **sh and soft keywords:** the `$` of `$(date)` shows blue. `${HOME}`
+  makes `HOME` orange, but `$HOME` stays plain. Python `match (x)` and
+  `case (a, b)`, and JS `with (o)`, show blue as calls.
+- **`Kit.trace` with real code and no `lang`** now gets the pseudocode
+  rules: `'…'` is not a string, and `//` or `#` starts a comment, so
+  Python `n // 2` reads as a comment. Pass `lang` for real code.
+- **Pre-existing:** in sh, `${#arr[@]}` starts a comment at `#`.
