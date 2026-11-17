@@ -15,7 +15,7 @@
 #       COACH_LIVE          starts a live Claude session, which costs model calls;
 #       ATTRIBUTION_LIVE    starts three live Claude sessions, for the same reason;
 #       HANDOFF_LIVE        starts two live Claude sessions, for the same reason;
-#       REFERENCE_RULE_LIVE starts three live Claude sessions, for the same reason;
+#       REFERENCE_RULE_LIVE starts five live Claude sessions, for the same reason;
 #       CODEX_PROMPT        needs the Codex CLI.
 # The job runs on macOS only, the system this harness is for.
 name: ci

@@ -6,6 +6,26 @@ the tag `vX.Y.Z`. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says how it moves. The newest
 entry is first.
 
+## 0.10.0 (2026-11-17)
+
+Added:
+
+- Two live tests of the reference rule on a reviewer, behind
+  `REFERENCE_RULE_LIVE=1`, which now starts five sessions. A session with
+  the verifier's instructions gets a page that was built with two parts of
+  the prototype dropped. Without the rule it does not fail the page; with
+  the rule its verdict is "fail" and it names both parts. The page is one a
+  real session built before the rule, kept in `tests/reference_fixture.py`.
+  In 15 runs before the first review, 0 of 9 reviewers failed the page
+  without the rule and 6 of 6 failed it with the rule.
+
+Changed:
+
+- `docs/known-limits.md`, on reference builds: the counts of the reviewer
+  runs, and why the instructions of the builder and the verifier stay as
+  they are. One sentence from the review of 0.9.0 is corrected: a list of
+  parts that misses a view "can pass" the check, not "passes" it.
+
 ## 0.9.0 (2026-11-17)
 
 Added:
