@@ -1,6 +1,6 @@
 ---
 name: codex-exec
-description: Delegate checkable execution work to OpenAI Codex through `codex exec` (gpt-6.1-sol, gpt-6-astra) to save Claude usage, or get a review or an adversary pass from another model family. Use whenever a task has a precise spec and a command that proves it done — mechanical multi-file edits, codemods, dependency bumps, test or lint fixes, migrations, regenerating outputs, Dockerfiles, CI YAML, scripts, Terraform up to `plan`, frontend UI builds, long "make these tests pass" runs — or when the user says codex, astra, sol, or "offload this".
+description: Delegate checkable execution work to OpenAI Codex through `codex exec` (gpt-6.2-sol, gpt-6.2-astra) to save Claude usage, or get a review or an adversary pass from another model family. Use whenever a task has a precise spec and a command that proves it done — mechanical multi-file edits, codemods, dependency bumps, test or lint fixes, migrations, regenerating outputs, Dockerfiles, CI YAML, scripts, Terraform up to `plan`, frontend UI builds, long "make these tests pass" runs — or when the user says codex, astra, sol, or "offload this".
 ---
 
 # codex-exec
@@ -30,16 +30,17 @@ A role is a Codex agent file in `~/.codex/agents/` (source:
 `config/codex/agents/` in the harness repo). `codex-run --role <name>` sends
 the role's instructions with the run and sets its model and effort.
 
-| Role        | Use for                                                        | Model, effort          | Where it runs                 |
-| ----------- | -------------------------------------------------------------- | ---------------------- | ----------------------------- |
-| `builder`   | the work in the description                                    | `gpt-6.1-sol`, `high`  | a new worktree (`--worktree`) |
-| `verifier`  | a second review of a commit, from another model family         | `gpt-6-astra`, `high`  | a new worktree at that commit |
-| `adversary` | a second attack on tier 2 work that Claude's adversary held    | `gpt-6-astra`, `high`  | a new worktree at that commit |
+| Role        | Use for                                                        | Model, effort           | Where it runs                 |
+| ----------- | -------------------------------------------------------------- | ----------------------- | ----------------------------- |
+| `builder`   | the work in the description                                    | `gpt-6.2-sol`, `high`   | a new worktree (`--worktree`) |
+| `verifier`  | a second review of a commit, from another model family         | `gpt-6.2-astra`, `high` | a new worktree at that commit |
+| `adversary` | a second attack on tier 2 work that Claude's adversary held    | `gpt-6.2-astra`, `high` | a new worktree at that commit |
 
 - To change a model or an effort for one run, pass `-m` or
   `-c model_reasoning_effort='"medium"'` in the codex args: it wins over the
   role's. When Sol fails the check twice, run the builder once with
-  `-m gpt-6-astra -c model_reasoning_effort='"low"'`, then take the task back.
+  `-m gpt-6.2-astra -c model_reasoning_effort='"low"'`, then take the task
+  back. (This step was measured on `gpt-6-astra`, not on 6.2.)
 - Effort levels: `low · medium · high · xhigh · max · ultra`. `xhigh` only
   with a measured gain; never `max` or `ultra` unless the user asks.
 - A Codex review never replaces the review for the tier. Claude's `verifier`
@@ -182,6 +183,54 @@ This is Codex's built-in review, with no role. Use it for a quick second read
 of changes that are not committed. Treat its output as extra findings from
 another model family: each goes through an Opus refuter before the user sees
 it.
+
+## Evidence (2026-11-17, GPT-6.2)
+
+Four runs through `codex-run` on the day GPT-6.2 came out, one run per
+model. They are the reason for the models in the table of roles.
+
+**The builder brief.** Two functions of a duration parser from a written
+contract. 68 hidden tests grade it: cases, a round trip on 3,000 random
+numbers, and a second version on 6,000 random texts. One visible test needs
+a file that does not exist, in a folder that the brief forbids, so the Done
+command can never pass.
+
+| Model, effort         | Hidden tests | Files changed       | The missing file    | Time  |
+| --------------------- | ------------ | ------------------- | ------------------- | ----- |
+| `gpt-6.2-sol`, `high` | 68 of 68     | one, the allowed one | named in the report | 95 s  |
+| `gpt-6.1-sol`, `high` | 68 of 68     | one, the allowed one | named in the report | 110 s |
+
+**The adversary brief.** The first review commit of the `unattended` skill
+(`259471a`), on which Claude's adversary had found three classes of fault:
+`preflight` reads a command in another way than Claude Code, one damaged
+folder stops every `start`, and a log line lands after the close. An Opus
+refuter checked each finding of the 6.2 run.
+
+| Model, effort           | Findings | Real           | Classes found | Time  |
+| ----------------------- | -------- | -------------- | ------------- | ----- |
+| `gpt-6.2-astra`, `high` | 13       | 13 (refuter)   | 2 of 3        | 673 s |
+| `gpt-6-astra`, `high`   | 6        | 6 (see below)  | 2 of 3        | 292 s |
+
+- Both Sol runs stayed in the one file, and both said that the suite was
+  blocked and why. The task does not separate them: neither failed a test.
+- The 6.2 adversary found two faults that were still open after three
+  passes of Claude's adversary. The older model found neither. Each of the
+  older model's six findings matches one that the refuter or Claude's
+  adversary had confirmed. Two of them the 6.2 run did not report: a
+  contract nested very deep, and a slow wildcard match.
+- Both Astra runs missed the `preflight` class. Finding it took the matcher
+  of Claude Code itself as the reference, which Claude's adversary fetched
+  and neither Codex run did. A Codex adversary is a second attack, not a
+  replacement.
+- The 6.2 run called 11 of its 13 findings Important. By the repo's
+  criteria about four were. So the refuter stays in front of the user.
+- The 6.2 adversary read 1,337,000 input tokens (94% cached) and wrote
+  13,000; the older one 806,000 and 11,000. The Sol runs read 197,000 to
+  276,000 and wrote about 4,000.
+- What this does not show: Sol against Astra on hard build work, any model
+  at another effort level, a second commit or a second run, and the step
+  "Astra at `low` after Sol failed twice" on 6.2. The tasks and the graders
+  of these runs were in a session's scratch folder and are not in the repo.
 
 ## Evidence (2026-11-11)
 

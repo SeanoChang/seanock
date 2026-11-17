@@ -26,7 +26,7 @@ CODEX = REPO / "config" / "codex"
 CLAUDE_AGENTS = REPO / "config" / "claude" / "agents"
 
 ROLES = ["builder", "verifier", "adversary"]
-MODELS = {"gpt-6-astra", "gpt-6.1-sol"}
+MODELS = {"gpt-6.2-astra", "gpt-6.2-sol"}
 EFFORTS = {"low", "medium", "high"}
 
 # role -> phrases its instructions must keep
@@ -107,9 +107,13 @@ def test_a_reviewer_reports_and_never_writes_the_merge_gates_line(role):
     assert "<sha>" not in text and "git rev-parse HEAD" not in text
 
 
+def test_the_builder_runs_on_the_cheaper_codex_model():
+    assert agent("builder")["model"] == "gpt-6.2-sol" and agent("builder")["model_reasoning_effort"] == "high"
+
+
 def test_the_reviewers_run_on_the_strongest_codex_model():
     for role in ("verifier", "adversary"):
-        assert agent(role)["model"] == "gpt-6-astra" and agent(role)["model_reasoning_effort"] == "high"
+        assert agent(role)["model"] == "gpt-6.2-astra" and agent(role)["model_reasoning_effort"] == "high"
 
 
 def test_the_rules_file_names_exactly_these_agents():

@@ -212,16 +212,16 @@
   them in the background and wait for the notification; never poll either.
 
 <!-- rule: models -->
-Ranking for now: Opus 5.5 > GPT-6 Astra ≥ Sonnet 5.5.
+Ranking for now: Opus 5.5 > GPT-6.2 Astra ≥ Sonnet 5.5.
 
-| Model                   | Use for                                                                                              | Effort                                                         |
-| ----------------------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| **Opus 5.5**            | default: writing code, reviewing, design calls, refuting                                             | `medium` build · `high` verify/review · `xhigh` extremely hard |
-| **GPT-6.1 Sol** (Codex) | checkable execution: multi-file edits, test/lint fixes, migrations, ops scaffolding, frontend builds | `high`                                                         |
-| **GPT-6 Astra** (Codex) | a second-opinion review or adversary pass; execution that Sol failed twice                           | `low`–`high`                                                   |
-| **Sonnet 5.5**          | scoped exploration, small edits, tests, first-pass review, volume work that needs some judgment      | `low`–`medium`                                                 |
-| **Haiku 5.5**           | bulk: extract, classify, summarize. Haiku and Sol never review findings                              | `low`                                                          |
-| **Fable 5.2**           | rarely: only after Opus 5.5 `xhigh` has fallen short                                                 | `high`                                                         |
+| Model                     | Use for                                                                                              | Effort                                                         |
+| ------------------------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| **Opus 5.5**              | default: writing code, reviewing, design calls, refuting                                             | `medium` build · `high` verify/review · `xhigh` extremely hard |
+| **GPT-6.2 Sol** (Codex)   | checkable execution: multi-file edits, test/lint fixes, migrations, ops scaffolding, frontend builds | `high`                                                         |
+| **GPT-6.2 Astra** (Codex) | a second-opinion review or adversary pass; execution that Sol failed twice                           | `low`–`high`                                                   |
+| **Sonnet 5.5**            | scoped exploration, small edits, tests, first-pass review, volume work that needs some judgment      | `low`–`medium`                                                 |
+| **Haiku 5.5**             | bulk: extract, classify, summarize. Haiku and Sol never review findings                              | `low`                                                          |
+| **Fable 5.2**             | rarely: only after Opus 5.5 `xhigh` has fallen short                                                 | `high`                                                         |
 
 - Don't use `max` unless I ask. Effort catches edge cases; it does not fix a
   wrong approach.
