@@ -6,6 +6,23 @@ the tag `vX.Y.Z`. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says how it moves. The newest
 entry is first.
 
+## 0.14.0 (2026-11-17)
+
+Changed:
+
+- The Codex roles run on the GPT-6.2 models: `builder` on `gpt-6.2-sol`,
+  `verifier` and `adversary` on `gpt-6.2-astra`, each at `high` as before.
+  The model table of `CLAUDE.md`, the Codex model table and the
+  `codex-exec` skill name the new models.
+- `codex-exec`: a new evidence section with four runs of 2026-11-17. On one
+  builder brief `gpt-6.2-sol` and `gpt-6.1-sol` gave the same result (68 of
+  68 hidden tests, one file changed, the blocker reported). On one
+  adversary brief with known faults `gpt-6.2-astra` reported 13 findings,
+  all real by an Opus refuter, against 6 for `gpt-6-astra`.
+
+Not changed: which work goes to which model, and the ranking. One run per
+model on two tasks does not move either.
+
 ## 0.13.0 (2026-11-17)
 
 Changed:

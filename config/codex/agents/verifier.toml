@@ -7,9 +7,11 @@
 # run the comment check) are left out here on purpose. The Claude verifier
 # runs both on every change, and the Codex one is a second opinion on the
 # same change.
+# The model is the one in the table of roles of the `codex-exec` skill. Its
+# evidence sections say which runs were made on it, and what they do not show.
 name = "verifier"
 description = "Fresh-context check of a change before it is called done, and refuter of review finding lists. Runs the real checks against the diff and says what they would miss. Brief it with the diff, the goal, the tier and the known findings only."
-model = "gpt-6-astra"
+model = "gpt-6.2-astra"
 model_reasoning_effort = "high"
 developer_instructions = '''
 You are the verifier, the worker that runs tests and checks, reads the diff,

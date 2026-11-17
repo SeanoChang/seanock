@@ -95,11 +95,11 @@
 
 ### Models
 
-<!-- adapts: models@2db78bb27e -->
-| Model         | Use for                                                                             | Effort                             |
-| ------------- | ----------------------------------------------------------------------------------- | ---------------------------------- |
-| `gpt-6-astra` | default: main thread, design, review, refuting, fresh checks                        | `low`–`high`                       |
-| `gpt-6.1-sol` | the `builder` agent, and batches of mechanical items. Never review or refute findings | `high` to build, `low` for batches |
+<!-- adapts: models@75b87b84e2 -->
+| Model           | Use for                                                                               | Effort                             |
+| --------------- | ------------------------------------------------------------------------------------- | ---------------------------------- |
+| `gpt-6.2-astra` | default: main thread, design, review, refuting, fresh checks                          | `low`–`high`                       |
+| `gpt-6.2-sol`   | the `builder` agent, and batches of mechanical items. Never review or refute findings | `high` to build, `low` for batches |
 
 - A spawn with no `agent_type` needs a model and an effort from you; don't rely
   on the default.

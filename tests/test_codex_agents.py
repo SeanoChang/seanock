@@ -26,7 +26,7 @@ CODEX = REPO / "config" / "codex"
 CLAUDE_AGENTS = REPO / "config" / "claude" / "agents"
 
 ROLES = ["builder", "verifier", "adversary"]
-MODELS = {"gpt-6-astra", "gpt-6.1-sol"}
+MODELS = {"gpt-6.2-astra", "gpt-6.2-sol"}
 EFFORTS = {"low", "medium", "high"}
 
 # role -> phrases its instructions must keep
@@ -107,9 +107,35 @@ def test_a_reviewer_reports_and_never_writes_the_merge_gates_line(role):
     assert "<sha>" not in text and "git rev-parse HEAD" not in text
 
 
+def test_the_builder_runs_on_the_cheaper_codex_model():
+    assert agent("builder")["model"] == "gpt-6.2-sol" and agent("builder")["model_reasoning_effort"] == "high"
+
+
+def test_the_docs_name_the_models_that_the_role_files_hold():
+    """Found by the verifier of 0.14.0: the known limits still named the builder's model of the version before."""
+    def spoken(model):                      # gpt-6.2-sol -> GPT-6.2 Sol
+        family, version, name = model.split("-")
+        return f"{family.upper()}-{version} {name.capitalize()}"
+    limits = (REPO / "docs" / "known-limits.md").read_text(encoding="utf-8")
+    assert f"**The builder runs on {spoken(agent('builder')['model'])} at `high`.**" in limits
+    skill = (REPO / "config" / "claude" / "skills" / "codex-exec" / "SKILL.md").read_text(encoding="utf-8")
+    rules = (REPO / "config" / "claude" / "CLAUDE.md").read_text(encoding="utf-8")
+    table = [[cell.strip() for cell in line.strip("|").split("|")] for line in skill.splitlines() if line.startswith("| `")]
+    for role in ROLES:
+        model, effort = agent(role)["model"], agent(role)["model_reasoning_effort"]
+        rows = [row for row in table if row[0] == f"`{role}`"]
+        assert len(rows) == 1 and rows[0][2] == f"`{model}`, `{effort}`", (role, rows)      # the row of the role itself
+        assert f"**{spoken(model)}** (Codex)" in rules, role
+    named = set(re.findall(r"\*\*(GPT-[\d.]+ \w+)\*\* \(Codex\)", rules))
+    assert named == {spoken(agent(role)["model"]) for role in ROLES}, "the rules name no Codex model that no role runs on"
+    codex_rules = (CODEX / "AGENTS.src.md").read_text(encoding="utf-8")
+    listed = set(re.findall(r"^\| `(gpt-[\w.-]+)` +\|", codex_rules, re.M))
+    assert listed == {agent(role)["model"] for role in ROLES}, "the Codex model table lists the models of the roles, and no other"
+
+
 def test_the_reviewers_run_on_the_strongest_codex_model():
     for role in ("verifier", "adversary"):
-        assert agent(role)["model"] == "gpt-6-astra" and agent(role)["model_reasoning_effort"] == "high"
+        assert agent(role)["model"] == "gpt-6.2-astra" and agent(role)["model_reasoning_effort"] == "high"
 
 
 def test_the_rules_file_names_exactly_these_agents():

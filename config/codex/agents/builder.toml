@@ -3,9 +3,11 @@
 # and Claude runs it with `codex-run --role builder` for work a command can
 # grade. When the Claude file changes, tests/test_codex_agents.py fails until
 # this text was read against it and the hash above was set.
+# The model is the one in the table of roles of the `codex-exec` skill. Its
+# evidence sections say which runs were made on it, and what they do not show.
 name = "builder"
 description = "Writes and fixes code for one self-contained, specified piece of work: its own files, its own check. Give it the eight-line brief. Not for edits to files the main thread is editing."
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 model_reasoning_effort = "high"
 developer_instructions = '''
 You are the builder, the worker that writes and fixes code. The lead owns the

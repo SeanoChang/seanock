@@ -168,10 +168,10 @@
 
 ### Models
 
-| Model         | Use for                                                                             | Effort                             |
-| ------------- | ----------------------------------------------------------------------------------- | ---------------------------------- |
-| `gpt-6-astra` | default: main thread, design, review, refuting, fresh checks                        | `low`–`high`                       |
-| `gpt-6.1-sol` | the `builder` agent, and batches of mechanical items. Never review or refute findings | `high` to build, `low` for batches |
+| Model           | Use for                                                                               | Effort                             |
+| --------------- | ------------------------------------------------------------------------------------- | ---------------------------------- |
+| `gpt-6.2-astra` | default: main thread, design, review, refuting, fresh checks                          | `low`–`high`                       |
+| `gpt-6.2-sol`   | the `builder` agent, and batches of mechanical items. Never review or refute findings | `high` to build, `low` for batches |
 
 - A spawn with no `agent_type` needs a model and an effort from you; don't rely
   on the default.
