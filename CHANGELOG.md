@@ -6,6 +6,26 @@ the tag `vX.Y.Z`. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says how it moves. The newest
 entry is first.
 
+## 0.12.0 (2026-11-17)
+
+Changed:
+
+- `visual-artifacts`: code colours more of what a reader looks for. A name
+  right before `(` is a function and shows blue, where it is defined and
+  where it is called. An all-caps name of two or more letters (`MAX_N`,
+  `READ`, `LW`) is a constant and shows orange, as numbers do. Strings move
+  from blue to teal; their quotes still mark them.
+- `visual-artifacts`: pseudocode has a language, `pseudo` (also
+  `pseudocode`, `algo`). Its control words (`if`, `for each`, `return`,
+  `while`, ...) match in any case, `//`, `#` and `▷` start a comment, and an
+  apostrophe in prose (`don't`) opens no string. `Kit.trace` with no `lang`
+  colours its code as pseudocode; `lang: 'text'` keeps it plain.
+
+Fixed:
+
+- `Kit.trace` with no `lang` showed its code with no colour at all, so the
+  pseudocode of a step-through read as one gray block.
+
 ## 0.11.0 (2026-11-17)
 
 Changed:
