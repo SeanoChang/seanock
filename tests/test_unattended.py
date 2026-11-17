@@ -358,11 +358,49 @@ def test_prune_removes_the_runs_that_ended_long_ago_and_keeps_the_rest(runs):
     stray = runs.root / "session-old1" / "notes.txt"
     stray.write_text("not a run\n")
     assert runs.run("prune") == (0, ["unattended: pruned 0"]), "nothing is older than 14 days"
-    assert runs.run("prune", "--days", "0") == (0, ["unattended: pruned 2"])
-    assert not old.exists() and not late.exists() and open_run.exists()
+    assert runs.run("prune", "--days", "0") == (0, ["unattended: pruned 1"])
+    assert not old.exists() and open_run.exists()
+    assert late.exists(), "a run that was never closed may still have a session that writes to it"
     assert stray.exists(), "a file that is no run stays, and so does its folder"
-    assert not (runs.root / "session-late").exists(), "a session folder with nothing left is removed"
     assert runs.run("prune", "--days", "-1")[0] == 2
+
+
+def test_a_run_that_was_never_closed_is_removed_fourteen_days_after_its_time_limit(runs):
+    script = load_script()
+    late = runs.started(session="session-late")
+    contract = json.loads((late / "contract.json").read_text())
+    for days, gone in ((13, False), (15, True)):
+        contract["ends"] = script.iso(script.now() - script.datetime.timedelta(days=days))
+        (late / "contract.json").write_text(json.dumps(contract))
+        assert runs.run("prune", "--days", "0", session="session-0009") == (0, [f"unattended: pruned {int(gone)}"])
+        assert late.exists() is not gone
+    assert not (runs.root / "session-late").exists(), "a session folder with nothing left is removed"
+
+
+@pytest.mark.parametrize("damage", ["a log line with no time", "a log line with no kind", "a log line that is no object",
+                                    "a contract that is no object",
+                                    "a log that is no text", "a contract with a time that is none"])
+def test_a_run_that_cannot_be_read_stops_no_other_session(runs, damage):
+    """Found in review: `start` prunes, and one damaged file of any session ended it with a traceback."""
+    bad = runs.started(session="session-bad1")
+    runs.run("close", "--why", "x", session="session-bad1")
+    if damage == "a log line with no time":
+        (bad / "log.jsonl").write_text('{"kind": "started"}\n{"kind": "closed"}\n')
+    elif damage == "a log line with no kind":
+        (bad / "log.jsonl").write_text('{"t": "2026-11-17T00:00:00Z"}\n{"t": "2026-11-17T00:00:01Z", "kind": 7}\n')
+    elif damage == "a log line that is no object":
+        (bad / "log.jsonl").write_text('7\n"closed"\n[1]\n')
+    elif damage == "a contract that is no object":
+        (bad / "contract.json").write_text("[]")
+    elif damage == "a log that is no text":
+        (bad / "log.jsonl").write_bytes(b"\xff\xfe\x00")
+    else:
+        (bad / "contract.json").write_text(json.dumps(dict(json.loads((bad / "contract.json").read_text()), ends="soon")))
+    assert runs.run("prune", "--days", "0") == (0, ["unattended: pruned 0"])
+    runs.started()
+    assert bad.exists(), "what cannot be read is left alone"
+    code, lines = runs.run("status", session="session-bad1")
+    assert code in (1, 2) and len(lines) == 1 and lines[0].startswith("unattended: "), lines
 
 
 def test_start_prunes_what_is_older_than_fourteen_days(runs):
@@ -459,6 +497,16 @@ def test_preflight_names_each_command_that_would_prompt(runs):
     assert "never printed" not in "\n".join(lines)
 
 
+def test_a_deny_or_ask_rule_with_a_colon_is_read_in_its_wider_sense(runs):
+    """The docs say that `rm:*` is `rm *`. An older reading takes it as a plain prefix. For a rule that stops a
+    command, the script takes whichever reading stops more; for a rule that allows one, the reading of the docs."""
+    settings(runs, "user", allow=["Bash(ls:*)", "Bash(rmdir build)", "Bash(ghost run)"], deny=["Bash(rm:*)"], ask=["Bash(gh:*)"])
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=["ls -la", "lsof", "rm -rf x", "rmdir build", "ghost run", "gh pr list"]))
+    assert [line.split(" ", 1)[0] for line in lines[:-1]] == ["allowed", "would-prompt", "denied", "denied", "would-prompt",
+                                                             "would-prompt"], lines
+    assert lines[3] == "denied rmdir build [deny: rm:*]"
+
+
 def test_preflight_passes_only_when_every_command_is_allowed(runs):
     settings(runs, "user", allow=["Bash"])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git push origin work", "anything at all"]))
@@ -480,6 +528,30 @@ def test_a_command_with_a_shell_operator_is_never_called_allowed(runs, command):
     assert script.judge(command, everything)[0] == "unsure"
 
 
+@pytest.mark.parametrize("command", [
+    "git status\nrm -rf build",                  # a line break is a command separator
+    "git status\r\nrm -rf build",
+    "git status\x0brm -rf build",                # a control character
+    "git status " + "x" * 3000 + " && rm -rf build",   # an operator behind the point where a text is cut for printing
+    "git status " + "x" * 1990 + "; rm -rf build",
+])
+def test_preflight_judges_the_command_as_it_is_written_and_not_as_it_is_printed(runs, command):
+    """Found in review: the command was made one line and cut to 2,000 characters before it was judged, so a rule
+    for the first command of several covered them all."""
+    settings(runs, "user", allow=["Bash(git status *)"])
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[command]))
+    assert code == 1 and lines[-1] == "unattended: preflight allowed=0 would-prompt=0 unsure=1 denied=0", lines[-1]
+    assert len(lines) == 2 and lines[0].startswith("unsure git status ")
+
+
+def test_a_command_is_matched_letter_for_letter(runs):
+    settings(runs, "user", allow=["Bash(git push *)", "Bash(echo *)"])
+    commands = ["git  push origin work", " git push origin work", "git push origin work", "echo " + "x" * 3000]
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=commands))
+    assert [line.split(" ", 1)[0] for line in lines[:-1]] == ["would-prompt", "would-prompt", "allowed", "allowed"], lines
+    assert all(len(line) <= 2000 for line in lines), "a long command is cut when it is printed"
+
+
 def test_settings_that_cannot_be_read_and_a_plan_with_no_commands_are_errors(runs):
     (runs.home / ".claude").mkdir()
     (runs.home / ".claude" / "settings.json").write_text("{broken")
@@ -488,6 +560,16 @@ def test_settings_that_cannot_be_read_and_a_plan_with_no_commands_are_errors(run
     (runs.home / ".claude" / "settings.json").unlink()
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=...))
     assert code == 2 and "the plan has no list `commands`" in lines[0]
+
+
+def test_a_fault_of_the_script_itself_is_an_error_line_and_no_traceback(runs, monkeypatch, capsys):
+    script = load_script()
+
+    def broken(args):
+        raise RuntimeError("a fault\nwith two lines")
+    monkeypatch.setattr(script, "status", broken)
+    assert script.main(["status"]) == 2
+    assert capsys.readouterr().out == "unattended: error RuntimeError: a fault with two lines\n"
 
 
 # ── the command line ─────────────────────────────────────────────────────────

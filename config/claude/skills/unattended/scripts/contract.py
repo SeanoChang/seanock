@@ -135,9 +135,13 @@ class Run:
             self.contract = json.loads(read_file(folder / CONTRACT))
             lines = read_file(folder / LOG).splitlines() if (folder / LOG).exists() else []
             self.log = [json.loads(line) for line in lines if line.strip()]
+            for line in self.log:
+                if not isinstance(line, dict) or not isinstance(line.get("kind"), str):
+                    raise ValueError("a log line is no object with a kind")
+                moment_of(line["t"])
             self.tasks = [(str(task["id"]), str(task["title"]), str(task["check"])) for task in self.contract["tasks"]]
             self.ends = moment_of(self.contract["ends"])
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             raise Failed(f"cannot read the run in {folder}: {exc}")
 
     def closed(self):
@@ -193,8 +197,10 @@ def read_plan(path):
     return plan
 
 
-def texts(plan, name, fields):
-    """The list `name` of the plan, each entry with the text fields that it must have."""
+def texts(plan, name, fields, as_written=False):
+    """The list `name` of the plan, each entry with the text fields that it must have. A text is made one line,
+    for it goes into the contract and into the output. `as_written` keeps it letter for letter: a command is
+    judged in the form in which the session will run it, not in the form in which it is printed."""
     entries = plan.get(name)
     if not isinstance(entries, list):
         raise Failed(f"the plan has no list `{name}`. Write an empty list when there is none: that is an answer too")
@@ -209,7 +215,7 @@ def texts(plan, name, fields):
             value = entry.get(field)
             if not isinstance(value, str) or not value.strip():
                 raise Failed(f"`{name}` entry {number} has no `{field}`")
-            values.append(one_line(value))
+            values.append(value if as_written else one_line(value))
         out.append(values)
     return out
 
@@ -244,6 +250,13 @@ def rule_matches(rule, command):
     return re.fullmatch(pattern, command, re.DOTALL) is not None
 
 
+def stops(rule, command):
+    """Whether a deny or ask rule covers the command. `prefix:*` is read in both senses that it has had, as
+    `prefix *` and as any command that starts with the prefix: a rule that stops a command must not be read too
+    narrowly."""
+    return rule_matches(rule, command) or (rule.endswith(":*") and command.startswith(rule[:-2]))
+
+
 def bash_rules(settings, name):
     """(all uses of Bash, the command patterns) of one list of the settings."""
     whole, patterns = False, []
@@ -263,11 +276,11 @@ def judge(command, settings_list):
     for name, verdict in (("deny", "denied"), ("ask", "would-prompt")):
         for settings in settings_list:
             whole, patterns = bash_rules(settings, name)
-            hit = "Bash" if whole else next((p for p in patterns if rule_matches(p, command)), None)
+            hit = "Bash" if whole else next((p for p in patterns if stops(p, command)), None)
             if hit:
                 return verdict, f"{name}: {hit}"
-    if any(mark in command for mark in SEPARATORS):
-        return "unsure", "it has a shell operator; write each part as its own command"
+    if any(mark in command for mark in SEPARATORS) or not command.isprintable():
+        return "unsure", "it has a shell operator, a line break or a control character; write each part as its own command"
     for settings in settings_list:
         whole, patterns = bash_rules(settings, "allow")
         hit = "Bash" if whole else next((p for p in patterns if rule_matches(p, command)), None)
@@ -295,7 +308,7 @@ def settings_files(project):
 
 def preflight(args):
     plan = read_plan(args.plan)
-    commands = [values[0] for values in texts(plan, "commands", ("command",))]
+    commands = [values[0] for values in texts(plan, "commands", ("command",), as_written=True)]
     settings_list = settings_files(Path(args.project).resolve() if args.project else None)
     counts = dict.fromkeys(("allowed", "would-prompt", "unsure", "denied"), 0)
     lines = []
@@ -396,8 +409,9 @@ def close(args):
 
 
 def prune_runs(days):
-    """Remove the runs that ended more than `days` days ago: a closed run by the time of its close, a run that
-    was never closed by its time limit. Returns how many."""
+    """Remove the runs that ended long ago, and return how many. A closed run goes `days` days after its close.
+    A run that was never closed can still have a session that writes to it, so it stays for the full 14 days
+    after its time limit, whatever `days` says. A run that cannot be read is left alone."""
     top = root()
     if not plain_folder(top, make=False):
         return 0
@@ -412,8 +426,8 @@ def prune_runs(days):
                 run = Run(run_folder)
             except Failed:
                 continue
-            ended = [moment_of(line["t"]) for line in run.log if line.get("kind") == "closed"] or [run.ends]
-            if ended[-1] <= limit:
+            closes = [moment_of(line["t"]) for line in run.log if line["kind"] == "closed"]
+            if closes[-1] <= limit if closes else run.ends <= now() - datetime.timedelta(days=max(days, KEEP_DAYS)):
                 shutil.rmtree(run_folder)
                 removed += 1
         if not os.listdir(folder):
@@ -460,6 +474,8 @@ def main(argv=None):
         code, lines = 2, [f"unattended: error {one_line(exc)}"]
     except OSError as exc:
         code, lines = 2, [f"unattended: error {one_line(exc.strerror or exc)}"]
+    except Exception as exc:   # a fault of this script is an error line too, never a traceback in place of a result
+        code, lines = 2, [f"unattended: error {type(exc).__name__}: {one_line(exc)}"]
     for line in lines:
         print(one_line(line), flush=True)   # a log or a plan cannot put a second line, or a result line, into the output
     return code

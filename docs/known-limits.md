@@ -2819,20 +2819,29 @@ test checks that on random lines in five languages.
 - **`preflight` is advice, and it errs toward "would prompt".** It reads
   the allow, ask and deny rules for `Bash` in `~/.claude/settings.json` and
   in the two settings files of the project. It does not know the
-  permission mode, hooks, the sandbox, the wrappers that Claude Code strips
+  permission mode, hooks, the sandbox, whether the project is trusted (an
+  allow rule of an untrusted project does not count for Claude Code, and it
+  counts here), the wrappers that Claude Code strips
   (`timeout`, `nice`), or the read-only commands that Claude Code runs
   without asking. It does not split a command: one with `&&`, `|`, `;`,
   `&`, a line break, a redirection or a command substitution is `unsure`.
-  So `git status` with no allow rule is reported as `would-prompt`
-  although it would run. A deny or ask rule that Claude Code applies to a
+  A command is judged letter for letter as the plan holds it, and one
+  with a control character is `unsure` too. So `git status` with no allow
+  rule is reported as `would-prompt` although it would run, and so is a
+  command with two spaces where its rule has one. A deny or ask rule that Claude Code applies to a
   part inside a longer command is not seen for a command that is
-  `unsure`; that state is no pass either.
+  `unsure`; that state is no pass either. A deny or ask rule of the form
+  `prefix:*` is read in its wider sense (any command that starts with the
+  prefix), an allow rule in the sense of the docs (`prefix *`).
 - **A text from the plan or the log is printed as one line.** Control
   characters become spaces and a text is cut at 2,000 characters, so a log
   line cannot add a second result line to the output.
 - **Runs are removed 14 days after they ended:** a closed run by the time
   of its close, a run that was never closed by its time limit. `start` does
-  this for all sessions of the user.
+  this for all sessions of the user. `prune --days N` shortens the time for
+  closed runs only: a run that was never closed can still have a session
+  that writes to it. A run that cannot be read is left alone, by `prune`
+  and by every `start`.
 
 ### Minor
 
