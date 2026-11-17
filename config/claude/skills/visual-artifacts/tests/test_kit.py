@@ -899,9 +899,11 @@ the set S holds each node of G</code></pre></figure>
 <figure class="fig codeblock" id="gonames"><pre class="code-src" data-sketch><code class="language-go">u.ID = r.URL.Path
 if err == io.EOF { db := DB }
 signal.Notify(c, syscall.SIGTERM, os.O_RDONLY, MAX_N, HTTP)
-id := ID(raw)</code></pre></figure>
+id := ID(raw)
+x := A_B + X_1 + AB</code></pre></figure>
 <figure class="fig codeblock" id="sqlnames"><pre class="code-src" data-sketch><code class="language-sql">SELECT COUNT(*), name FROM t WHERE n > MAX_ROWS
-CREATE TABLE t (id VARCHAR(36))</code></pre></figure>
+CREATE TABLE t (id VARCHAR(36))
+INSERT INTO USERS (id)</code></pre></figure>
 <figure class="fig codeblock" id="cnames"><pre class="code-src" data-sketch><code class="language-c">#define MAX(a, b) ((a) > (b) ? (a) : (b))
 int n = MAX(x, BUF_SIZE);</code></pre></figure>
 """
@@ -948,6 +950,7 @@ def test_short_names_in_capitals_are_no_constants_in_go(browser):
     assert tk('#gonames .cl[data-n="3"]') == [["f", "Notify"], ["n", "SIGTERM"], ["n", "O_RDONLY"], ["n", "MAX_N"], ["n", "HTTP"]], \
         "four letters or an underscore still make a constant"
     assert tk('#gonames .cl[data-n="4"]') == [["f", "ID"]], "a conversion is written as a call"
+    assert tk('#gonames .cl[data-n="5"]') == [["n", "A_B"], ["n", "X_1"]], "a short name with an underscore is a constant; AB is not"
 
 
 @pytest.mark.slow
@@ -956,6 +959,8 @@ def test_a_name_in_capitals_right_before_a_bracket_is_a_function_in_real_code(br
     tk = lambda sel: pg.evaluate(f"({TOKENS})('{sel}')")
     assert tk('#sqlnames .cl[data-n="1"]') == [["k", "SELECT"], ["f", "COUNT"], ["k", "FROM"], ["k", "WHERE"], ["n", "MAX_ROWS"]]
     assert tk('#sqlnames .cl[data-n="2"]') == [["k", "CREATE"], ["k", "TABLE"], ["f", "t"], ["f", "VARCHAR"], ["n", "36"]]
+    assert tk('#sqlnames .cl[data-n="3"]') == [["k", "INSERT"], ["k", "INTO"], ["n", "USERS"]], \
+        "capitals with a space before the bracket are no function"
     assert tk('#cnames .cl[data-n="1"]') == [["f", "MAX"]]
     assert tk('#cnames .cl[data-n="2"]') == [["k", "int"], ["f", "MAX"], ["n", "BUF_SIZE"]]
 

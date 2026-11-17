@@ -21,10 +21,10 @@ Fixed:
 
 - Pseudocode: a line of prose got keyword colour on its small words (`add v
   to the set of visited nodes` had `to`, `set` and `of` in purple). `each`,
-  `in`, `of`, `to`, `by`, `from`, `step`, `and`, `or`, `not` and `is` are
-  now keywords only after another keyword on the line, and `let`, `set`,
-  `end`, `begin`, `loop`, `repeat`, `do` and `then` only as the first word
-  of a line (`do` and `then` also after a keyword).
+  `in`, `of`, `to`, `downto`, `by`, `from`, `step`, `and`, `or`, `not` and
+  `is` are now keywords only after another keyword on the line, and `let`,
+  `set`, `end`, `begin`, `loop`, `repeat`, `do` and `then` only as the
+  first word of a line (`do` and `then` also after a keyword).
 - Go: a short name in capitals (`ID`, `URL`, `DB`) showed orange as a
   constant. Go writes fields and types this way, so there a name in
   capitals is a constant only with four letters or more, or an underscore

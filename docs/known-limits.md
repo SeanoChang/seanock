@@ -2786,3 +2786,11 @@ test checks that on random lines in five languages.
 - **Go:** `EOF` and a three-letter constant such as `MAX` are plain, and a
   field named `HTTP` or `JSON` is orange. The rule knows the length of a
   name, not its role.
+- **A statement word after `then` or `else` stays plain** (a Nit of the
+  review of 509fcb4). `set`, `let`, `end` and the other words that open a
+  statement count only as the first word of a line. So
+  `if x > 0 then set y to 1` colours `if`, `then` and `to`, and leaves
+  `set` plain; `if done then end` leaves `end` plain.
+- **A hyphen between two names in capitals reads as one name** in
+  pseudocode (same review): in `z = LO-MAX(x)`, `LO` shows blue as a part
+  of the function name.
