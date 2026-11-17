@@ -2558,7 +2558,8 @@ script writes no rule outside that folder.
   of the `.gitignore` and the write of its two bytes, it leaves an empty
   `.gitignore`: both commands then end with exit 2 ("not a folder that
   frame made") until that file is deleted by hand (run 2026-11-17; the
-  kill itself was not run).
+  kill itself was not run). By the code, a write of those two bytes that
+  fails (a full disk) leaves the same state. Not run.
 - **Who owns the place is looked up before the folder is opened.** The
   two steps are not one: a folder that is swapped between them is opened
   with no link followed, and is then read as it is.
@@ -2576,6 +2577,30 @@ script writes no rule outside that folder.
   because the test disk refuses such a name.
 - **The first 20 missing paths are printed.** The line `missing-path-more`
   and the count in the last line have the rest.
+
+The adversary pass on the folder layout found the next five (2026-11-17).
+Each one was run again by hand, and each is the same in the script of
+0.8.0.
+
+- **Text that stands only in heading lines is not kept.** `frame` keeps
+  the last note as `prev.md` when a part of it holds text. A line that
+  starts with `## ` is read as the name of a part, not as text. So a note
+  whose only text is in such lines is replaced, and no copy is made.
+- **`stale-branch` compares the short name of the branch.** For a branch
+  `x` beside a tag `x`, git prints the short name `heads/x`, the same as
+  for a branch named `heads/x`. A note that was written on the one gives no
+  `stale-branch` line on the other. The commit is compared on its own
+  (`stale-head`).
+- **A fact block that is nested very deep ends both commands with exit 2**
+  and the line `handoff: error RecursionError: ...` (a value of 50,000 `[`
+  does it). Nothing is written and nothing is lost. `frame` works again
+  when the user moves that file away.
+- **With `core.splitIndex`, `check` changes the time stamp of
+  `.git/sharedindex.<id>`.** Git itself does that when it reads a split
+  index. The content of the file stays the same.
+- **A pipe that closes early gives a traceback** (`BrokenPipeError`) on
+  stderr and exit code 120, which is not one of the three. The skill text
+  says to run each command with no pipe.
 
 ### Not tested
 

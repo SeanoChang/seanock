@@ -128,7 +128,7 @@ def clean_text(text):
 
 def own_git_env():
     """The caller's GIT_ variables can point a call at another repo; none of them is handed on. A call of this
-    script also takes no lock that it does not need, so check changes no file, and it never fetches: in a partial
+    script also takes no lock that it does not need, so check writes no index back, and it never fetches: in a partial
     clone a fetch runs a program that the repo's config names."""
     env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
     env["GIT_OPTIONAL_LOCKS"] = "0"
