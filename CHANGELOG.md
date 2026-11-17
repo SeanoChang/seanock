@@ -6,6 +6,30 @@ the tag `vX.Y.Z`. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says how it moves. The newest
 entry is first.
 
+## 0.13.0 (2026-11-17)
+
+Changed:
+
+- `visual-artifacts`: a name in capitals right before `(` is a function and
+  shows blue, as other function names do: `BFS(G, s)`, `COUNT(*)`, a C
+  macro. In pseudocode the name may have hyphens, so each part of
+  `MERGE-SORT(A, p, r)` is blue. Capitals with no `(` stay orange (`NIL`,
+  `INFINITY`, `LW`). In 0.12.0 a procedure in capitals showed orange, as a
+  constant, and `READ(x)` was the example of that; it is blue now.
+
+Fixed:
+
+- Pseudocode: a line of prose got keyword colour on its small words (`add v
+  to the set of visited nodes` had `to`, `set` and `of` in purple). `each`,
+  `in`, `of`, `to`, `downto`, `by`, `from`, `step`, `and`, `or`, `not` and
+  `is` are now keywords only after another keyword on the line, and `let`,
+  `set`, `end`, `begin`, `loop`, `repeat`, `do` and `then` only as the
+  first word of a line (`do` and `then` also after a keyword).
+- Go: a short name in capitals (`ID`, `URL`, `DB`) showed orange as a
+  constant. Go writes fields and types this way, so there a name in
+  capitals is a constant only with four letters or more, or an underscore
+  (`SIGTERM`, `O_RDONLY`).
+
 ## 0.12.0 (2026-11-17)
 
 Changed:

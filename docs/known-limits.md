@@ -2767,3 +2767,30 @@ Nits from the review of 69138a5. None changes the text of the code.
   rules: `'…'` is not a string, and `//` or `#` starts a comment, so
   Python `n // 2` reads as a comment. Pass `lang` for real code.
 - **Pre-existing:** in sh, `${#arr[@]}` starts a comment at `#`.
+
+## 0.13.0: names in pseudocode and in Go
+
+By design, and what each rule costs. None changes the text of the code; a
+test checks that on random lines in five languages.
+
+- **Pseudocode keywords that are English words** count only where the line
+  reads as code. So `x = a and b` has a plain `and`, because no control
+  word stands before it. A line of prose that starts with `set`, `let`,
+  `end`, `do` or `then` ("set aside the first node"), or that holds a
+  control word ("continue to the next node of the list"), still gets
+  keyword colour.
+- **A name in capitals right before `(` is a function.** This replaces
+  one statement of the 0.12.0 section above: in SQL, `COUNT(*)` and
+  `VARCHAR(36)` now show blue, not orange. `LIKE`, `OFFSET` and `NULL`
+  still show orange. In pseudocode `O(n)` shows blue too.
+- **Go:** `EOF` and a three-letter constant such as `MAX` are plain, and a
+  field named `HTTP` or `JSON` is orange. The rule knows the length of a
+  name, not its role.
+- **A statement word after `then` or `else` stays plain** (a Nit of the
+  review of 509fcb4). `set`, `let`, `end` and the other words that open a
+  statement count only as the first word of a line. So
+  `if x > 0 then set y to 1` colours `if`, `then` and `to`, and leaves
+  `set` plain; `if done then end` leaves `end` plain.
+- **A hyphen between two names in capitals reads as one name** in
+  pseudocode (same review): in `z = LO-MAX(x)`, `LO` shows blue as a part
+  of the function name.
