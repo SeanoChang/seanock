@@ -2558,8 +2558,11 @@ script writes no rule outside that folder.
   of the `.gitignore` and the write of its two bytes, it leaves an empty
   `.gitignore`: both commands then end with exit 2 ("not a folder that
   frame made") until that file is deleted by hand (run 2026-11-17; the
-  kill itself was not run). By the code, a write of those two bytes that
-  fails (a full disk) leaves the same state. Not run.
+  kill itself was not run). A write of those two bytes that fails (a full
+  disk) leaves the same state, and the error line of that run names the
+  note, not the `.gitignore` (`cannot write .claude/handoff/note.md: No
+  space left on device`). Run with a write that was made to fail
+  (2026-11-17); no real full disk was used.
 - **Who owns the place is looked up before the folder is opened.** The
   two steps are not one: a folder that is swapped between them is opened
   with no link followed, and is then read as it is.
