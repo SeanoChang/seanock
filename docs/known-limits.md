@@ -2392,27 +2392,34 @@ script writes no rule outside that folder.
   place. A folder where the user wrote the same one-line `.gitignore` reads
   as a folder of `frame`: git did not see its files before, and `frame`
   adds its note beside them (run 2026-11-17).
-- **A `.claude` or a folder with a `.git` in it is another repo's.** A
-  `.git` there, as a folder or as a file, with any content, is exit 2 for
-  both commands: a clone, a work tree of another repo, a folder that only
-  has that name. Such a repo can bring a folder and a note that look like
-  `frame`'s own. The script looks for the name and does not ask git: a
-  first version asked git for the top of the repo from inside the folder,
-  and a repo in `.claude` whose settings name the outer tree as its work
-  tree (`core.worktree`) then read as the work tree's own (found in the
-  review of 2026-11-17; a test holds the case now). Who keeps `.claude` as
-  a repo of its own cannot use this skill there.
-- **What the script holds is about the git of this work tree.** That git
-  does not see the note, and nothing that it tracks is read or replaced.
-  For another repo the first half holds too: the folder ignores itself for
-  every repo. The second half does not. A git folder elsewhere that takes
-  `.claude` as its work tree leaves no sign inside `.claude`
-  (`core.worktree`, or `GIT_WORK_TREE` in another tool), and `frame` then
-  writes its note. A test holds this case: the other repo does not list
-  the note. When that other repo tracks a file at the note's path, and the
-  file starts as a note starts, `frame` moves and replaces it, and that
-  repo shows the change. Other ways to make one folder part of two repos
-  may exist; this list may not be whole.
+- **The place must belong to the repo of this work tree, and git says
+  which repo that is.** The script asks git for its git folder two times:
+  from the top of the work tree, and from inside `.claude` (from inside the
+  folder when it is there). Two answers that are not one folder are exit 2
+  for both commands. A repo is another repo by its git folder, so this
+  holds for each way in which git itself finds a repo there, and a test
+  holds each of these: a clone in `.claude`, with `.git` as a folder or as
+  a file; such a repo whose settings name the outer tree as its work tree
+  (`core.worktree`); a git folder that is `.claude` itself, bare or with
+  the outer tree as its work tree; and each of them at the folder. Such a
+  repo can bring a folder and a note that look like `frame`'s own. Two
+  earlier forms of this check each missed a case in review (2026-11-17):
+  one compared the top of the work tree, which the settings of the inner
+  repo can name freely, and one looked for the name `.git`, which a git
+  folder that is `.claude` itself does not have. A `.git` file that names
+  no git folder is exit 2 with git's error. An empty folder named `.git`
+  is no repo for git, and the commands work. Who keeps `.claude` as a repo
+  of its own cannot use this skill there.
+- **A repo that points at `.claude` from outside is not seen.** A git
+  folder elsewhere can take `.claude` as its work tree (`core.worktree`,
+  or `GIT_WORK_TREE` in another tool). Nothing inside `.claude` says so,
+  and git, asked from inside, finds the repo of the work tree. `frame`
+  then writes its note. A test holds this case: the other repo does not
+  list the note, because the folder ignores itself for every repo. When
+  that other repo tracks a file at the note's path, and the file starts as
+  a note starts, `frame` moves and replaces it, and that repo shows the
+  change. So what the script holds in full is about the git of this work
+  tree and about each repo that git finds from inside the place.
 - **One `frame` at a time works in `.claude/handoff/`.** A lock on that
   folder (`flock`) covers the look at the folder and at the old note, the
   move to the kept note and the write. Without it, two runs at one time
@@ -2534,8 +2541,8 @@ script writes no rule outside that folder.
 - **A note carries no approval, and that is text only.** No code stops a
   session that acts on a next action without the user's yes. Some ways in
   are closed by code: `check` does not read a note in a folder where git
-  tracks a file, a note behind a link, or a note in a `.claude` that is a
-  repo of its own or that git tracks as one entry (exit 2). A note that
+  tracks a file, a note behind a link, or a note in a `.claude` that
+  belongs to another repo or that git tracks as one entry (exit 2). A note that
   reaches the work tree another way, such as an unpacked archive that holds
   the folder with its `.gitignore`, is read like any other.
 

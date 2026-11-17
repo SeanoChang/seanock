@@ -41,8 +41,9 @@ these is exit 2, for frame and for check:
   - git tracks .claude/handoff or a file in it, also under a name that
     differs only in letter case (the same place on a disk that does not keep
     case apart), or git tracks .claude as one entry (a link, a submodule);
-  - .claude or the folder holds a .git of its own, as a folder or as a file:
-    it is the top of another repo, and a note there is a file of that repo;
+  - from inside .claude or the folder, git finds another git folder than
+    from the top of the work tree: the place belongs to another repo (a
+    clone in .claude, a git folder that is .claude itself, and the like);
   - .claude, the folder, its .gitignore, the note or the kept note is a link;
   - the folder holds files and its .gitignore is not the one line `*`: it is
     a folder of the user, and a .gitignore there would hide those files.
@@ -184,6 +185,12 @@ def read_facts(top):
     return Facts(branch=branch, head=head, dirty=len(entries), changed=listed, more=len(entries) - len(listed))
 
 
+def git_folder(folder):
+    """The git folder of the repo that git finds from this folder."""
+    _, out = git(folder, "rev-parse", "--absolute-git-dir")
+    return one_path(out)
+
+
 def fold(name):
     """A name as a disk reads it that does not keep letter case apart: `HANDOFF` is the folder's own name there,
     and so is the name with the one character for `ff` (U+FB00)."""
@@ -193,19 +200,32 @@ def fold(name):
 def refuse_another_owner(top):
     """The folder must be this work tree's own. What git tracks there came with the repo, under its own name or
     under one that is the same place on some disk, and so did each file of a `.claude` that git tracks as one
-    entry (a link, a submodule). A `.claude` or a folder with a `.git` in it is the top of another repo, whatever
-    the settings of that repo say about its work tree. No session of this work tree wrote a note there: check
-    does not read it, and frame does not write there."""
+    entry (a link, a submodule). And the place belongs to another repo when git, asked from inside it, finds
+    another git folder than the one of this work tree: that is what makes a repo another repo, whatever its
+    settings say about its work tree. No session of this work tree wrote a note there: check does not read it,
+    and frame does not write there."""
     place = fold(PLACE)
     _, out = git(top, "ls-files", "-z", "--", f":(top,icase){FOLDER}")
     for name in out.decode("utf-8", "surrogateescape").split("\0"):
         if fold(name) in (fold(FOLDER), place) or fold(name).startswith(place + "/"):
             raise Failed(f"git tracks {name} in this repo: a note at that place came with the repo, and this script "
                          "neither reads nor replaces it")
+    inner = None
     for rel in (FOLDER, PLACE):
-        if os.path.lexists(top / rel / ".git"):
-            raise Failed(f"{rel} is a repo of its own: a note there is a file of that repo, and this script neither "
-                         "reads nor writes it")
+        try:
+            if not stat.S_ISDIR(os.lstat(top / rel).st_mode):
+                break           # git is never started behind a link; the open of the folder ends on it
+        except OSError:
+            break
+        inner = rel
+    if inner is not None:
+        try:
+            same = os.path.samefile(git_folder(top), git_folder(top / inner))
+        except OSError as exc:
+            raise Failed(f"cannot tell which repo {inner} belongs to: {exc.strerror}")
+        if not same:
+            raise Failed(f"{inner} belongs to another repo than this work tree: a note there is a file of that "
+                         "repo, and this script neither reads nor writes it")
 
 
 # ── the folder ───────────────────────────────────────────────────────────────

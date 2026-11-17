@@ -584,9 +584,9 @@ def clone_into(repo, tmp_path, target, *options):
 
 @pytest.mark.parametrize("git_folder", ["a folder", "a file"])
 def test_a_claude_folder_that_is_a_repo_of_its_own_holds_no_note(repo, tmp_path, git_folder):
-    """A `.claude` that was cloned from elsewhere can bring a folder and a note that look like frame's own. It
-    has a `.git`, as a folder or as a file that names one, and the script stops: the note is a file of the other
-    repo."""
+    """A `.claude` that was cloned from elsewhere can bring a folder and a note that look like frame's own. Git
+    finds the git folder of that clone from inside it, through a `.git` that is a folder or a file that names
+    one, and the script stops: the note is a file of the other repo."""
     options = [] if git_folder == "a folder" else ["--separate-git-dir", str(tmp_path / "kept-apart.git")]
     clone_into(repo, tmp_path, repo.root / ".claude", *options)
     assert (repo.root / ".claude" / ".git").is_dir() is (git_folder == "a folder")
@@ -596,59 +596,108 @@ def test_a_claude_folder_that_is_a_repo_of_its_own_holds_no_note(repo, tmp_path,
     for command in ("frame", "check"):
         code, lines = repo.run(command)
         assert code == 2 and len(lines) == 1, (command, lines)
-        assert lines[0].startswith("handoff: error .claude is a repo of its own"), lines
+        assert lines[0].startswith(f"handoff: error {PLACE} belongs to another repo than this work tree"), lines
     after = {str(path.relative_to(repo.root)): path.read_bytes() for path in sorted((repo.root / ".claude").rglob("*"))
              if path.is_file() and ".git/" not in str(path.relative_to(repo.root)) + "/"}
     assert after == before and repo.exclude() == exclude
 
 
+OTHER_REPO = "belongs to another repo than this work tree"
+
+
+def inner_git(repo, folder, *args, git_dir=None):
+    """One git call for a repo inside the work tree, named by its folder or by its git folder."""
+    where = ["--git-dir", str(git_dir)] if git_dir else ["-C", str(folder)]
+    return subprocess.run(["git", *where, *args], check=True, env=repo.env, capture_output=True, text=True, timeout=60)
+
+
+def name_who_commits(repo, folder, git_dir=None):
+    inner_git(repo, folder, "config", "user.email", "t@example.invalid", git_dir=git_dir)
+    inner_git(repo, folder, "config", "user.name", "t", git_dir=git_dir)
+
+
 def test_a_claude_folder_that_is_a_repo_of_its_own_stops_both_commands_before_any_folder_is_made(repo, tmp_path):
-    subprocess.run(["git", "init", "-q", str(repo.root / ".claude")], check=True, env=repo.env, capture_output=True)
+    inner_git(repo, repo.root, "init", "-q", str(repo.root / ".claude"))
     for command in ("frame", "check"):
         code, lines = repo.run(command)
-        assert code == 2 and len(lines) == 1 and lines[0].startswith("handoff: error .claude is a repo of its own"), lines
+        assert code == 2 and len(lines) == 1 and lines[0].startswith(f"handoff: error .claude {OTHER_REPO}"), lines
     assert os.listdir(repo.root / ".claude") == [".git"]
 
 
 @pytest.mark.parametrize("where", [".claude", PLACE])
-@pytest.mark.parametrize("kind", ["a repo", "an empty folder", "a file that names no git folder"])
-def test_a_git_entry_in_the_claude_folder_or_in_the_place_stops_both_commands(repo, where, kind):
-    """The script looks for the name. It does not ask what is behind it: what git makes of a `.git` depends on
-    the settings in it."""
+def test_a_repo_at_the_claude_folder_or_at_the_place_stops_both_commands(repo, where):
     repo.framed()
     note = repo.note.read_bytes()
-    if kind == "a repo":
-        subprocess.run(["git", "init", "-q", str(repo.root / where)], check=True, env=repo.env, capture_output=True)
-    elif kind == "an empty folder":
-        (repo.root / where / ".git").mkdir()
-    else:
-        (repo.root / where / ".git").write_text("not the name of a git folder\n")
+    inner_git(repo, repo.root, "init", "-q", str(repo.root / where))
     for command in ("frame", "check"):
         code, lines = repo.run(command)
-        assert code == 2 and len(lines) == 1, (command, lines)
-        assert lines[0].startswith(f"handoff: error {where} is a repo of its own"), (command, lines)
+        assert code == 2 and len(lines) == 1 and lines[0].startswith(f"handoff: error {PLACE} {OTHER_REPO}"), lines
     assert repo.note.read_bytes() == note and not (repo.root / PREV).exists()
 
 
+@pytest.mark.parametrize("where", [".claude", PLACE])
+def test_a_git_entry_that_is_no_repo_is_read_as_git_reads_it(repo, where):
+    """Git decides what a repo is. A file named `.git` that names no git folder is an error of git, and so of
+    both commands. An empty folder with that name is no repo for git, and the commands work."""
+    repo.framed()
+    note = repo.note.read_bytes()
+    (repo.root / where / ".git").write_text("not the name of a git folder\n")
+    for command in ("frame", "check"):
+        code, lines = repo.run(command)
+        assert code == 2 and len(lines) == 1 and lines[0].startswith("handoff: error git rev-parse failed"), lines
+    assert repo.note.read_bytes() == note and not (repo.root / PREV).exists()
+    (repo.root / where / ".git").unlink()
+    (repo.root / where / ".git").mkdir()
+    assert repo.run("check") == (0, ["handoff: ok"])
+    assert repo.run("frame")[0] == 0
+
+
 def test_a_repo_in_the_claude_folder_that_names_the_outer_tree_as_its_work_tree_is_another_repo_too(repo):
-    """Found in review. Asked from inside `.claude`, git then names the outer tree as the top, the same one as for
-    the work tree itself. The inner repo can track a note at the note's path, and frame moved and replaced it."""
+    """Found in review. Asked from inside `.claude` for the top of the tree, git names the outer tree, the same
+    one as for the work tree itself. The inner repo can track a note at the note's path, and frame moved and
+    replaced it. Its git folder is another one, and that is what the script asks for."""
     inner = repo.root / ".claude"
-    subprocess.run(["git", "init", "-q", str(inner)], check=True, env=repo.env, capture_output=True)
-    for args in (["config", "core.worktree", str(repo.root)], ["config", "user.email", "t@example.invalid"],
-                 ["config", "user.name", "t"]):
-        git_in(inner, repo.env, *args)
+    inner_git(repo, repo.root, "init", "-q", str(inner))
+    inner_git(repo, inner, "config", "core.worktree", str(repo.root))
+    name_who_commits(repo, inner)
     repo.make_place()
     theirs = "---\ntype: handoff\nthe note of the team, kept in the inner repo\n"
     repo.note.write_text(theirs)
-    git_in(inner, repo.env, "add", "-f", "handoff/note.md")
-    git_in(inner, repo.env, "commit", "-q", "-m", "a note that the inner repo tracks")
-    top = git_in(inner, repo.env, "rev-parse", "--show-toplevel").stdout.decode().strip()
+    inner_git(repo, inner, "add", "-f", "handoff/note.md")
+    inner_git(repo, inner, "commit", "-q", "-m", "a note that the inner repo tracks")
+    top = inner_git(repo, inner, "rev-parse", "--show-toplevel").stdout.strip()
     assert os.path.samefile(top, repo.root), "the control: git names the outer tree from inside .claude"
     for command in ("frame", "check"):
         code, lines = repo.run(command)
-        assert code == 2 and len(lines) == 1 and lines[0].startswith("handoff: error .claude is a repo of its own"), lines
+        assert code == 2 and len(lines) == 1 and lines[0].startswith(f"handoff: error {PLACE} {OTHER_REPO}"), lines
     assert repo.note.read_text() == theirs and sorted(os.listdir(repo.place)) == [".gitignore", "note.md"]
+
+
+@pytest.mark.parametrize("work_tree", ["none", "the outer tree"])
+def test_a_git_folder_that_is_the_claude_folder_itself_is_another_repo_too(repo, work_tree):
+    """Found in review. Such a repo has no entry named `.git`: its git folder is `.claude`. With the outer tree
+    as its work tree it can track a note at the note's path, and frame moved and replaced it. With no work tree,
+    frame made the note's folder inside the git folder."""
+    inner = repo.root / ".claude"
+    inner_git(repo, repo.root, "init", "-q", "--bare", str(inner))
+    theirs = None
+    if work_tree == "the outer tree":
+        inner_git(repo, inner, "config", "core.bare", "false", git_dir=inner)
+        inner_git(repo, inner, "config", "core.worktree", str(repo.root), git_dir=inner)
+        name_who_commits(repo, inner, git_dir=inner)
+        repo.make_place()
+        theirs = "---\ntype: handoff\nthe note of the team, kept in the inner repo\n"
+        repo.note.write_text(theirs)
+        for args in (["add", "-f", NOTE], ["commit", "-q", "-m", "a note that the inner repo tracks"]):
+            subprocess.run(["git", "--git-dir", str(inner), *args], check=True, env=repo.env, capture_output=True,
+                           cwd=repo.root)
+    before = sorted(os.listdir(inner))
+    for command in ("frame", "check"):
+        code, lines = repo.run(command)
+        assert code == 2 and len(lines) == 1 and OTHER_REPO in lines[0], (command, lines)
+    assert sorted(os.listdir(inner)) == before
+    if theirs is not None:
+        assert repo.note.read_text() == theirs and sorted(os.listdir(repo.place)) == [".gitignore", "note.md"]
 
 
 def test_a_claude_folder_that_is_the_work_tree_of_a_git_folder_elsewhere_is_not_seen(repo, tmp_path):
