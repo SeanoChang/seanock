@@ -625,6 +625,29 @@
     pseudocode: 'pseudo', algo: 'pseudo', algorithm: 'pseudo' };
   const LINE_C = { go: '//', js: '//', rs: '//', c: '//', py: '#', sh: '#', yaml: '#', lua: '--', sql: '--', pseudo: '//|#|▷' }; // | separates markers
   const LITS = new Set('true false nil null None True False undefined'.split(' '));
+  // Pseudocode is half prose, and some of its keywords are English words. P_START words are keywords only as the first
+  // word of a line (set x to 5, end while). P_WEAK words are keywords only after another keyword on the line
+  // (for i = 1 to n, while Q is not empty). Any other keyword of the list counts wherever it stands.
+  const P_START = new Set('let set end begin loop repeat do then'.split(' '));
+  const P_WEAK = new Set('each in of to downto by from step and or not is do then'.split(' '));
+  const CAPS = /^[A-Z][A-Z0-9_]+$/;
+  const CAPS_MIN = { go: 4 }; // Go writes ID, URL and DB for fields and types: there, capitals need this length or an underscore
+  /** The colour class of one word ('k', 'f', 'n' or '' for plain). rest is the line after the word; line counts the words and keywords so far. */
+  function wordKind(w, rest, syn, line) {
+    const first = !line.words++, pseudo = syn.lang === 'pseudo';
+    const low = syn.ci ? w.toLowerCase() : w;
+    if (syn.kw.has(low)) {
+      const weak = pseudo && P_WEAK.has(low), start = pseudo && P_START.has(low);
+      if ((!weak && !start) || (weak && line.hit) || (start && first)) { line.hit = true; return 'k'; }
+    }
+    if (CAPS.test(w)) {
+      // capitals right before ( are a procedure or a macro (BFS(G, s), COUNT(*)); in pseudocode a name may have hyphens (MERGE-SORT(A))
+      if (pseudo ? /^(?:-[A-Z][A-Z0-9_]*)*\(/.test(rest) : rest[0] === '(') return 'f';
+      return w.length < (CAPS_MIN[syn.lang] || 0) && !w.includes('_') ? '' : 'n'; // a constant or an operation (MAX_N, READ, LW); one capital is a variable
+    }
+    // a name before ( is a function, defined or called; pseudocode needs the ( right after the name, as "holding v (clean)" is prose
+    return (pseudo ? /^\(/ : /^\s*\(/).test(rest) ? 'f' : '';
+  }
   const synOf = {};
   function syntax(lang) {
     lang = LANG[lang] || lang;
@@ -641,7 +664,8 @@
   /** One line as HTML with .tk-k/.tk-f/.tk-s/.tk-n/.tk-c spans. st.block carries an open block comment to the next line. */
   function paint(t, syn, st) {
     if (!syn) return esc(t);
-    const tk = (k, x) => `<span class="tk-${k}">${esc(x)}</span>`;
+    const tk = (k, x) => (k ? `<span class="tk-${k}">${esc(x)}</span>` : esc(x));
+    const line = { words: 0, hit: false };
     let out = '', i = 0;
     if (st.block) {
       const e = t.indexOf('*/');
@@ -664,10 +688,7 @@
       }
       else if (g.s) out += tk('s', m[0]);
       else if (g.n || LITS.has(m[0])) out += tk('n', m[0]);
-      else if (syn.kw.has(syn.ci ? m[0].toLowerCase() : m[0])) out += tk('k', m[0]);
-      else if (/^[A-Z][A-Z0-9_]+$/.test(m[0])) out += tk('n', m[0]); // a constant or an operation (MAX_N, READ, LW); one capital is a variable
-      else if ((syn.lang === 'pseudo' ? /^\(/ : /^\s*\(/).test(t.slice(i))) out += tk('f', m[0]); // a name before ( is a function, defined or called; pseudocode needs the ( right after the name, as "holding v (clean)" is prose
-      else out += esc(m[0]);
+      else out += tk(wordKind(m[0], t.slice(i), syn, line), m[0]);
     }
     return out + esc(t.slice(i));
   }

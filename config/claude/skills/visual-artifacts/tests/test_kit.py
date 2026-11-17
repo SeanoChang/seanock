@@ -1,6 +1,8 @@
 """Behaviour tests for assets/kit.js and assets/claude.css, run in real headless Chromium."""
 
+import html
 import pathlib
+import random
 
 import pytest
 
@@ -868,8 +870,8 @@ def test_pseudocode_is_coloured_and_its_text_stays_the_same(browser):
     assert pg.errors == []
     tk = lambda sel: pg.evaluate(f"({TOKENS})('{sel}')")
     assert tk('#ps .cl[data-n="1"]') == [["k", "for"], ["k", "each"], ["k", "of"]]
-    assert tk('#ps .cl[data-n="2"]') == [["k", "if"], ["n", "READ"], ["f", "allocate"], ["n", "LW"], ["c", "// load it"]], \
-        "an all-caps operation is a constant even before (; a single capital is a variable"
+    assert tk('#ps .cl[data-n="2"]') == [["k", "if"], ["f", "READ"], ["f", "allocate"], ["n", "LW"], ["c", "// load it"]], \
+        "a name in capitals right before ( is a function; with no ( it is a constant or an operation"
     assert tk('#ps .cl[data-n="3"]') == [["f", "ensure"]]
     assert tk('#ps .cl[data-n="4"]') == [["k", "IF"], ["k", "is"], ["k", "in"], ["k", "return"]], "pseudocode keywords match in any case"
     assert tk('#ps .cl[data-n="5"]') == [["c", "# don't split \"a\" A 12"]]
@@ -878,6 +880,102 @@ def test_pseudocode_is_coloured_and_its_text_stays_the_same(browser):
     assert tk('#ps .cl[data-n="8"]') == [], "in pseudocode a name and a ( with a space between is prose, not a call"
     text = "sel => [...document.querySelectorAll(sel + ' .cl-t')].map(e => e.textContent).join('\\n')"
     assert pg.evaluate(f"({text})('#ps')").split("\n")[1] == "    if READ(x): r = allocate(x); emit LW r // load it"
+
+
+NAMES = """
+<figure class="fig codeblock" id="clrs"><pre class="code-src" data-sketch><code class="language-pseudo">MERGE-SORT(A, p, r)
+    BFS(G, s); x = NIL; d[v] = INFINITY
+add v to the set of visited nodes
+at the end of the list, do nothing
+for i = 1 to n step 2 do
+set x to 5
+while Q is not empty and x in S do
+end while
+x = a and b
+1. let total = 0
+then return x
+emit LW r, HI-LO
+the set S holds each node of G</code></pre></figure>
+<figure class="fig codeblock" id="gonames"><pre class="code-src" data-sketch><code class="language-go">u.ID = r.URL.Path
+if err == io.EOF { db := DB }
+signal.Notify(c, syscall.SIGTERM, os.O_RDONLY, MAX_N, HTTP)
+id := ID(raw)</code></pre></figure>
+<figure class="fig codeblock" id="sqlnames"><pre class="code-src" data-sketch><code class="language-sql">SELECT COUNT(*), name FROM t WHERE n > MAX_ROWS
+CREATE TABLE t (id VARCHAR(36))</code></pre></figure>
+<figure class="fig codeblock" id="cnames"><pre class="code-src" data-sketch><code class="language-c">#define MAX(a, b) ((a) > (b) ? (a) : (b))
+int n = MAX(x, BUF_SIZE);</code></pre></figure>
+"""
+
+
+@pytest.mark.slow
+def test_a_procedure_in_capitals_is_a_function_in_pseudocode(browser):
+    """Course pseudocode writes procedure names in capitals (MERGE-SORT, BFS). They showed orange, as constants."""
+    pg = load(browser, NAMES, script="Kit.init();")
+    assert pg.errors == []
+    tk = lambda sel: pg.evaluate(f"({TOKENS})('{sel}')")
+    assert tk('#clrs .cl[data-n="1"]') == [["f", "MERGE"], ["f", "SORT"]], "each part of a name with hyphens, when ( follows the last part"
+    assert tk('#clrs .cl[data-n="2"]') == [["f", "BFS"], ["n", "NIL"], ["n", "INFINITY"]], "capitals with no ( stay a constant"
+    assert tk('#clrs .cl[data-n="12"]') == [["n", "LW"], ["n", "HI"], ["n", "LO"]], "a name with hyphens and no ( is no function"
+    text = "sel => [...document.querySelectorAll(sel + ' .cl-t')].map(e => e.textContent).join('\\n')"
+    assert pg.evaluate(f"({text})('#clrs')").split("\n")[0] == "MERGE-SORT(A, p, r)"
+
+
+@pytest.mark.slow
+def test_a_line_of_prose_in_pseudocode_gets_no_keyword_colour(browser):
+    """`to`, `of`, `set`, `in` and `is` are English too. They count as keywords only where the line reads as code:
+    after a control word, or (`set`, `let`, `end`, `do`, `then`, ...) as the first word of the line."""
+    pg = load(browser, NAMES, script="Kit.init();")
+    tk = lambda sel: pg.evaluate(f"({TOKENS})('{sel}')")
+    assert tk('#clrs .cl[data-n="3"]') == [], "add v to the set of visited nodes"
+    assert tk('#clrs .cl[data-n="4"]') == [], "at the end of the list, do nothing"
+    assert tk('#clrs .cl[data-n="13"]') == [], "the set S holds each node of G"
+    assert tk('#clrs .cl[data-n="5"]') == [["k", "for"], ["n", "1"], ["k", "to"], ["k", "step"], ["n", "2"], ["k", "do"]]
+    assert tk('#clrs .cl[data-n="6"]') == [["k", "set"], ["k", "to"], ["n", "5"]], "set and let open a statement"
+    assert tk('#clrs .cl[data-n="7"]') == [["k", "while"], ["k", "is"], ["k", "not"], ["k", "and"], ["k", "in"], ["k", "do"]]
+    assert tk('#clrs .cl[data-n="8"]') == [["k", "end"], ["k", "while"]]
+    assert tk('#clrs .cl[data-n="9"]') == [], "with no control word on the line, `and` stays plain"
+    assert tk('#clrs .cl[data-n="10"]') == [["n", "1."], ["k", "let"], ["n", "0"]], "a line number does not count as the first word"
+    assert tk('#clrs .cl[data-n="11"]') == [["k", "then"], ["k", "return"]]
+
+
+@pytest.mark.slow
+def test_short_names_in_capitals_are_no_constants_in_go(browser):
+    """Go writes `ID`, `URL` and `DB` for fields and types, and its own constants in mixed case."""
+    pg = load(browser, NAMES, script="Kit.init();")
+    tk = lambda sel: pg.evaluate(f"({TOKENS})('{sel}')")
+    assert tk('#gonames .cl[data-n="1"]') == []
+    assert tk('#gonames .cl[data-n="2"]') == [["k", "if"]]
+    assert tk('#gonames .cl[data-n="3"]') == [["f", "Notify"], ["n", "SIGTERM"], ["n", "O_RDONLY"], ["n", "MAX_N"], ["n", "HTTP"]], \
+        "four letters or an underscore still make a constant"
+    assert tk('#gonames .cl[data-n="4"]') == [["f", "ID"]], "a conversion is written as a call"
+
+
+@pytest.mark.slow
+def test_a_name_in_capitals_right_before_a_bracket_is_a_function_in_real_code(browser):
+    pg = load(browser, NAMES, script="Kit.init();")
+    tk = lambda sel: pg.evaluate(f"({TOKENS})('{sel}')")
+    assert tk('#sqlnames .cl[data-n="1"]') == [["k", "SELECT"], ["f", "COUNT"], ["k", "FROM"], ["k", "WHERE"], ["n", "MAX_ROWS"]]
+    assert tk('#sqlnames .cl[data-n="2"]') == [["k", "CREATE"], ["k", "TABLE"], ["f", "t"], ["f", "VARCHAR"], ["n", "36"]]
+    assert tk('#cnames .cl[data-n="1"]') == [["f", "MAX"]]
+    assert tk('#cnames .cl[data-n="2"]') == [["k", "int"], ["f", "MAX"], ["n", "BUF_SIZE"]]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("lang", ["pseudo", "go", "sql", "py", "sh"])
+def test_colour_never_changes_the_text_of_random_code(browser, lang):
+    """A property: whatever the painter does with a line, the reader gets the letters that were written."""
+    rng = random.Random(20261117)
+    parts = ["MERGE", "-", "SORT", "(", ")", " ", "  ", "to", "set", "of", "in", "IF", "if", "for", "each", "end", "do", "then", "ID", "URL",
+             "MAX_N", "x", "A", ".", "=", "1.", "12", '"', "'", "//", "#", "▷", "/*", "*/", "`", "$", "{", "}", "<", "&", ">", "don't",
+             "return", "\\", "é", "\t", ":", ",", "[", "]", "func", "def", "select", "COUNT"]
+    lines = ["".join(rng.choice(parts) for _ in range(rng.randint(0, 9))) for _ in range(300)]
+    body = f'<figure class="fig codeblock" id="r"><pre class="code-src" data-sketch><code class="language-{lang}">{html.escape(chr(10).join(lines))}</code></pre></figure>'
+    pg = load(browser, body, script="Kit.init();")
+    assert pg.errors == []
+    shown = pg.evaluate("[...document.querySelectorAll('#r .cl-t')].map(e => e.textContent)")
+    while lines and lines[-1] == "":
+        lines.pop()                                    # the figure drops empty lines at the end of the block
+    assert shown == lines
 
 
 COLOURS = """['k', 'f', 's', 'n', 'c', 'plain'].map(k => {
@@ -901,7 +999,7 @@ def test_trace_colours_pseudocode_when_no_language_is_given(browser):
       Kit.trace(Kit.$('#u'), { lang: 'text', code: 'if READ(x): r = allocate(x)', steps: [{ line: 1 }] });""")
     assert pg.errors == []
     tk = lambda sel: pg.evaluate(f"({TOKENS})('{sel}')")
-    assert tk("#t .cl") == [["k", "if"], ["n", "READ"], ["f", "allocate"]]
+    assert tk("#t .cl") == [["k", "if"], ["f", "READ"], ["f", "allocate"]]
     assert tk("#u .cl") == [], "lang: 'text' keeps the code plain"
 
 
