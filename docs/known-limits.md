@@ -2393,23 +2393,25 @@ script writes no rule outside that folder.
   as a folder of `frame`: git did not see its files before, and `frame`
   adds its note beside them (run 2026-11-17).
 - **The place must belong to the repo of this work tree, and git says
-  which repo that is.** The script asks git for its git folder two times:
-  from the top of the work tree, and from inside `.claude` (from inside the
-  folder when it is there). Two answers that are not one folder are exit 2
-  for both commands. A repo is another repo by its git folder, so this
-  holds for each way in which git itself finds a repo there, and a test
-  holds each of these: a clone in `.claude`, with `.git` as a folder or as
-  a file; such a repo whose settings name the outer tree as its work tree
-  (`core.worktree`); a git folder that is `.claude` itself, bare or with
-  the outer tree as its work tree; and each of them at the folder. Such a
-  repo can bring a folder and a note that look like `frame`'s own. Two
-  earlier forms of this check each missed a case in review (2026-11-17):
-  one compared the top of the work tree, which the settings of the inner
-  repo can name freely, and one looked for the name `.git`, which a git
-  folder that is `.claude` itself does not have. A `.git` file that names
-  no git folder is exit 2 with git's error. An empty folder named `.git`
-  is no repo for git, and the commands work. Who keeps `.claude` as a repo
-  of its own cannot use this skill there.
+  which repo that is.** The script asks git two things from inside
+  `.claude` (from inside the folder when it is there): its git folder, and
+  the top of its work tree. Both must be the ones that git names from the
+  top of the work tree, or both commands end with exit 2. With both the
+  same, a git call from inside the place is the same call as from the top.
+  A test holds each of these forms, at `.claude` and at the folder: a repo
+  made there; a bare git folder there; a repo there whose settings name
+  the outer tree as its work tree (`core.worktree`); a `.git` file there
+  that names another repo; and a `.git` file there that names the outer
+  repo's own git folder. Such a repo can bring a folder and a note that
+  look like `frame`'s own. Three earlier forms of this check each compared
+  one sign, and each missed a case in review (2026-11-17): the top alone
+  (the settings of an inner repo can name the outer tree), the name `.git`
+  alone (a git folder that is `.claude` itself has none), and the git
+  folder alone (a `.git` file can name the outer one, with `.claude` as
+  another top). A `.git` file that names no git folder is exit 2 with
+  git's error. An empty folder named `.git` is no repo for git, and the
+  commands work. Who keeps `.claude` as a repo of its own cannot use this
+  skill there.
 - **A repo that points at `.claude` from outside is not seen.** A git
   folder elsewhere can take `.claude` as its work tree (`core.worktree`,
   or `GIT_WORK_TREE` in another tool). Nothing inside `.claude` says so,
@@ -2586,6 +2588,11 @@ script writes no rule outside that folder.
 - `git clean -x`. By git's own text it deletes ignored files, so it would
   delete the note. The guard of this harness denies that command, and no
   test runs it.
+- A `.claude` on another file system than the work tree (a mount point)
+  has no test. Git's search for a repo stops at the edge of a file system,
+  so both commands end with exit 2 and git's error line. Run by hand one
+  time, with a disk image mounted at `.claude` (2026-11-17).
+- A `.claude` that another user of the machine owns (`safe.directory`).
 - A sparse checkout.
 - A disk with no `flock` (some network disks). By the code, `frame` ends
   there with exit 2 and writes no note.

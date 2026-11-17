@@ -41,9 +41,9 @@ these is exit 2, for frame and for check:
   - git tracks .claude/handoff or a file in it, also under a name that
     differs only in letter case (the same place on a disk that does not keep
     case apart), or git tracks .claude as one entry (a link, a submodule);
-  - from inside .claude or the folder, git finds another git folder than
-    from the top of the work tree: the place belongs to another repo (a
-    clone in .claude, a git folder that is .claude itself, and the like);
+  - from inside .claude or the folder, git finds another repo than from the
+    top of the work tree, by its git folder or by the top of its work tree
+    (a clone in .claude, a git folder that is .claude itself, and the like);
   - .claude, the folder, its .gitignore, the note or the kept note is a link;
   - the folder holds files and its .gitignore is not the one line `*`: it is
     a folder of the user, and a .gitignore there would hide those files.
@@ -200,10 +200,12 @@ def fold(name):
 def refuse_another_owner(top):
     """The folder must be this work tree's own. What git tracks there came with the repo, under its own name or
     under one that is the same place on some disk, and so did each file of a `.claude` that git tracks as one
-    entry (a link, a submodule). And the place belongs to another repo when git, asked from inside it, finds
-    another git folder than the one of this work tree: that is what makes a repo another repo, whatever its
-    settings say about its work tree. No session of this work tree wrote a note there: check does not read it,
-    and frame does not write there."""
+    entry (a link, a submodule). And the place belongs to another repo when git, asked from inside it, names
+    another git folder or another top of the work tree than it names from the top. Both must agree: each of the
+    two alone can be made to look right by a setting or a `.git` file of the inner repo. With both the same, a
+    git call from inside the place is the same call as from the top, so the look at what git tracks, above, has
+    seen every tracked file. No session of this work tree wrote a note in another repo's place: check does not
+    read it, and frame does not write there."""
     place = fold(PLACE)
     _, out = git(top, "ls-files", "-z", "--", f":(top,icase){FOLDER}")
     for name in out.decode("utf-8", "surrogateescape").split("\0"):
@@ -220,7 +222,8 @@ def refuse_another_owner(top):
         inner = rel
     if inner is not None:
         try:
-            same = os.path.samefile(git_folder(top), git_folder(top / inner))
+            same = os.path.samefile(git_folder(top), git_folder(top / inner)) \
+                and os.path.samefile(top, find_top(top / inner))
         except OSError as exc:
             raise Failed(f"cannot tell which repo {inner} belongs to: {exc.strerror}")
         if not same:

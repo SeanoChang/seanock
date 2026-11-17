@@ -624,15 +624,70 @@ def test_a_claude_folder_that_is_a_repo_of_its_own_stops_both_commands_before_an
     assert os.listdir(repo.root / ".claude") == [".git"]
 
 
+FORMS = ["a repo", "a bare git folder", "a repo that names the outer tree as its work tree",
+         "a .git file that names another repo", "a .git file that names the git folder of the outer repo"]
+
+
 @pytest.mark.parametrize("where", [".claude", PLACE])
-def test_a_repo_at_the_claude_folder_or_at_the_place_stops_both_commands(repo, where):
+@pytest.mark.parametrize("form", FORMS)
+def test_each_form_of_another_repo_at_the_claude_folder_or_at_the_place_stops_both_commands(repo, tmp_path, where, form):
+    """Git names a repo by two things, its git folder and the top of its work tree. Each form here differs from
+    the work tree's own repo in one of the two, and three earlier forms of the check each let one of them
+    through. The last form has the outer repo's own git folder and `.claude` (or the folder) as its top."""
     repo.framed()
     note = repo.note.read_bytes()
-    inner_git(repo, repo.root, "init", "-q", str(repo.root / where))
+    there = repo.root / where
+    if form == "a repo":
+        inner_git(repo, repo.root, "init", "-q", str(there))
+    elif form == "a bare git folder":
+        inner_git(repo, repo.root, "init", "-q", "--bare", str(there))
+    elif form == "a repo that names the outer tree as its work tree":
+        inner_git(repo, repo.root, "init", "-q", str(there))
+        inner_git(repo, there, "config", "core.worktree", str(repo.root))
+    elif form == "a .git file that names another repo":
+        other = Repo(tmp_path, "another")
+        (there / ".git").write_text(f"gitdir: {other.root / '.git'}\n")
+    else:
+        (there / ".git").write_text(f"gitdir: {repo.root / '.git'}\n")
     for command in ("frame", "check"):
         code, lines = repo.run(command)
-        assert code == 2 and len(lines) == 1 and lines[0].startswith(f"handoff: error {PLACE} {OTHER_REPO}"), lines
+        assert code == 2 and len(lines) == 1 and lines[0].startswith(f"handoff: error {PLACE} {OTHER_REPO}"), (command, lines)
     assert repo.note.read_bytes() == note and not (repo.root / PREV).exists()
+
+
+def test_a_git_file_that_names_the_outer_git_folder_does_not_get_a_tracked_note_replaced(repo):
+    """Found in review. From inside `.claude` git then has the outer repo's git folder and `.claude` as the top.
+    A note that is added from there is in the index of the outer repo under a path that the look at the tracked
+    names of `.claude` does not list, and frame moved and replaced it."""
+    repo.make_place()
+    theirs = "---\ntype: handoff\na note that was added from inside .claude\n"
+    repo.note.write_text(theirs)
+    (repo.root / ".claude" / ".git").write_text(f"gitdir: {repo.root / '.git'}\n")
+    inner_git(repo, repo.root / ".claude", "add", "-f", "handoff/note.md")
+    assert "handoff/note.md" in repo.git("ls-files"), "the control: the index of the outer repo holds the note"
+    assert repo.git("ls-files", "--", ".claude") == "", "the control: and not under the name of the folder"
+    for command in ("frame", "check"):
+        code, lines = repo.run(command)
+        assert code == 2 and len(lines) == 1 and OTHER_REPO in lines[0], (command, lines)
+    assert repo.note.read_text() == theirs and sorted(os.listdir(repo.place)) == [".gitignore", "note.md"]
+
+
+@pytest.mark.parametrize("where", [".claude", PLACE])
+def test_a_program_that_the_settings_of_a_repo_at_the_place_name_does_not_run(repo, tmp_path, where):
+    """To learn whose the place is, the script starts git inside it. Git then reads the settings of a repo that
+    is there, and such settings can name a program (the file monitor). The other repo is not this user's own."""
+    repo.framed()
+    there = repo.root / where
+    inner_git(repo, repo.root, "init", "-q", str(there))
+    (there / "theirs.txt").write_text("a file of the other repo\n")
+    inner_git(repo, there, "add", "-f", "theirs.txt")
+    trap = Trap(tmp_path)
+    inner_git(repo, there, "config", "core.fsmonitor", str(trap.program))
+    trap.live_under(lambda: git_in(there, repo.env, "status", check=False))
+    for command in ("frame", "check"):
+        code, lines = repo.run(command)
+        assert code == 2 and len(lines) == 1 and OTHER_REPO in lines[0], (command, lines)
+    assert not trap.ran()
 
 
 @pytest.mark.parametrize("where", [".claude", PLACE])
