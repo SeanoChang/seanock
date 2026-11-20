@@ -2860,8 +2860,9 @@ test checks that on random lines in five languages.
   three kinds of wrong `allowed` in three passes (2026-11-17). Some cases
   of the third kind are closed below; the kind is not, and no more code is
   added for it (the user's decision, 2026-11-20). The guard is at the
-  point of the decision: the hook of the next version denies a prompt
-  during a run, so a wrong `allowed` costs one skipped step.
+  point of the decision: from 0.16.0 a hook denies a prompt during a run
+  (see "The two hooks" below), so a wrong `allowed` costs one skipped
+  step.
   - Claude Code 2.1.325 asks for some commands whatever the allow rules
     say: a file command (`cp`, `mv`, `mkdir`, `touch`, `rm`, `cat`, `ls`
     and others) with a path outside the working directories, and an `rm`
@@ -2889,12 +2890,13 @@ test checks that on random lines in five languages.
 
   The skill text tells the session to ask about each command that writes
   or removes outside the project, also when it is `allowed`. What a wrong
-  `allowed` costs: a prompt during the run, and the session waits until
-  the user answers. Nothing in this version turns that prompt into a
-  skipped step. Claude Code has two ways to do it at the point of the
-  decision: the setting `permissions.denyInsteadOfPrompting`, and a
-  `PermissionRequest` hook that answers `deny` (Claude Code docs, read
-  2026-11-17). Neither is used here.
+  `allowed` costs, with no hook in the settings: a prompt during the run,
+  and the session waits until the user answers. Claude Code has two ways
+  to turn that prompt into a refusal at the point of the decision: the
+  setting `permissions.denyInsteadOfPrompting`, and a `PermissionRequest`
+  hook that answers `deny` (Claude Code docs, read 2026-11-17). From
+  0.16.0 the hook is used; the setting is not, because it would deny in
+  every session, also when the user is at the keyboard.
 
   Where it can, the script errs toward "would prompt". It reads
   the allow, ask and deny rules for `Bash` in `~/.claude/settings.json` and
@@ -2996,9 +2998,10 @@ test checks that on random lines in five languages.
   days; a program that can do this can remove the run itself. The folders
   are mode 700 and the files 600; a link in the place of a folder or a
   file is not followed.
-- **The time limit is not enforced by this version.** `status` and `close`
-  read it, and the skill text tells the session to close at the limit.
-  Nothing stops a session that goes on.
+- **The time limit is not enforced.** `status` and `close` read it, the
+  skill text tells the session to close at the limit, and from 0.16.0 one
+  stop at or after the limit is refused so that the session closes the
+  run. Nothing stops a session that goes on.
 
 ### What the live test shows, and what it does not
 
@@ -3011,9 +3014,106 @@ test checks that on random lines in five languages.
 - The control session, without the skill, also finished the first and the
   third task and reported the second as blocked (one run). So this test
   does not show that the skill prevents a stall. A headless session cannot
-  wait for a user, which is how a real run stalls. The Stop hook of the
-  next version is the part that is aimed at that, and its test must show a
-  session that stops early and is sent back.
+  wait for a user, which is how a real run stalls. The Stop hook of
+  0.16.0 is the part that is aimed at that; its live test is under "The
+  two hooks" below.
+
+### The two hooks (0.16.0)
+
+The settings template starts `contract.py hook --event stop` for each stop
+and `contract.py hook --event permission` for each permission prompt, of
+every session. The event comes as JSON on the input, with the session id.
+With no open run of that session, a hook prints nothing.
+
+By design:
+
+- **A hook never fails.** It ends with exit 0 and prints one line of JSON
+  or nothing. A wrong command line, an event that cannot be read (also one
+  above 8 MB), a session id that is no plain name, a run that cannot be
+  read, and a fault of the script itself all give nothing, and Claude Code
+  then does what it does with no hook. Claude Code shows a hook that fails
+  as an error at each stop and each prompt, so a fault here would be seen
+  in every session.
+- **Stop.** With an open run, a stop is refused with the next task while
+  tasks are left and the time is not up. With no task left, or at the time
+  limit, one stop is refused so that the session closes the run and gives
+  the report; the next one passes. A stop passes when a wake-up is
+  scheduled (`session_crons` of the event holds an entry): that is a wait
+  with a time limit. A background task with no wake-up is no reason to let
+  a stop pass: the refusal tells the session to set a wake-up first.
+- **Three refusals in a row end the holding.** When three stops were
+  refused and the session wrote no log line between them, the hook writes
+  `released` and lets every stop pass until the session writes a line
+  again. A `denied` line of the other hook is no such line. Claude Code
+  has a cap of its own at eight refused stops in a row (Claude Code docs,
+  read 2026-11-17); this one comes first. A session that cannot go on is
+  so not held in a loop, and the report says that it was let go.
+- **Prompt.** While the run is open, the prompt of every tool is denied,
+  with a message that tells the session to log the step as skipped. This
+  holds after the time limit too, until the run is closed. The log gets a
+  `denied` line with the tool and a short text of the call (the command,
+  the file or the address, at most 300 characters); the same prompt again
+  with no other line between adds none. The prompt is denied also when
+  that line cannot be written.
+- **The script's own commands are never denied.** For a shell command
+  that starts this script (`python3 [-I] <the script> ...`), the hook is
+  silent. A run that denied its own `close` could not be ended by its
+  session, and every prompt of that session would be denied from then on.
+  Silence grants nothing: Claude Code judges the command, each part of it,
+  as it does with no hook. The cost: when no allow rule covers the script,
+  its prompt stops the run until the user answers. So `preflight` judges
+  `log`, `status` and `close` of the script with the commands of the plan,
+  and the skill text names the allow rule to add.
+- **The session cannot write the lines of the hooks.** `log` takes
+  `heartbeat`, `decision`, `skipped` and `done` only.
+- **Cost.** Each stop and each prompt of every session starts the script
+  one time: 30 ms with no open run (the median of 30 starts on the build
+  machine, 2026-11-20).
+
+Minor:
+
+- **Any wake-up lets a stop pass,** also one that has nothing to do with
+  the run (a `/loop` of the user in the same session).
+- **A hook that waits for the run gives up after 10 seconds** (another
+  command holds the run). The stop then passes, and the prompt is still
+  denied. Claude Code cancels a hook after the 30 seconds of the template;
+  a hook that is cancelled decides nothing.
+- **The stop hook trusts the event.** It does not check that
+  `session_crons` holds a wake-up that will fire.
+- **A prompt for the network request of a sandboxed command** starts no
+  `PermissionRequest` hook (Claude Code docs, read 2026-11-17), so it
+  still waits for the user.
+- **The first prompt after the user is back is denied** when the session
+  did not close the run. The message says to close it.
+- **A `preflight` line for the script's own command is a best effort,**
+  as every line of `preflight`: it reads the command in the form of the
+  skill text (`python3 -I ~/.claude/skills/...`), letter for letter.
+
+What the live tests show (`UNATTENDED_LIVE=1`, three more sessions on
+Sonnet, one run each, 2026-11-20), and what they do not:
+
+- A session with the skill and the hooks met a real prompt
+  (`python3 selfcheck.py`, no allow rule). Claude Code started the hook
+  and took its answer; the log holds `denied`, then `skipped` for task 2
+  with what it needs, and the other two tasks are done.
+- A session with the skill and no hooks, whose request says "when task 1
+  is done, end your turn", stopped after task 1 and left two tasks and an
+  open run. The same request with the hooks: the stop was refused one
+  time, the session did tasks 2 and 3, and closed the run.
+- Not shown: the end of a stall in a terminal. A headless session denies
+  a prompt by itself, so the first test would not wait with no hook
+  either. It shows the path (prompt, hook, answer, log), not the gain.
+  That needs one run in a real terminal.
+
+Not tested:
+
+- A prompt in a terminal with a user away, and a prompt of a subagent, of
+  an MCP tool or of `AskUserQuestion` in a real session (the answers for
+  them are tested with events on the input only).
+- A stop of a real session that waits for a background task, and a real
+  wake-up in `session_crons`.
+- Two hooks of one session at the same time, beyond one hook beside a
+  `close` or a `prune`.
 
 ### Not tested
 

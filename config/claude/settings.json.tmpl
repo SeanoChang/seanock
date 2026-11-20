@@ -121,6 +121,28 @@
           }
         ]
       }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I __HOME__/.claude/skills/unattended/scripts/contract.py hook --event permission",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I __HOME__/.claude/skills/unattended/scripts/contract.py hook --event stop",
+            "timeout": 30
+          }
+        ]
+      }
     ]
   },
   "statusLine": {

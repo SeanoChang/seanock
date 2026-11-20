@@ -6,6 +6,40 @@ the tag `vX.Y.Z`. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says how it moves. The newest
 entry is first.
 
+## 0.16.0 (2026-11-20)
+
+Added:
+
+- Two hooks for the `unattended` skill, as one command of its script:
+  `contract.py hook --event stop|permission`. The settings template starts
+  them for each stop and each permission prompt. They act only for a
+  session with an open run.
+- **Stop.** A stop is refused with the next task while tasks are left and
+  the time is not up. With no task left, or at the time limit, one stop is
+  refused so that the session closes the run. A stop passes when a wake-up
+  is scheduled. After three refusals with no log line of the session
+  between them, the hook writes `released` and lets the session stop.
+- **Permission prompt.** While the run is open, the prompt of every tool
+  is denied, with a message that tells the session to log the step as
+  skipped. So a command that `preflight` wrongly called `allowed` costs one
+  skipped step, not a session that waits all night. The script's own
+  commands are never denied, or a session could not close its run.
+- The report of `close` names each prompt that was denied and says when
+  the session was let go.
+
+Changed:
+
+- `preflight` judges the script's own commands (`log`, `status`, `close`)
+  with those of the plan. A prompt for them is not denied by the hook, so
+  it would stop a run; the skill text names the allow rule to add.
+
+A hook never fails: on any fault it prints nothing and ends with exit 0,
+and Claude Code does what it does with no hook.
+
+Three more live tests (`UNATTENDED_LIVE=1`, not in CI): a real prompt that
+the hook denies, a session that stops after the first task with no hooks,
+and the same session with the hooks, which is sent back and finishes.
+
 ## 0.15.0 (2026-11-17)
 
 Added:

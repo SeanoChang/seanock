@@ -69,9 +69,10 @@ test files: `tests/test_harness_version.py` covers the version segment of line
 1, and `tests/test_statusline_git_safety.py` checks that its git calls run no
 program named by a repo's config. Lines 2 and 3 are not tested.
 
-Three hooks are wired in the settings template: `merge-gate.py` on
-`gh pr merge`, `visual-artifacts-route.sh` on the Artifact tool, and
-`second-brain-log-prompt.sh` on each prompt. `second-brain-sweep.sh`,
+Five hooks are wired in the settings template: `merge-gate.py` on
+`gh pr merge`, `visual-artifacts-route.sh` on the Artifact tool,
+`second-brain-log-prompt.sh` on each prompt, and the `hook` command of the
+`unattended` skill's script on each stop and on each permission prompt. `second-brain-sweep.sh`,
 `floor-guard.py` and `comment-check.py` run on demand. The floor guard and
 the comment check read a repo they do not trust, so they call git plumbing
 only and treat every git warning as a failure.
