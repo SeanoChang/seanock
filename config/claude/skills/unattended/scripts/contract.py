@@ -16,9 +16,9 @@ changed in place. Nothing is written into a work tree.
 Exit 0: done, and the last line says what. Exit 1: a result that needs action (a command that would prompt, a
 close that the contract does not allow, no open run). Exit 2: `unattended: error ...`, which is not a result.
 
-`hook` is the exception: it always ends with exit 0. It prints one line of JSON when it refuses a stop or denies a
-prompt, and nothing in every other case, a fault of its own included. Claude Code then does what it does with no
-hook.
+`hook` is the exception: it ends with exit 0 whatever it finds. It prints one line of JSON when it refuses a stop
+or denies a prompt, and nothing in every other case, a fault of its own included. Claude Code then does what it
+does with no hook. Only a signal that ends the process gives another exit code.
 """
 import argparse
 import contextlib
