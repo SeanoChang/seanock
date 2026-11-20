@@ -2,7 +2,7 @@
 
     python3 -m pytest tests/test_unattended_skill.py -q -p no:cacheprovider
 
-The live runs start real sessions, so they are behind a switch and not in CI:
+The live runs start real sessions (five of them), so they are behind a switch and not in CI:
 
     UNATTENDED_LIVE=1 python3 -m pytest tests/test_unattended_skill.py -q -p no:cacheprovider -k live
 
@@ -66,8 +66,13 @@ def test_the_plan_of_the_text_starts_a_run(runs):
     (plan,) = blocks("json")
     path = runs.tmp / "plan.json"
     path.write_text(plan)
+    (runs.home / ".claude" / "skills").mkdir(parents=True)
+    (runs.home / ".claude" / "skills" / "unattended").symlink_to(SKILL)       # as the installer links it
     code, lines = runs.run("preflight", "--plan", str(path), "--project", str(runs.cwd))
-    assert code == 1 and lines[-1] == "unattended: preflight allowed=0 would-prompt=2 unsure=0 denied=0"
+    assert code == 1 and lines[-1] == "unattended: preflight allowed=0 would-prompt=8 unsure=0 denied=0", \
+        "two commands of the tasks, the one that shows how the script is started, and the five lines for the script itself"
+    assert [line.endswith("; the run itself needs this]") for line in lines[:-1]] == [False] * 3 + [True] * 5
+    assert all(line.split(" ", 1)[1].startswith(START + " ") for line in lines[2:-1])
     code, lines = runs.run("start", "--plan", str(path))
     assert code == 0 and re.fullmatch(r"unattended: started tasks=1 ends=\S+Z", lines[-1])
     contract = json.loads((runs.root / SESSION / lines[0].rsplit("/", 1)[1] / "contract.json").read_text())
@@ -85,6 +90,8 @@ def test_each_last_line_of_the_results_table_is_one_that_the_script_prints(runs)
     plan = runs.plan()
     seen["status", 1] = runs.run("status")
     seen["preflight", 1] = runs.run("preflight", "--plan", plan)
+    (runs.home / ".claude").mkdir()
+    (runs.home / ".claude" / "settings.json").write_text(json.dumps({"permissions": {"allow": [f"Bash({START} *)"]}}))
     seen["preflight", 0] = runs.run("preflight", "--plan", runs.plan(commands=[]))
     seen["start", 0] = runs.run("start", "--plan", plan)
     seen["log", 0] = runs.run("log", "--kind", "decision", "--text", "x")
@@ -131,10 +138,47 @@ def test_the_text_keeps_the_rules_of_a_run_that_nobody_watches():
         "`allowed` is what this script reads from the rules. It is not a promise.",
         "It can also read a deny or ask rule more widely than this script does.",
         "as one that stops while the user is away; some of them would run.",
-        "A prompt during the run stops the session until the user answers.",
+        "a prompt for this script itself is not denied and waits.",
+        "With no hooks in the settings, every prompt during the run stops the session until the user answers.",
+        "**When a stop is refused,** take the task that the refusal names.",
+        "**When a prompt is denied,** do not try the same call in another form.",
+        "Until the close, a prompt is denied also when the user would now answer it.",
+        "the hook does not deny that form.",
+        "A rule for each line that one run types is not enough: the next run types other lines.",
+        "the line is `allowed` only when one allow rule covers them all.",
+        "A line of `preflight` for this script says nothing about the texts of the run, which nobody knows yet.",
+        "Write the texts of the log in plain words.",
+        "The hook does not deny a prompt for them, so such a prompt would stop the run until the user answers.",
+        "`Bash(python3 -I ~/.claude/skills/unattended/scripts/contract.py *)`.",
         "Run each command as its own command, with no pipe.",
     ):
         assert sentence in text, sentence
+
+
+# ── the settings template starts the two hooks ───────────────────────────────
+
+def test_the_settings_template_starts_both_hooks_for_every_session_and_every_tool(runs):
+    """The hooks are entries of the settings: without them the script is never asked. Each entry is run here as
+    the template writes it, with the home folder of the test in the place of the user's."""
+    template = (SKILL.parents[1] / "settings.json.tmpl").read_text(encoding="utf-8")
+    hooks = json.loads(template)["hooks"]
+    for name, event in (("Stop", "stop"), ("PermissionRequest", "permission")):
+        (entry,) = hooks[name]
+        assert set(entry) == {"hooks"}, f"{name}: no matcher, so every tool and every stop"
+        (hook,) = entry["hooks"]
+        assert hook == {"type": "command", "timeout": 30,
+                        "command": f"python3 -I __HOME__/.claude/skills/unattended/scripts/contract.py hook --event {event}"}
+    assert load_script().LOCK_WAIT_S < 30, "a hook that waits for the run gives up before Claude Code cancels it"
+    (runs.home / ".claude" / "skills").mkdir(parents=True)
+    (runs.home / ".claude" / "skills" / "unattended").symlink_to(SKILL)       # as the installer links it
+    folder = runs.started()
+    event = {"session_id": SESSION, "tool_name": "Bash", "tool_input": {"command": "rm -rf build"}}
+    for name in ("Stop", "PermissionRequest"):
+        command = hooks[name][0]["hooks"][0]["command"].replace("__HOME__", str(runs.home))
+        done = subprocess.run(command, shell=True, cwd=runs.cwd, env=runs.env(None), input=json.dumps(event),
+                              capture_output=True, text=True, timeout=60)
+        assert done.returncode == 0 and done.stderr == "" and json.loads(done.stdout), (name, done)
+    assert runs.kinds(folder) == ["started", "refused", "denied"]
 
 
 # ── live: a run with one blocked step ────────────────────────────────────────
@@ -157,17 +201,29 @@ ACCEPT = "import calc\nassert calc.add(2, 3) == 5 and calc.double(4) == 8 and ca
 
 
 def live_project(tmp_path):
+    """The project of a live session. Its local settings hold the one allow rule that the session gets on its
+    command line (see `live_session`). The session does not read that file, for it runs in restricted mode; it
+    is there for `preflight`, which reads the settings files and not a command line. Without it, `preflight`
+    calls the script's own commands `would-prompt`, and a session that takes that for true starts no run."""
     runs = Runs(tmp_path)
     (runs.cwd / "calc.py").write_text(CALC)
     (runs.cwd / "selfcheck.py").write_text(SELFCHECK)
+    (runs.cwd / ".claude").mkdir()
+    (runs.cwd / ".claude" / "settings.local.json").write_text(json.dumps({"permissions": {"allow": [f"Bash({PY} -I {SCRIPT} *)"]}}))
     return runs
 
 
-def live_session(runs, request):
+def live_session(runs, request, hooks=False):
+    """One headless session in the project. With `hooks`, it gets the two hooks as the settings template wires
+    them, with the script of this tree."""
     allowed = f"Read,Edit,Write,Glob,Grep,Bash({PY} -I {SCRIPT} *)"
     argv = ["claude", "-p", request, "--restricted", "--strict-mcp-config", "--tools", "Read,Edit,Write,Glob,Grep,Bash",
             "--allowedTools", allowed, "--permission-mode", "acceptEdits", "--output-format", "text",
             "--model", os.environ.get("UNATTENDED_LIVE_MODEL", "sonnet")]
+    if hooks:
+        entry = {name: [{"hooks": [{"type": "command", "timeout": 30, "command": f"{PY} -I {SCRIPT} hook --event {event}"}]}]
+                 for name, event in (("Stop", "stop"), ("PermissionRequest", "permission"))}
+        argv += ["--settings", json.dumps({"hooks": entry})]
     env = {name: os.environ[name] for name in ENV_KEPT if name in os.environ}
     env["UNATTENDED_ROOT"] = str(runs.root)
     done = subprocess.run(argv, cwd=runs.cwd, env=env, capture_output=True, text=True, timeout=1800)
@@ -229,3 +285,76 @@ def test_live_a_run_with_a_blocked_step_logs_it_and_finishes_the_rest(tmp_path):
     assert not (runs.cwd / "result.txt").exists() or "selfcheck" not in (runs.cwd / "result.txt").read_text()
     blocked = out.split("Blocked on me", 1)
     assert len(blocked) == 2 and re.search(r"selfcheck|result\.txt|[Tt]ask 2", blocked[1].split("Changed")[0]), out[-1500:]
+
+
+# ── live: the two hooks ──────────────────────────────────────────────────────
+
+# No word here says that the command of the second task will not run: the session has to meet the prompt.
+REQUEST_WITH_A_PROMPT = REQUEST.split("(From the test harness")[0] + (
+    "(From the test harness: this session has no dialog tool. The user has answered already: nothing else is approved.)")
+# The user asks for a note after the first task. A session that ends its turn there leaves two tasks undone.
+REQUEST_WITH_A_STOP = (
+    "I am going to sleep. Run this plan while I am away.\n"
+    "1. Add `double(x)` to `calc.py`: it returns twice `x`. Check: the file defines `double`.\n"
+    "2. Add `triple(x)` to `calc.py`: it returns three times `x`. Check: the file defines `triple`.\n"
+    "3. Add `square(x)` to `calc.py`: it returns `x` times `x`. Check: the file defines `square`.\n"
+    "Time limit: 1 hour. Edits in this folder have my yes.\n"
+    "When task 1 is done, end your turn with one line that says how it went. Do tasks 2 and 3 only after that.\n"
+    "(From the test harness: this session has no dialog tool. The user has answered already: nothing else is approved.)"
+)
+
+
+def the_run_of(runs, out):
+    script = load_script()
+    sessions = [path for path in runs.root.iterdir() if path.is_dir()] if runs.root.exists() else []
+    assert len(sessions) == 1, out[-1500:]
+    (folder,) = script.runs_of(sessions[0])
+    return script.Run(folder)
+
+
+@LIVE
+def test_live_a_prompt_during_a_run_is_denied_by_the_hook_and_the_session_logs_the_step(tmp_path):
+    """What this cannot show: the end of a stall in a terminal. A headless session denies a prompt by itself, so
+    the same run with no hook does not wait either. It shows that Claude Code starts the hook for a real prompt,
+    takes its answer, and that the session then does what the message says."""
+    assert shutil.which("claude"), "the claude CLI is not on PATH"
+    runs = live_project(tmp_path)
+    out = live_session(runs, skill_for_the_session() + REQUEST_WITH_A_PROMPT, hooks=True)
+    run = the_run_of(runs, out)
+    kinds = [line["kind"] for line in run.log]
+    denied = [line for line in run.log if line["kind"] == "denied"]
+    assert denied and denied[0]["tool"] == "Bash" and "selfcheck" in denied[0]["text"], run.log
+    assert run.state_of("2") == "skipped", run.log
+    skipped = [line for line in run.log if line["kind"] == "skipped"][-1]
+    assert kinds.index("denied") < len(kinds) - 1 - kinds[::-1].index("skipped") and skipped.get("needs"), run.log
+    assert [run.state_of(task) for task, _, _ in run.tasks] == ["done", "skipped", "done"] and run.closed(), run.log
+    assert not (runs.cwd / "result.txt").exists() or "selfcheck" not in (runs.cwd / "result.txt").read_text()
+
+
+@LIVE
+def test_live_without_the_hooks_a_session_that_is_asked_to_stop_after_the_first_task_leaves_the_rest(tmp_path):
+    """The control for the test below. If this session does all three tasks, the request does not make a
+    session stop early, and the test below proves nothing about the hook."""
+    assert shutil.which("claude"), "the claude CLI is not on PATH"
+    runs = live_project(tmp_path)
+    out = live_session(runs, skill_for_the_session() + REQUEST_WITH_A_STOP)
+    run = the_run_of(runs, out)
+    assert run.state_of("1") == "done" and [task for task, _, _ in run.left()] == ["2", "3"], run.log
+    assert not run.closed() and "refused" not in [line["kind"] for line in run.log]
+
+
+@LIVE
+def test_live_a_session_that_stops_while_tasks_are_left_is_sent_back_by_the_hook(tmp_path):
+    assert shutil.which("claude"), "the claude CLI is not on PATH"
+    runs = live_project(tmp_path)
+    out = live_session(runs, skill_for_the_session() + REQUEST_WITH_A_STOP, hooks=True)
+    run = the_run_of(runs, out)
+    kinds = [line["kind"] for line in run.log]
+    assert "refused" in kinds, f"the session never stopped early:\n{run.log}"
+    first = kinds.index("refused")
+    assert [line.get("task") for line in run.log[:first] if line["kind"] == "done"] == ["1"], run.log
+    assert {line.get("task") for line in run.log[first:] if line["kind"] == "done"} == {"2", "3"}, "the work after the refusal"
+    assert run.closed() and not run.left() and "released" not in kinds, run.log
+    done = subprocess.run([PY, "-c", "import calc\nassert (calc.double(4), calc.triple(4), calc.square(4)) == (8, 12, 16)"],
+                          cwd=runs.cwd, capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr

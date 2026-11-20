@@ -6,6 +6,49 @@ the tag `vX.Y.Z`. The number is in `VERSION`, and
 [docs/architecture.md](docs/architecture.md) says how it moves. The newest
 entry is first.
 
+## 0.16.0 (2026-11-20)
+
+Added:
+
+- Two hooks for the `unattended` skill, as one command of its script:
+  `contract.py hook --event stop|permission`. The settings template starts
+  them for each stop and each permission prompt. They act only for a
+  session with an open run.
+- **Stop.** A stop is refused with the next task while tasks are left and
+  the time is not up. With no task left, or at the time limit, one stop is
+  refused so that the session closes the run. A stop passes when a wake-up
+  is scheduled. After three refusals with no log line of the session
+  between them, the hook writes `released` and lets the session stop.
+- **Permission prompt.** While the run is open, a permission prompt is
+  denied, for every tool, with a message that tells the session to log the
+  step as skipped. So a command of a task that `preflight` wrongly called
+  `allowed` is denied at its prompt, and does not hold the session all
+  night. One kind of prompt is left as it is: one for a shell command that
+  starts this script (`python3 [-I] <the script> ...`), or a session could
+  not close its run. Such a prompt still waits for the user.
+- The report of `close` names each prompt that was denied and says when
+  the session was let go.
+
+Changed:
+
+- `preflight` judges what a session types of the script when the user may
+  be gone (`start`, `status`, `log`, `close`) with the commands of the
+  plan, because a prompt for it is not denied by the hook and would stop a
+  run. It reads from the plan how the session starts the script. For
+  `start`, `log` and `close` it judges no list of lines: the line is
+  `allowed` only when one allow rule covers every command that starts so,
+  and no deny or ask rule can cover one of them by the fixed text that the
+  rule begins with. A deny or ask rule that holds for a line only by the
+  words of its text is not seen. The skill text names the rule to add.
+  These lines are a best effort, as every line of `preflight`.
+
+A hook does not fail: on a fault it prints nothing and ends with exit 0,
+and Claude Code does what it does with no hook.
+
+Three more live tests (`UNATTENDED_LIVE=1`, not in CI): a real prompt that
+the hook denies, a session that stops after the first task with no hooks,
+and the same session with the hooks, which is sent back and finishes.
+
 ## 0.15.0 (2026-11-17)
 
 Added:

@@ -7,6 +7,7 @@
     contract.py status
     contract.py close [--why T]
     contract.py prune [--days N]
+    contract.py hook --event stop|permission        (started by Claude Code, with the event as JSON on the input)
 
 A run belongs to a session. Its files are in ~/.claude/unattended/<session>/<start time>/: the contract, which is
 written one time, and the log, which only grows. The state of a task is read from the log, so no file is ever
@@ -14,6 +15,10 @@ changed in place. Nothing is written into a work tree.
 
 Exit 0: done, and the last line says what. Exit 1: a result that needs action (a command that would prompt, a
 close that the contract does not allow, no open run). Exit 2: `unattended: error ...`, which is not a result.
+
+`hook` is the exception: it ends with exit 0 whatever it finds. It prints one line of JSON when it refuses a stop
+or denies a prompt, and nothing in every other case, a fault of its own included. Claude Code then does what it
+does with no hook. Only a signal that ends the process gives another exit code.
 """
 import argparse
 import contextlib
@@ -22,6 +27,7 @@ import fcntl
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import sys
@@ -34,7 +40,14 @@ SESSION = re.compile(r"[A-Za-z0-9_-]{8,64}")
 STAMP = "%Y%m%dT%H%M%SZ"
 CONTRACT = "contract.json"
 LOG = "log.jsonl"
-KINDS = ("heartbeat", "decision", "skipped", "done")
+KINDS = ("heartbeat", "decision", "skipped", "done")     # what a session writes with `log`
+BY_THE_SESSION = KINDS + ("started",)                    # every other line is written by a hook, or closes the run
+REFUSALS = 3                        # stops that are refused in a row, with no line of the session between them
+MAX_EVENT = 8 * 1024 * 1024         # bytes of one hook event
+SHORT = 300                         # the length of a text of the contract or of a tool call inside a hook answer
+OWN = "python3 -I ~/.claude/skills/unattended/scripts/contract.py"      # this script, as the skill text starts it
+PYTHON = re.compile(r"python[0-9.]*")
+LOOK_AGAIN_S = 0.05                 # how long a hook waits before it reads a run again that it could not read
 DEFAULT_HOURS = 8.0
 MAX_HOURS = 72.0
 KEEP_DAYS = 14
@@ -248,11 +261,11 @@ def open_run(session):
 
 
 @contextlib.contextmanager
-def the_open_run():
+def the_open_run(session=None):
     """The open run of this session, read while this command alone holds its folder. A command that changes the
     run reads it under that lock: `log` and `close` at the same time then see each other, and no line is written
-    after the close."""
-    run = open_run(session_id())
+    after the close. A hook names the session of its event."""
+    run = open_run(session_id(session))
     if run is None:
         raise Failed("this session has no open run")
     try:
@@ -467,19 +480,252 @@ def settings_files(project):
     return out
 
 
+# What a session types of this script when the user may be gone, from `start` on: the command, whether it is
+# typed with nothing behind it, and whether with words behind it. This is the command line of the script and not
+# a list of the lines of one run: which options a line has, in which order, and its texts, are not known before
+# the run.
+RUN_TYPES = (("start", False, True), ("status", True, False), ("log", False, True), ("close", True, True))
+FOR_THE_RUN = "; the run itself needs this"
+
+
+def covers_every(rule, head):
+    """Whether an allow rule covers every command that is `head`, a space and any text: the rule is fixed text
+    that `head` and a space begin with, and behind it wildcards only. So a `:*` beside another `*`, which
+    `allows` does not take, covers nothing here either: text stands between its wildcards."""
+    if rule.endswith(":*"):
+        rule = rule[:-2] + " *"
+    first, *others = rule.split("*")
+    return bool(others) and not any(others) and (head + " ").startswith(first)
+
+
+def beginnings(head):
+    """`head` as written and, as `stops` reads a command, from each program name that a word of it can hold."""
+    words = even(head).split(" ")
+    return [head] + [" ".join([name] + words[at + 1:]) for at, word in enumerate(words) for name in names_in(word)]
+
+
+def can_stop(rule, head):
+    """Whether a deny or ask rule can cover a command that is `head`, a space and some text, by its fixed
+    beginning. It is read widely, as in `stops`: the fixed text of the rule goes on behind `head` (a rule for
+    some lines of the run), or `head` goes on behind the fixed text (a rule for more than this script).
+    `prefix:*` needs no line here: a prefix that goes on behind `head` is fixed text as any other, and a
+    shorter one is found by `stops` on the command that `judge_every` tries."""
+    rule = even(rule)
+    first = rule.split("*")[0]
+    return any(first.startswith(begin + " ") or ("*" in rule and first and (begin + " ").startswith(first))
+               for begin in beginnings(head))
+
+
+def judge_every(head, settings_list):
+    """The verdict for every command that is `head`, a space and any text: what a run types of this script, with
+    words that nobody knows before the run. It is `allowed` only when one allow rule covers all of them and no
+    deny or ask rule can cover one of them by its fixed beginning. A deny or ask rule with no such beginning
+    (it starts with `*`, or it is for a word of the text) is tried on one command, with a random word behind
+    `head`: such a rule can still hold for a line of the run, by the words of that line."""
+    probe = f"{head} {secrets.token_hex(6)}"
+    for name, verdict in (("deny", "denied"), ("ask", "would-prompt")):
+        for settings in settings_list:
+            whole, patterns = bash_rules(settings, name)
+            hit = "Bash" if whole else next((p for p in patterns if stops(p, probe) or can_stop(p, head)), None)
+            if hit:
+                return verdict, f"{name}: {hit}"
+    for settings in settings_list:
+        whole, patterns = bash_rules(settings, "allow")
+        hit = "Bash" if whole else next((p for p in patterns if covers_every(p, head)), None)
+        if hit:
+            return "allowed", f"allow: {hit}"
+    return "would-prompt", f"no allow rule covers every such command; this one does: Bash({head} *)"
+
+
 def preflight(args):
     plan = read_plan(args.plan)
     commands = [values[0] for values in texts(plan, "commands", ("command",), as_written=True)]
     settings_list = settings_files(Path(args.project).resolve() if args.project else None)
     counts = dict.fromkeys(("allowed", "would-prompt", "unsure", "denied"), 0)
     lines = []
-    for command in commands:
-        verdict, why = judge(command, settings_list)
+    # The run writes its log with this script. A prompt for the script itself is not denied by the hook (see
+    # `own_parts`), so it would stop the run: what a run types of the script is judged with the commands of the
+    # plan. How the session starts the script is read from the plan, for that is what the session will type; a
+    # plan that starts the script nowhere gets the form of the skill text. A line that ends with ` *` stands for
+    # every command that starts so.
+    starts = list(dict.fromkeys(parts[0] for parts in map(own_parts, commands) if parts)) or [OWN]
+    judged = [(command, judge(command, settings_list)) for command in commands]
+    for head, bare, words in [(f"{start} {name}", bare, words) for start in starts for name, bare, words in RUN_TYPES]:
+        for text, (verdict, why) in ([(head, judge(head, settings_list))] if bare else []) + (
+                [(f"{head} *", judge_every(head, settings_list))] if words else []):
+            judged.append((text, (verdict, why + FOR_THE_RUN)))
+    for command, (verdict, why) in judged:
         counts[verdict] += 1
         room = MAX_TEXT - len(f"{verdict}  [{why}]")      # a long command is cut here, so that the reason stays
         lines.append(f"{verdict} {command if len(command) <= room else command[:room - 1] + '…'} [{why}]")
     summary = " ".join(f"{name}={count}" for name, count in counts.items())
-    return (0 if counts["allowed"] == len(commands) else 1), lines + [f"unattended: preflight {summary}"]
+    return (0 if counts["allowed"] == len(judged) else 1), lines + [f"unattended: preflight {summary}"]
+
+
+# ── the two hooks ────────────────────────────────────────────────────────────
+#
+# Claude Code starts a Stop hook when a session wants to end its turn, and a PermissionRequest hook when it is
+# about to ask the user. With no open run of the session, both are silent. With one, nobody is there to answer:
+# a stop is refused while work is left, and a prompt is denied, so the session logs the step and goes on. One
+# prompt is not denied: that for a shell command which starts this script (see `own_parts`).
+
+def short(text):
+    """A text of the contract or of a tool call, as one line that is short enough for a hook answer."""
+    text = one_line(text)
+    return text if len(text) <= SHORT else text[:SHORT - 1] + "…"
+
+
+def refusals_since_the_last_line(run):
+    """(how many stops were refused, whether the session was let go) since the last line that the session wrote.
+    A prompt that was denied is no such line: a session that only meets denied prompts makes no progress."""
+    refused, released = 0, False
+    for line in reversed(run.log):
+        if line["kind"] in BY_THE_SESSION:
+            break
+        refused += line["kind"] == "refused"
+        released = released or line["kind"] == "released"
+    return refused, released
+
+
+def stop_answer(run, event):
+    """The answer that refuses the stop, or None when the session may stop. `run` is held by this command.
+
+    The session may stop when a wake-up is scheduled: that is a wait with a time limit. It may stop after three
+    refusals with no line of its own between them: a session that cannot go on is not held in a loop. While
+    tasks are left and the time is not up, a stop is refused with the next task. With no task left, or at the
+    time limit, it is refused one time, so that the session closes the run and gives the report."""
+    wake_ups = event.get("session_crons")
+    if isinstance(wake_ups, list) and wake_ups and all(isinstance(entry, dict) for entry in wake_ups):
+        return None
+    refused, released = refusals_since_the_last_line(run)
+    if released:
+        return None
+    if refused >= REFUSALS:
+        run.add("released", text=f"{REFUSALS} stops were refused and the session logged no line between them")
+        return None
+    left = run.left()
+    count = f"{len(left)} task is left" if len(left) == 1 else f"{len(left)} tasks are left"
+    back = 'If the user has written to you, close the run first: close --why "the user is back".'
+    if left and not run.late():
+        task, title, check = left[0]
+        waits = event.get("background_tasks")
+        waits = len(waits) if isinstance(waits, list) else 0
+        wait = ("" if not waits else
+                f"{waits} background task is running. " if waits == 1 else f"{waits} background tasks are running. ")
+        run.add("refused", why="tasks", task=task)
+        reason = (f"An unattended run of this session is open, and {count}. The user is away: do not wait and do "
+                  f"not ask. Take task {task} ({short(title)}); its check: {short(check)}. A step that is blocked: "
+                  f"log it with --kind skipped and --needs, then take the next task. {wait}To wait for a "
+                  f"background task or an agent, set a wake-up first, then end the turn. {back}")
+        return {"decision": "block", "reason": reason}
+    if any(line["kind"] == "refused" and line.get("why") == "close" for line in run.log):
+        return None
+    run.add("refused", why="close")
+    state = f"The time limit is reached, and {count}" if left else "No task is left"
+    reason = (f"The unattended run of this session is still open. {state}. Finish the step in hand, then close the "
+              "run with the `close` command of the contract script and give the user its report under the three "
+              "headings Blocked on me, Changed, Found.")
+    return {"decision": "block", "reason": reason}
+
+
+def own_parts(command):
+    """(how the script is started, the words behind it) for a shell command that starts this script, or None
+    for every other command. The start is `python3 [-I] <this file>`: a program whose name is `python` with a
+    version or none, the script as a plain path, spaces or tabs between them, and no control character in the
+    whole command. The hook does not deny such a command, or a session could not close its run. It is silent
+    for it, so it grants nothing: Claude Code judges the command, each part of it, as it does with no hook."""
+    if any(not ch.isprintable() and ch != "\t" for ch in command):
+        return None
+    words = command.split()
+    if len(words) < 2 or not PYTHON.fullmatch(os.path.basename(words[0])):
+        return None
+    at = 2 if words[1] == "-I" and len(words) > 2 else 1
+    if not all(WORD.fullmatch(word) for word in words[:at + 1]):
+        return None
+    try:
+        same = os.path.samefile(os.path.expanduser(words[at]), __file__)
+    except (OSError, ValueError):
+        return None
+    return (" ".join(words[:at + 1]), words[at + 1:]) if same else None
+
+
+def asked_for(event):
+    """(the tool, a short text of what it was to do) of a prompt, or None when the event names no tool."""
+    tool, given = event.get("tool_name"), event.get("tool_input")
+    if not isinstance(tool, str) or not one_line(tool):
+        return None
+    what = None
+    if isinstance(given, dict):
+        what = next((given[name] for name in ("command", "file_path", "url") if isinstance(given.get(name), str)), None)
+    return short(tool), short(what if what is not None else json.dumps(given, ensure_ascii=False, default=str))
+
+
+def permission_answer(run, event):
+    """The answer that denies the prompt, or None when the prompt stays. Every tool is denied while the run is
+    open, also after its time limit: the prompts come back with the close. The one prompt that stays is for a
+    shell command that starts this script (see `own_parts`)."""
+    if asked_for(event) is None:
+        return None
+    given = event.get("tool_input")
+    command = given.get("command") if isinstance(given, dict) else None
+    if event["tool_name"] == "Bash" and isinstance(command, str) and own_parts(command) is not None:
+        return None
+    message = ("An unattended run of this session is open, so nobody can answer this prompt: it is denied. Do not "
+               "try the same call in another form. Log the step with --kind skipped, say with --needs what the user "
+               "must allow or decide, and take the next task. If the user is back and has written to you, close "
+               'the run first (close --why "the user is back"); after the close, prompts work again. Run a command '
+               "of the contract script as its own command, in the form of the skill text: in that form it is "
+               "not denied.")
+    return {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                                   "decision": {"behavior": "deny", "message": message}}}
+
+
+def note_the_denial(session, event):
+    """One `denied` line for the prompt. The same prompt again, with no other line between, adds none."""
+    tool, text = asked_for(event)
+    with the_open_run(session) as run:
+        last = run.log[-1] if run.log else {}
+        if (last.get("kind"), last.get("tool"), last.get("text")) != ("denied", tool, text):
+            run.add("denied", tool=tool, text=text)
+
+
+def hook_answer(argv, data):
+    if argv not in (["--event", "stop"], ["--event", "permission"]) or len(data) > MAX_EVENT:
+        return None
+    event = json.loads(data.decode("utf-8"))
+    session = event.get("session_id") if isinstance(event, dict) else None
+    if not isinstance(session, str) or not SESSION.fullmatch(session):
+        return None
+    if argv[1] == "stop":
+        with the_open_run(session) as run:
+            return stop_answer(run, event)
+    try:
+        run = open_run(session)
+    except Failed:              # the run is read without holding it: a line that is being written is whole a
+        time.sleep(LOOK_AGAIN_S)                                                                # moment later
+        run = open_run(session)
+    answer = permission_answer(run, event) if run is not None else None
+    if answer is not None:
+        with contextlib.suppress(Exception):    # the prompt is denied also when the line for it cannot be written
+            note_the_denial(session, event)
+    return answer
+
+
+def hook(argv):
+    """Answer one event of Claude Code. On a fault, nothing is printed and the exit code is 0: a hook that fails
+    is shown as an error at each stop and each prompt of every session, and it must not decide anything."""
+    try:
+        answer = hook_answer(argv, sys.stdin.buffer.read(MAX_EVENT + 1))
+        text = json.dumps(answer) if answer is not None else ""
+    except Exception:
+        text = ""
+    try:
+        if text:
+            print(text, flush=True)
+    except OSError:             # nobody reads the answer any more: no error for that, now or when Python ends
+        with contextlib.suppress(OSError):
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    return 0
 
 
 # ── the commands ─────────────────────────────────────────────────────────────
@@ -549,13 +795,23 @@ def report(run):
     changed = [f"- Task {task} ({title[task]}): {line.get('text', '')}"
                for task, line in last.items() if line["kind"] == "done"]
     found = [f"- {line.get('text', '')}" for line in run.log if line["kind"] == "decision"]
+    denied = {}
+    for line in run.log:
+        if line["kind"] == "denied":
+            what = f"{line.get('tool', '')}: {line.get('text', '')}"
+            denied[what] = denied.get(what, 0) + 1
+    found += [f"- A prompt was denied, for nobody could answer it: {what}" + (f" ({times} times)" if times > 1 else "")
+              for what, times in denied.items()]
+    if any(line["kind"] == "released" for line in run.log):
+        found.append(f"- The session was let go after {REFUSALS} stops were refused and it logged no line between them.")
     left = [f"- Task {task} ({name}): not done." for task, name, _ in run.left()]
-    count = {kind: sum(1 for line in run.log if line["kind"] == kind) for kind in ("heartbeat", "refused")}
+    count = {kind: sum(1 for line in run.log if line["kind"] == kind) for kind in ("heartbeat", "refused", "denied")}
     out = ["## Blocked on me"] + (blocked + left or ["- Nothing."])
     out += ["", "## Changed"] + (changed or ["- Nothing."])
     out += ["", "## Found"] + (found or ["- Nothing."])
     out += ["", f"Run: started {run.contract['started']}, time limit {run.contract['ends']}, "
-                f"{count['heartbeat']} heartbeat lines, {count['refused']} stops refused. Log: {run.folder / LOG}"]
+                f"{count['heartbeat']} heartbeat lines, {count['refused']} stops refused, "
+                f"{count['denied']} prompts denied. Log: {run.folder / LOG}"]
     return out
 
 
@@ -681,6 +937,9 @@ class Parser(argparse.ArgumentParser):
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["hook"]:
+        return hook(argv[1:])
     parser = Parser(prog="contract.py", add_help=False, allow_abbrev=False)
     sub = parser.add_subparsers(dest="command", parser_class=Parser)
     for name in ("preflight", "start"):

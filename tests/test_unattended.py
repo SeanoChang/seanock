@@ -66,6 +66,44 @@ class Runs:
         assert done.stderr == "", done.stderr
         return done.returncode, done.stdout.splitlines()
 
+    def hook_text(self, event, text, session=None):
+        """What the hook prints for this text on its input. A hook gets no session in its environment here: the
+        id comes with the event. It never fails and never writes an error."""
+        done = subprocess.run([PY, "-I", str(SCRIPT), "hook", "--event", event], cwd=self.cwd, env=self.env(session),
+                              input=text, capture_output=True, text=True, timeout=60)
+        assert done.returncode == 0 and done.stderr == "", (done.returncode, done.stderr)
+        return done.stdout
+
+    def hook(self, event, session=SESSION, **fields):
+        """The answer of the hook to one event, or None when it leaves the matter to Claude Code."""
+        name = {"stop": "Stop", "permission": "PermissionRequest"}[event]
+        out = self.hook_text(event, json.dumps({"session_id": session, "hook_event_name": name, **fields}))
+        if not out:
+            return None
+        assert out.endswith("\n") and out.count("\n") == 1 and out.isascii(), out
+        return json.loads(out)
+
+    def stop(self, session=SESSION, **fields):
+        """The reason with which the Stop hook refuses the stop, or None when the session may stop."""
+        answer = self.hook("stop", session=session, **{"stop_hook_active": False, "background_tasks": [],
+                                                       "session_crons": [], **fields})
+        if answer is None:
+            return None
+        assert set(answer) == {"decision", "reason"} and answer["decision"] == "block", answer
+        return answer["reason"]
+
+    def asked(self, tool="Bash", session=SESSION, **tool_input):
+        """The message with which the PermissionRequest hook denies the prompt, or None when the prompt stays."""
+        answer = self.hook("permission", session=session, tool_name=tool, tool_input=tool_input)
+        if answer is None:
+            return None
+        assert answer == {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {
+            "behavior": "deny", "message": answer["hookSpecificOutput"]["decision"]["message"]}}}, answer
+        return answer["hookSpecificOutput"]["decision"]["message"]
+
+    def kinds(self, folder):
+        return [line["kind"] for line in self.log_lines(folder)]
+
     def plan(self, **changes):
         plan = {name: value for name, value in {**PLAN, **changes}.items() if value is not ...}
         path = self.tmp / f"plan-{len(list(self.tmp.glob('plan-*')))}.json"
@@ -243,7 +281,7 @@ def test_close_gives_the_three_parts_of_the_report_from_the_log(runs):
     assert "- Task 1 (add the parser): 12 passed in tests/test_parser.py" in changed
     assert "- Task 3 (write the notes): docs/notes.md names the parser" in changed and "Task 2" not in changed
     assert "- kept the old parser beside the new one" in found
-    assert f"1 heartbeat lines, 0 stops refused. Log: {folder / 'log.jsonl'}" in found
+    assert f"1 heartbeat lines, 0 stops refused, 0 prompts denied. Log: {folder / 'log.jsonl'}" in found
     assert runs.log_lines(folder)[-1]["kind"] == "closed"
     assert runs.run("status") == (1, ["unattended: none"])
     assert runs.run("close")[0] == 2 and runs.run("log", "--kind", "decision", "--text", "x")[0] == 2
@@ -722,10 +760,14 @@ class Twice:
         self.script.LOCK_WAIT_S = 0.2       # X stands still while Y runs, so Y can wait for a lock of X in vain
 
     def call(self, session, *args, script=None):
+        """The command for this session. A hook gets its event on the input: a stop with no wake-up, or the
+        prompt for `rm -rf build`."""
         args = [str(self.plan) if arg == "PLAN" else arg for arg in args]
+        event = {"session_id": session, "tool_name": "Bash", "tool_input": {"command": "rm -rf build"}}
         out = io.StringIO()
         with self.monkeypatch.context() as patch, contextlib.redirect_stdout(out):
             patch.setenv("CLAUDE_CODE_SESSION_ID", session)
+            patch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(event).encode())))
             code = (script or self.script).main(args)
         return code, out.getvalue().splitlines()
 
@@ -764,6 +806,7 @@ class Twice:
 
 START, BEAT, PRUNE = ("start", "--plan", "PLAN"), ("log", "--kind", "heartbeat", "--text", "at work"), ("prune", "--days", "0")
 CLOSE = ("close", "--why", "x")
+STOP, ASKED = ("hook", "--event", "stop"), ("hook", "--event", "permission")
 
 
 def no_run_yet(world):
@@ -799,6 +842,12 @@ def both_start(world, made, x, y):
 def the_heartbeat_is_written_and_the_old_run_is_gone(world, made, beat, prune):
     assert beat == (0, ["unattended: logged heartbeat"]) and prune == (0, ["unattended: pruned 1"]), (beat, prune)
     assert world.kinds(made["open"]) == ["started", "heartbeat"] and not made["old"].exists()
+
+
+def the_stop_is_refused_and_the_old_run_is_gone(world, made, stop, prune):
+    assert stop[0] == 0 and json.loads(stop[1][0])["decision"] == "block", stop
+    assert prune == (0, ["unattended: pruned 1"]) and not made["old"].exists()
+    assert world.kinds(made["open"]) == ["started", "refused"]
 
 
 def the_open_run_is_seen(world, made, status, prune):
@@ -841,6 +890,24 @@ def the_late_run_is_closed_and_kept_or_removed_before_its_close(world, made, pru
                                                        "holds the run for longer than 0.2 s")), close
 
 
+def the_hook_writes_before_the_close_or_not_at_all(kind):
+    def check(world, made, hook, close):
+        assert hook[0] == 0, hook
+        kinds = world.kinds(made["open"])
+        if close[0] == 2:           # X is the hook and stands still with the run in its hand: the close gave up
+            assert close[1][0].endswith("holds the run for longer than 0.2 s") and kinds == ["started", kind], (close, kinds)
+        else:
+            assert close[1][-1] == "unattended: closed done=0 skipped=0 left=1", close
+            assert kinds in (["started", kind, "closed"], ["started", "closed"]), "no line of a hook comes after the close"
+        if kind == "refused":
+            assert bool(hook[1]) == (kind in kinds), "a stop is refused only with its line in the log"
+        elif kind in kinds:
+            assert hook[1], "a prompt whose line is in the log was denied"
+        for line in hook[1]:
+            json.loads(line)
+    return check
+
+
 def one_of_the_two_removes_it(world, made, first, second):
     assert first[0] == 0 and second[0] == 0, (first, second)
     assert sorted(first[1] + second[1]) == ["unattended: pruned 0", "unattended: pruned 1"], (first, second)
@@ -872,6 +939,16 @@ AT_ONE_TIME = {
         (an_open_run_only, ("A", *CLOSE), ("C", *PRUNE), the_close_is_written),
     "a prune, and a session closes its run":
         (an_open_run_only, ("C", *PRUNE), ("A", *CLOSE), the_run_is_closed_and_kept_or_closed_and_removed),
+    "a stop of a session, and the close of its run":
+        (an_open_run_only, ("A", *STOP), ("A", *CLOSE), the_hook_writes_before_the_close_or_not_at_all("refused")),
+    "the close of a run, and a stop of its session":
+        (an_open_run_only, ("A", *CLOSE), ("A", *STOP), flip(the_hook_writes_before_the_close_or_not_at_all("refused"))),
+    "a prompt of a session, and the close of its run":
+        (an_open_run_only, ("A", *ASKED), ("A", *CLOSE), the_hook_writes_before_the_close_or_not_at_all("denied")),
+    "the close of a run, and a prompt of its session":
+        (an_open_run_only, ("A", *CLOSE), ("A", *ASKED), flip(the_hook_writes_before_the_close_or_not_at_all("denied"))),
+    "a stop of a session, and a prune by another session":
+        (an_old_run_and_an_open_run, ("A", *STOP), ("C", *PRUNE), the_stop_is_refused_and_the_old_run_is_gone),
     "two sessions prune":
         (an_old_run_only, ("C", *PRUNE), ("D", *PRUNE), one_of_the_two_removes_it),
     "a prune, and the close of a run that is 20 days late":
@@ -1053,6 +1130,455 @@ def test_a_folder_with_the_ending_of_a_prune_that_is_no_run_of_a_prune_stays(run
     assert not folder.exists() and stuck.exists()
 
 
+# ── the two hooks ────────────────────────────────────────────────────────────
+#
+# Claude Code starts `hook --event stop` when a session wants to end its turn, and `hook --event permission` when
+# it is about to ask the user. The event is JSON on the input. The hook prints one line of JSON, or nothing.
+
+def test_a_session_with_no_open_run_stops_and_is_asked_as_it_is_today(runs):
+    assert runs.stop() is None and runs.asked(command="rm -rf build") is None
+    folder = runs.started()
+    assert runs.stop(session="session-0002") is None and runs.asked(session="session-0002", command="rm x") is None
+    assert runs.run("close", "--why", "x")[0] == 0
+    assert runs.stop() is None and runs.asked(command="rm -rf build") is None
+    assert runs.kinds(folder) == ["started", "closed"], "and the hooks wrote nothing"
+
+
+def test_a_stop_is_refused_while_tasks_are_left_and_the_reason_names_the_next_one(runs):
+    folder = runs.started()
+    reason = runs.stop()
+    assert "3 tasks are left" in reason and "task 1 (add the parser)" in reason
+    assert "pytest tests/test_parser.py passes" in reason, "the check of the task is in the reason"
+    assert "do not wait" in reason and 'close --why "the user is back"' in reason
+    runs.run("log", "--kind", "done", "--task", "1", "--text", "x")
+    runs.run("log", "--kind", "skipped", "--task", "2", "--text", "x", "--needs", "y")
+    reason = runs.stop()
+    assert "1 task is left" in reason and "task 3 (write the notes)" in reason
+    refused = [line for line in runs.log_lines(folder) if line["kind"] == "refused"]
+    assert [(line["why"], line["task"]) for line in refused] == [("tasks", "1"), ("tasks", "3")]
+
+
+def test_a_stop_is_never_refused_when_a_wake_up_is_scheduled(runs):
+    folder = runs.started()
+    wake = {"id": "cron-001", "schedule": "30 4 21 11 *", "recurring": False, "prompt": "check the build"}
+    assert runs.stop(session_crons=[wake]) is None
+    assert runs.kinds(folder) == ["started"], "nothing is logged for a stop that is a planned wait"
+    assert runs.stop(session_crons=[]) is not None
+    assert runs.hook("stop") is not None, "an event with no list of wake-ups has none"
+    for odd in ("cron-001", {"id": "x"}, 1, None, [None], [{"id": "x"}, "y"]):
+        runs.run("log", "--kind", "heartbeat", "--text", "x")       # so that the three refusals in a row never come
+        assert runs.hook("stop", session_crons=odd) is not None, f"{odd!r} is no list of wake-ups"
+
+
+def test_a_wait_for_a_background_task_with_no_wake_up_is_refused(runs):
+    runs.started()
+    task = {"id": "task-001", "type": "shell", "status": "running", "description": "tests", "command": "pytest"}
+    reason = runs.stop(background_tasks=[task])
+    assert "1 background task is running" in reason and "set a wake-up" in reason
+    assert "2 background tasks are running" in runs.stop(background_tasks=[task, task])
+    runs.run("log", "--kind", "heartbeat", "--text", "x")
+    for none in ([], None, "task-001", 3):
+        assert "running" not in runs.hook("stop", background_tasks=none)["reason"], none
+        runs.run("log", "--kind", "heartbeat", "--text", "x")
+
+
+def test_after_three_refusals_with_no_line_between_them_the_session_may_stop(runs):
+    folder = runs.started()
+    assert [runs.stop() is not None for _ in range(5)] == [True, True, True, False, False]
+    assert runs.kinds(folder) == ["started", "refused", "refused", "refused", "released"], \
+        "the hook lets go one time and says so; after that it is silent"
+    runs.run("log", "--kind", "heartbeat", "--text", "at work again")
+    assert [runs.stop() is not None for _ in range(4)] == [True, True, True, False], "a line of the session starts the count again"
+    assert runs.kinds(folder)[-5:] == ["heartbeat", "refused", "refused", "refused", "released"]
+
+
+def test_a_prompt_that_was_denied_is_no_line_between_two_refusals(runs):
+    """A session that only meets denied prompts makes no progress: the count goes on."""
+    folder = runs.started()
+    assert runs.stop() and runs.asked(command="rm x") and runs.stop() and runs.asked(command="rm y") and runs.stop()
+    assert runs.stop() is None
+    assert runs.kinds(folder) == ["started", "refused", "denied", "refused", "denied", "refused", "released"]
+
+
+def test_with_no_task_left_the_stop_is_refused_one_time_for_the_close(runs):
+    folder = runs.started()
+    for task in ("1", "2", "3"):
+        runs.run("log", "--kind", "done", "--task", task, "--text", "x")
+    reason = runs.stop()
+    assert "No task is left" in reason and "close" in reason and "Blocked on me" in reason
+    assert runs.stop() is None, "one time only"
+    runs.run("log", "--kind", "heartbeat", "--text", "x")
+    assert runs.stop() is None, "also after a new line of the session"
+    assert [(line["kind"], line.get("why")) for line in runs.log_lines(folder)][-2:] == [("refused", "close"), ("heartbeat", None)]
+
+
+def test_at_the_time_limit_the_stop_is_refused_one_time_for_the_close(runs):
+    folder = runs.started(hours=0.0000001)
+    time.sleep(1.1)
+    reason = runs.stop()
+    assert "The time limit is reached" in reason and "3 tasks are left" in reason and "close" in reason
+    assert "task 1" not in reason, "no new task is named at the limit"
+    assert runs.stop() is None
+    assert [(line["kind"], line.get("why")) for line in runs.log_lines(folder)] == [("started", None), ("refused", "close")]
+
+
+def test_the_refusals_before_the_limit_do_not_use_up_the_one_at_the_limit(runs):
+    script = load_script()
+    folder = runs.started()
+    assert runs.stop() is not None
+    contract = json.loads((folder / "contract.json").read_text())
+    contract["ends"] = script.iso(script.now() - script.datetime.timedelta(minutes=1))
+    (folder / "contract.json").write_text(json.dumps(contract))
+    assert "The time limit is reached" in runs.stop()
+    assert runs.stop() is None
+
+
+def test_a_reason_is_one_line_of_bounded_length_whatever_the_plan_holds(runs):
+    long = "a title with é and ☃ " + "x" * 1990
+    runs.started(tasks=[{"title": long, "check": "c " * 900}])
+    reason = runs.stop()
+    assert len(reason) < 1500 and "\n" not in reason and "a title with é and ☃ xxx" in reason
+    assert "…" in reason, "a long title and a long check are cut, and the cut is shown"
+
+
+def test_a_prompt_during_an_open_run_is_denied_and_the_session_is_told_what_to_do(runs):
+    folder = runs.started()
+    message = runs.asked(command="git push origin work", description="push the branch")
+    assert "it is denied" in message and "--kind skipped" in message and "--needs" in message
+    assert 'close --why "the user is back"' in message
+    assert "as its own command, in the form of the skill text" in message, "a close in another form would be denied too"
+    assert len(message) < 1000
+    assert runs.log_lines(folder)[-1] | {"t": ""} == {"t": "", "kind": "denied", "tool": "Bash", "text": "git push origin work"}
+
+
+@pytest.mark.parametrize("tool, tool_input, text", [
+    ("Edit", {"file_path": "/etc/hosts", "old_string": "a", "new_string": "b"}, "/etc/hosts"),
+    ("Write", {"file_path": "/tmp/x.txt", "content": "secret text"}, "/tmp/x.txt"),
+    ("AskUserQuestion", {"questions": [{"question": "Which one?"}]}, '{"questions": [{"question": "Which one?"}]}'),
+    ("mcp__github__create_issue", {"title": "t"}, '{"title": "t"}'),
+    ("WebFetch", {"url": "https://example.com/a", "prompt": "p"}, "https://example.com/a"),
+    ("Bash", {}, "{}"),
+    ("Agent", None, "null"),
+])
+def test_the_prompt_of_every_tool_is_denied(runs, tool, tool_input, text):
+    folder = runs.started()
+    answer = runs.hook("permission", tool_name=tool, tool_input=tool_input)
+    assert answer["hookSpecificOutput"]["decision"]["behavior"] == "deny"
+    assert runs.log_lines(folder)[-1] | {"t": ""} == {"t": "", "kind": "denied", "tool": tool, "text": text}
+
+
+def test_a_prompt_is_denied_after_the_time_limit_too_until_the_run_is_closed(runs):
+    runs.started(hours=0.0000001)
+    time.sleep(1.1)
+    assert runs.asked(command="rm x") is not None
+    assert runs.run("close")[0] == 0
+    assert runs.asked(command="rm x") is None
+
+
+def test_the_same_prompt_again_is_denied_again_and_logged_one_time(runs):
+    folder = runs.started()
+    for command in ("rm x", "rm x", "rm x", "rm y", "rm x"):
+        assert runs.asked(command=command) is not None
+    assert [line["text"] for line in runs.log_lines(folder)[1:]] == ["rm x", "rm y", "rm x"]
+    assert runs.asked(tool="Read", file_path="rm x") is not None
+    assert [(line["tool"], line["text"]) for line in runs.log_lines(folder)[-2:]] == [("Bash", "rm x"), ("Read", "rm x")], \
+        "the same text for another tool is another prompt"
+
+
+def test_a_long_command_is_cut_in_the_log(runs):
+    folder = runs.started()
+    assert runs.asked(command="echo " + "x" * 5000) is not None
+    text = runs.log_lines(folder)[-1]["text"]
+    assert len(text) == 300 and text.endswith("…")
+
+
+def own(runs, *args):
+    """A command of the script as the skill writes it, with the home folder of the test."""
+    return " ".join(["python3", "-I", "~/.claude/skills/unattended/scripts/contract.py", *args])
+
+
+def test_a_command_that_starts_the_script_is_not_denied(runs):
+    """A run that denied its own `close` could not be ended by its session. For these commands the hook is
+    silent, so Claude Code decides as it does today."""
+    folder = runs.started()
+    (runs.home / ".claude" / "skills").mkdir(parents=True)
+    (runs.home / ".claude" / "skills" / "unattended").symlink_to(SKILL)       # as the installer links it
+    silent = [own(runs, "close", "--why", '"the user is back"'), own(runs, "log", "--kind", "heartbeat", "--text", "x"),
+              f"python3 -I {SCRIPT} status", f"{PY} {SCRIPT} status", f"  python3   -I\t{SCRIPT}  status",
+              f"/usr/bin/python3 -I {SCRIPT} close && rm -rf x", f"python3.12 -I {SCRIPT} status", f"python {SCRIPT} close"]
+    for command in silent:
+        assert runs.asked(command=command) is None, command
+    denied = [f"echo python3 -I {SCRIPT} close", f"python3 -I {SCRIPT}; rm -rf x", "python3 -I /tmp/contract.py close",
+              f"python3 -I {SCRIPT.parent} close", f"sh -c 'python3 -I {SCRIPT} close'", f"rm -rf x; python3 -I {SCRIPT} close",
+              f"python3 -c 'import os' {SCRIPT}", f"python3 -I -I {SCRIPT} close", "   ", "python3 -I", "", "python3",
+              f"cat {SCRIPT}", f"rm {SCRIPT}", f"sh {SCRIPT} close", f"python3 -B {SCRIPT} close", f"python3 -u {SCRIPT} status",
+              # found by the adversary: the first command of each is not this script, started by python
+              f"python3;rm {SCRIPT}", f"python3|rm {SCRIPT}", f"python3-config {SCRIPT} status", f"/tmp/python-evil {SCRIPT} close",
+              f"pythonista {SCRIPT}", f"python3\n{SCRIPT} close\nrm -rf ~", f"python3=1 {SCRIPT} close",
+              f"python3 -I {SCRIPT} close\nrm -rf ~", f"python3 -I {SCRIPT}\x00 close", f"python3 -I '{SCRIPT}' close",
+              f"python3\u00a0-I {SCRIPT} close", f"python3 -I $HOME{SCRIPT} close"]
+    for command in denied:
+        assert runs.asked(command=command) is not None, command
+    assert runs.asked(tool="Write", file_path=str(SCRIPT), content="x") is not None, "only as a shell command"
+    assert runs.asked(tool="Monitor", command=f"python3 -I {SCRIPT} status") is not None, "and only of the shell tool"
+    assert runs.kinds(folder).count("denied") == len(denied) + 2
+
+
+def test_a_start_of_the_script_is_made_of_plain_words(runs):
+    """The script is known by its file, so a link to it counts. A link whose name the shell reads as two
+    commands does not: `python3 /x/a;b.py close` starts another file, and then a command `b.py`."""
+    folder = runs.started()
+    for name in ("link.py", "a;b.py", "a&&b.py", "a$(id).py", "a|b.py"):
+        (runs.home / name).symlink_to(SCRIPT)
+    for command in (f"python3 -I {runs.home}/link.py close", f"python3 {runs.home}/link.py status"):
+        assert runs.asked(command=command) is None, command
+    denied = [f"python3 -I {runs.home}/a;b.py close", f"python3 {runs.home}/a;b.py close", f"python3 {runs.home}/a&&b.py close",
+              f"python3 -I {runs.home}/a$(id).py close", f"python3 {runs.home}/a|b.py close",
+              f"true&&/usr/bin/python3 -I {SCRIPT} close", f"$(id)/python3 {SCRIPT} close", f"`id`/python3 -I {SCRIPT} close",
+              f"x;/usr/bin/python3 {SCRIPT} close"]
+    for command in denied:
+        assert runs.asked(command=command) is not None, command
+    assert runs.kinds(folder).count("denied") == len(denied)
+
+
+@pytest.mark.parametrize("text", ["", "not json", "[]", "null", '"session-0001"', "{}", '{"session_id": 7}',
+                                  '{"session_id": "../../outside"}', '{"session_id": "short"}', "\x00\x01",
+                                  '{"session_id": "session-0001"', "[" * 200000])
+def test_an_event_that_cannot_be_read_gets_no_answer_and_no_error(runs, text):
+    folder = runs.started()
+    for event in ("stop", "permission"):
+        assert runs.hook_text(event, text) == ""
+    assert runs.kinds(folder) == ["started"]
+
+
+def test_a_prompt_event_that_names_no_tool_gets_no_answer(runs):
+    folder = runs.started()
+    for fields in ({}, {"tool_name": 7}, {"tool_name": ""}, {"tool_name": None, "tool_input": {"command": "rm x"}}):
+        assert runs.hook("permission", **fields) is None, fields
+    assert runs.kinds(folder) == ["started"]
+
+
+def test_an_event_that_is_too_long_gets_no_answer(runs):
+    runs.started()
+    event = {"session_id": SESSION, "tool_name": "Bash", "tool_input": {"command": "rm x"}}
+    assert runs.hook_text("permission", json.dumps(event)) != ""
+    assert runs.hook_text("permission", json.dumps({**event, "last_assistant_message": "x" * 9_000_000})) == ""
+    padded = json.dumps(event) + " " * (8 * 1024 * 1024)
+    assert runs.hook_text("permission", padded) == "", "also when the part that is read is whole JSON"
+    assert runs.hook_text("permission", json.dumps(event) + " " * 1000) != ""
+
+
+def test_a_session_id_that_leads_out_of_the_folder_of_the_runs_reads_no_run_there(runs):
+    """The id of an event is a plain name before it is a part of a path."""
+    folder = runs.started()
+    outside = runs.tmp / "elsewhere"
+    shutil.copytree(folder.parent, outside)
+    contract = json.loads((outside / folder.name / "contract.json").read_text())
+    contract["session"] = "../elsewhere"
+    (outside / folder.name / "contract.json").write_text(json.dumps(contract))
+    event = {"session_id": "../elsewhere", "tool_name": "Bash", "tool_input": {"command": "rm x"}}
+    for name in ("stop", "permission"):
+        assert runs.hook_text(name, json.dumps(event)) == ""
+    assert [json.loads(line)["kind"] for line in (outside / folder.name / "log.jsonl").read_text().splitlines()] == ["started"]
+
+
+@pytest.mark.parametrize("args", [("hook",), ("hook", "--event"), ("hook", "--event", "bogus"), ("hook", "--help"),
+                                  ("hook", "--event", "stop", "extra"), ("hook", "--event=stop"), ("hook", "stop")])
+def test_a_hook_that_is_started_wrongly_gets_no_answer_and_no_error(runs, args):
+    """Claude Code shows a hook that fails as an error at each stop and each prompt of every session."""
+    runs.started()
+    done = subprocess.run([PY, "-I", str(SCRIPT), *args], cwd=runs.cwd, env=runs.env(None), capture_output=True, text=True,
+                          input=json.dumps({"session_id": SESSION, "tool_name": "Bash", "tool_input": {}}), timeout=60)
+    assert (done.returncode, done.stdout, done.stderr) == (0, "", "")
+
+
+@pytest.mark.parametrize("damage", ["a log line that is no object", "a contract that is cut", "a link at the log"])
+def test_a_run_that_cannot_be_read_gets_no_answer(runs, damage, tmp_path):
+    folder = runs.started()
+    if damage == "a log line that is no object":
+        (folder / "log.jsonl").write_text("[]\n")
+    elif damage == "a contract that is cut":
+        (folder / "contract.json").write_text('{"version": 1')
+    else:
+        (folder / "log.jsonl").unlink()
+        (folder / "log.jsonl").symlink_to(tmp_path / "nothing")
+    assert runs.hook_text("stop", json.dumps({"session_id": SESSION})) == ""
+    assert runs.hook_text("permission", json.dumps({"session_id": SESSION, "tool_name": "Bash", "tool_input": {}})) == ""
+
+
+def test_the_stop_hook_agrees_with_a_second_version_on_random_runs(runs, monkeypatch):
+    """The second version keeps three numbers and never reads the log. Each run is a random row of stops (with
+    and with no wake-up), lines of the session, prompts, and at some point the time limit."""
+    script = load_script()
+    monkeypatch.setenv("UNATTENDED_ROOT", str(runs.root))
+    rng = random.Random(20261120)
+    plan = runs.plan()
+    for number in range(120):
+        session = f"session-r{number:04d}"
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert script.main(["start", "--plan", plan]) == 0
+        (folder,) = (runs.root / session).iterdir()
+        state = {"1": "left", "2": "left", "3": "left"}
+        in_a_row, let_go, asked_to_close, late, expected = 0, False, False, False, ["started"]
+        for _ in range(rng.randrange(5, 40)):
+            move = rng.choice(["stop"] * 6 + ["wake", "beat", "decision", "done", "skipped", "prompt", "late"])
+            if move in ("stop", "wake"):
+                wake = [{"id": "c", "schedule": "* * * * *", "recurring": False, "prompt": "p"}] if move == "wake" else []
+                answer = in_process_hook(script, monkeypatch, "stop", session=session, session_crons=wake)
+                left = [task for task, value in state.items() if value == "left"]
+                if move == "wake" or let_go:
+                    want = None
+                elif in_a_row >= 3:
+                    want, let_go = None, True
+                    expected.append("released")
+                elif left and not late:
+                    want, in_a_row = f"Take task {left[0]} (", in_a_row + 1
+                    expected.append("refused")
+                elif asked_to_close:
+                    want = None
+                else:
+                    want, in_a_row, asked_to_close = "is still open", in_a_row + 1, True
+                    expected.append("refused")
+                assert (answer is None) == (want is None) and (want is None or want in answer["reason"]), \
+                    (number, expected, answer)
+            elif move == "prompt":
+                command = f"rm {rng.randrange(3)}"
+                answer = in_process_hook(script, monkeypatch, "permission", session=session, tool_name="Bash",
+                                         tool_input={"command": command})
+                assert answer is not None
+                last = runs.log_lines(folder)[-1]
+                if not (last["kind"] == "denied" and expected[-1] == "denied" and len(runs.log_lines(folder)) == len(expected)):
+                    expected.append("denied")
+            elif move == "late":
+                late = True
+                contract = json.loads((folder / "contract.json").read_text())
+                contract["ends"] = script.iso(script.now() - script.datetime.timedelta(minutes=1))
+                (folder / "contract.json").write_text(json.dumps(contract))
+            else:
+                kind = {"beat": "heartbeat"}.get(move, move)
+                task = rng.choice("123")
+                args = ["log", "--kind", kind, "--text", "x"] + (["--task", task] if kind in ("done", "skipped") else [])
+                args += ["--needs", "y"] if kind == "skipped" else []
+                with contextlib.redirect_stdout(io.StringIO()):
+                    assert script.main(args) == 0
+                if kind in ("done", "skipped"):
+                    state[task] = kind
+                in_a_row, let_go = 0, False
+                expected.append(kind)
+            assert runs.kinds(folder) == expected, number
+
+
+def in_process_hook(script, monkeypatch, event, session=SESSION, **fields):
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps({"session_id": session, **fields}).encode())))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert script.main(["hook", "--event", event]) == 0
+    return json.loads(out.getvalue()) if out.getvalue() else None
+
+
+def test_while_another_command_holds_the_run_a_stop_is_let_go_and_a_prompt_is_still_denied(runs, monkeypatch):
+    """The stop hook decides from the log, so it must hold the run; with no lock it does not guess. A prompt is
+    denied from what was read, also when the line for it cannot be written."""
+    import fcntl
+    script = load_script()
+    folder = runs.started()
+    monkeypatch.setenv("UNATTENDED_ROOT", str(runs.root))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.setattr(script, "LOCK_WAIT_S", 0.3)
+    held = os.open(folder, os.O_RDONLY)
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert in_process_hook(script, monkeypatch, "stop") is None
+        answer = in_process_hook(script, monkeypatch, "permission", tool_name="Bash", tool_input={"command": "rm x"})
+        assert answer["hookSpecificOutput"]["decision"]["behavior"] == "deny"
+    finally:
+        os.close(held)
+    assert runs.kinds(folder) == ["started"]
+    assert in_process_hook(script, monkeypatch, "stop")["decision"] == "block"
+
+
+def test_an_answer_that_nobody_reads_is_no_error(runs):
+    """Found by the adversary: with the reading end of its output closed, the hook ended with a traceback and
+    exit 120."""
+    runs.started()
+    event = json.dumps({"session_id": SESSION, "tool_name": "Bash", "tool_input": {"command": "rm x"}})
+    for name in ("stop", "permission"):
+        hook = subprocess.Popen([PY, "-I", str(SCRIPT), "hook", "--event", name], cwd=runs.cwd, env=runs.env(None),
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        hook.stdout.close()
+        hook.stdin.write(event.encode())
+        hook.stdin.close()
+        assert hook.wait(timeout=60) == 0 and hook.stderr.read() == b"", name
+        hook.stderr.close()
+
+
+def test_a_fault_inside_a_hook_is_no_answer_and_no_traceback(runs, monkeypatch, capsys):
+    script = load_script()
+    runs.started()
+    monkeypatch.setenv("UNATTENDED_ROOT", str(runs.root))
+
+    def broken(*args):
+        raise RuntimeError("a fault")
+    for name in ("stop_answer", "permission_answer"):
+        monkeypatch.setattr(script, name, broken)
+    assert in_process_hook(script, monkeypatch, "stop") is None
+    assert in_process_hook(script, monkeypatch, "permission", tool_name="Bash", tool_input={}) is None
+    assert capsys.readouterr() == ("", "")
+
+
+def test_log_does_not_take_the_kinds_of_the_hooks(runs):
+    runs.started()
+    for kind in ("refused", "released", "denied", "started", "closed"):
+        code, lines = runs.run("log", "--kind", kind, "--text", "x")
+        assert code == 2 and "invalid choice" in lines[0], (kind, lines)
+
+
+def test_a_prompt_that_comes_while_a_log_line_is_half_written_is_still_denied(tmp_path, monkeypatch):
+    """Found by the verifier, by reading: the hook reads the run without holding it. A line that is on the disk
+    in part at that moment made the run unreadable, the hook was silent, and the prompt waited for the user."""
+    world = Twice(tmp_path / "half", monkeypatch)
+    folder = world.open_run(world.A)
+    log, whole = folder / "log.jsonl", (folder / "log.jsonl").read_bytes()
+    state = []
+
+    def half_a_line_at_the_first_look(name, args):
+        if name == "open" and str(args[0]).endswith("log.jsonl") and not state:
+            state.append("half")
+            log.write_bytes(whole + b'{"t": "2026-11-20T00:00:00Z", "kind": "hear')
+        elif state == ["half"] and name == "open" and str(args[0]).endswith("contract.json"):
+            state.append("whole")                # the next read of the run comes after the writer is done
+            log.write_bytes(whole + b'{"t": "2026-11-20T00:00:00Z", "kind": "heartbeat", "text": "x"}\n')
+    code, lines = world.watched(world.A, *ASKED, each=half_a_line_at_the_first_look)
+    assert code == 0 and json.loads(lines[0])["hookSpecificOutput"]["decision"]["behavior"] == "deny", lines
+    assert state == ["half", "whole"] and world.kinds(folder) == ["started", "heartbeat", "denied"]
+    log.write_bytes(whole + b'{"t": "2026-11-20T00:00:00Z", "kind": "hear')
+    assert world.call(world.A, *ASKED) == (0, []), "a log that stays damaged gets no answer"
+
+
+def test_the_report_counts_the_refusals_and_names_what_was_denied(runs):
+    runs.started()
+    assert runs.asked(command="git push origin work") and runs.asked(tool="Edit", file_path="/etc/hosts")
+    assert runs.asked(command="git push origin work")
+    assert [runs.stop() is not None for _ in range(4)] == [True, True, True, False]
+    code, lines = runs.run("close", "--why", "x")
+    assert code == 0
+    text = "\n".join(lines[lines.index("## Found"):])
+    assert "- A prompt was denied, for nobody could answer it: Bash: git push origin work (2 times)" in text
+    assert "- A prompt was denied, for nobody could answer it: Edit: /etc/hosts" in text
+    assert "- The session was let go after 3 stops were refused and it logged no line between them." in text
+    assert "3 stops refused, 3 prompts denied." in text
+
+
+def test_a_task_state_is_not_changed_by_a_line_of_a_hook(runs):
+    runs.started()
+    runs.run("log", "--kind", "done", "--task", "1", "--text", "x")
+    assert runs.stop() and runs.asked(command="rm x")
+    code, lines = runs.run("status")
+    assert lines == ["done 1 add the parser", "left 2 push the branch", "left 3 write the notes",
+                     lines[-1]] and lines[-1].startswith("unattended: open left=2 ")
+
+
 # ── which command would prompt ───────────────────────────────────────────────
 
 # The rows of the table under "Wildcard patterns" on the permissions page of the Claude Code docs, read 2026-11-17.
@@ -1111,6 +1637,33 @@ def test_the_matcher_agrees_with_a_second_version_on_random_rules_and_commands()
     assert 1000 < matched < 39000, "the random cases must hold both answers"
 
 
+OWN = "python3 -I ~/.claude/skills/unattended/scripts/contract.py"
+OWN_RULE = f"Bash({OWN} *)"
+
+
+FOR_THE_RUN = "; the run itself needs this]"
+
+
+def own_lines(lines, start=OWN):
+    """The verdicts of the five lines of `preflight` for what a session types of the script from `start` on,
+    which come before its last line: every `start`, `status`, every `log`, a bare `close` and every `close` with
+    words. Each line is checked."""
+    own, verdicts = lines[-6:-1], []
+    assert len(own) == 5, lines
+    for line, form in zip(own, ("start *", "status", "log *", "close", "close *")):
+        verdict, rest = line.split(" ", 1)
+        assert rest.startswith(f"{start} {form} [") and rest.endswith(FOR_THE_RUN), (line, form)
+        verdicts.append(verdict)
+    return verdicts
+
+
+def of_the_plan(lines):
+    """The lines of `preflight` for the commands of the plan, and its last line. The five lines for the script
+    itself are checked and left out."""
+    own_lines(lines)
+    return lines[:-6] + lines[-1:]
+
+
 def settings(runs, where, **permissions):
     path = {"user": runs.home / ".claude" / "settings.json", "project": runs.cwd / ".claude" / "settings.json",
             "local": runs.cwd / ".claude" / "settings.local.json"}[where]
@@ -1125,7 +1678,8 @@ def test_preflight_names_each_command_that_would_prompt(runs):
     commands = ["python3 -m pytest tests", "git push origin work", "git push --force origin work", "gh pr merge 7 --squash",
                 "make test", "npm test", "git status && git push origin work", "git status"]
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=commands), "--project", str(runs.cwd))
-    assert code == 1 and lines[-1] == "unattended: preflight allowed=4 would-prompt=2 unsure=1 denied=1", lines
+    lines = of_the_plan(lines)
+    assert code == 1 and lines[-1] == "unattended: preflight allowed=4 would-prompt=7 unsure=1 denied=1", lines
     assert [line.split(" ", 1)[0] for line in lines[:-1]] == ["allowed", "allowed", "denied", "would-prompt", "allowed",
                                                              "would-prompt", "unsure", "allowed"]
     assert lines[1] == "allowed git push origin work [allow: git push *]"
@@ -1134,11 +1688,141 @@ def test_preflight_names_each_command_that_would_prompt(runs):
     assert "never printed" not in "\n".join(lines)
 
 
+def test_the_commands_of_the_script_are_judged_as_the_plan_starts_the_script(runs):
+    """Found by a live session: the script ran from another folder than the one of the skill text. `preflight`
+    judged a form that the session would never type, called it `would-prompt`, and the session started no run."""
+    mine = f"/usr/bin/python3 -I {SCRIPT}"
+    settings(runs, "user", allow=[f"Bash({mine} *)"])
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[f"{mine} status"]))
+    assert (code, lines[-1]) == (0, "unattended: preflight allowed=6 would-prompt=0 unsure=0 denied=0"), lines
+    assert own_lines(lines, start=mine) == ["allowed"] * 5 and lines[0] == f"allowed {mine} status [allow: {mine} *]"
+    assert lines[3] == f"allowed {mine} log * [allow: {mine} *; the run itself needs this]"
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git status", f"{mine}   log --kind done --text x"]))
+    assert code == 1 and own_lines(lines, start=mine) == ["allowed"] * 5, \
+        "any command of the script shows its start, and the start is written with one space between its words"
+    assert [line.split(" ", 1)[0] for line in lines[:2]] == ["would-prompt", "allowed"]
+    for none in ([], ["git status"], [f"echo {mine} log"], [f"cat {SCRIPT}"], [f"{mine}x status"]):
+        code, lines = runs.run("preflight", "--plan", runs.plan(commands=none))
+        assert code == 1 and own_lines(lines) == ["would-prompt"] * 5, f"{none}: the start of the skill text"
+    other = f"python3 {SCRIPT}"
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[f"{other} status", f"{mine} status", f"{other} close"]))
+    assert code == 1 and len(lines) == 3 + 5 + 5 + 1, "each start of the plan is judged, one time"
+    assert own_lines(lines[:8] + lines[-1:], start=other) == ["would-prompt"] * 5 and own_lines(lines, start=mine) == ["allowed"] * 5
+
+
+PER_LINE = ["status", "log --kind heartbeat --task * --text *", "log --kind decision --text *",
+            "log --kind skipped --task * --text * --needs *", "log --kind done --task * --text *", "close", "close --why *"]
+
+
+def test_a_rule_for_each_line_that_a_run_was_seen_to_type_is_not_enough(runs):
+    """Found by the adversary, two times. First `log` was judged with no word behind it, and an allow rule for
+    that one text gave exit 0. Then seven lines were judged, and a rule for each of them gave exit 0, while a
+    heartbeat that names no task had no rule. A list of lines is never the lines of the next run: the first
+    `log` outside the list would have waited for the user all night."""
+    yes, no = "allowed", "would-prompt"
+    cases = [(["log", "status", "close", "start"], [no, yes, no, yes, no]),
+             (PER_LINE, [no, yes, no, yes, no]),
+             (PER_LINE + ["start --plan *"], [no, yes, no, yes, no]),
+             (["start *", "status", "log --kind *", "close *"], [yes, yes, no, yes, yes]),
+             (["status", "log * --text *", "close"], [no, yes, no, yes, no]),
+             (["status", "log *x", "close*"], [no, yes, no, yes, yes]),
+             (["log *", "close --why *"], [no, no, yes, no, no])]
+    for rules, expected in cases:
+        settings(runs, "user", allow=[f"Bash({OWN} {rule})" for rule in rules])
+        code, lines = runs.run("preflight", "--plan", runs.plan(commands=[]))
+        assert code == 1 and own_lines(lines) == expected, rules
+    assert lines[-3] == f"would-prompt {OWN} close [no allow rule covers it; the run itself needs this]"
+    assert lines[-2] == (f"would-prompt {OWN} close * [no allow rule covers every such command; this one does: "
+                         f"Bash({OWN} close *); the run itself needs this]")
+    enough = [[f"Bash({OWN} *)"], [f"Bash({OWN}:*)"], ["Bash(python3 *)"], ["Bash"], ["Bash(*)"], [f"Bash({OWN} **)"],
+              [f"Bash({OWN} {rule})" for rule in ("start *", "status", "log *", "close *")],
+              [f"Bash({OWN} {rule})" for rule in ("start:*", "status", "log:*", "close:*")],
+              [f"Bash({OWN} {rule})" for rule in ("s*", "lo*", "close", "close *")]]
+    for rules in enough:
+        settings(runs, "user", allow=rules)
+        code, lines = runs.run("preflight", "--plan", runs.plan(commands=[]))
+        assert code == 0 and own_lines(lines) == ["allowed"] * 5, rules
+    settings(runs, "user", allow=[f"Bash({OWN} *:*)"])
+    assert own_lines(runs.run("preflight", "--plan", runs.plan(commands=[]))[1]) == ["would-prompt"] * 5, \
+        "a `:*` beside another `*` is a form that the script does not take for one that it knows"
+
+
+def test_a_rule_that_stops_some_lines_of_the_run_is_found_by_its_beginning(runs):
+    """A deny or ask rule for one kind of line of the run stops that line, also when an allow rule covers every
+    command of the script. A rule for a command that a run does not type (`prune`) stops nothing of the run."""
+    base = "contract.py"
+    cases = [(f"{OWN} log --kind heartbeat --text *", [0, 0, 1, 0, 0]), (f"{OWN} log --kind heartbeat --text waited", [0, 0, 1, 0, 0]),
+             (f"{OWN} log:*", [0, 0, 1, 0, 0]), (f"{OWN} lo:*", [0, 0, 1, 0, 0]), (f"{OWN} log --kind:*", [0, 0, 1, 0, 0]),
+             (f"{OWN} clos:*", [0, 0, 0, 1, 1]), (f"{OWN} lo*", [0, 0, 1, 0, 0]), (f"{OWN} close", [0, 0, 0, 1, 0]),
+             (f"{OWN} close --why x", [0, 0, 0, 0, 1]), (f"{OWN} close *", [0, 0, 0, 1, 1]), (f"{OWN} close --why*", [0, 0, 0, 0, 1]),
+             (f"{OWN} status", [0, 1, 0, 0, 0]), (f"{OWN} start --plan *", [1, 0, 0, 0, 0]), (f"{OWN} s*", [1, 1, 0, 0, 0]), (f"{OWN} *", [1, 1, 1, 1, 1]), ("python3 *", [1, 1, 1, 1, 1]),
+             ("python3", [1, 1, 1, 1, 1]), ("p*", [1, 1, 1, 1, 1]), (f"*{base}*", [1, 1, 1, 1, 1]), (f"{base} log --kind done*", [0, 0, 1, 0, 0]),
+             (f"*{base} log *", [0, 0, 1, 0, 0]), (f"{base} close*", [0, 0, 0, 1, 1]), (f"python3  -I   {OWN.split()[-1]} log *", [0, 0, 1, 0, 0]),
+             (f"{OWN} prune *", [0, 0, 0, 0, 0]), (f"{OWN} hook *", [0, 0, 0, 0, 0]), (f"{OWN} logs*", [0, 0, 0, 0, 0]),
+             ("git push *", [0, 0, 0, 0, 0]), ("rm *", [0, 0, 0, 0, 0]), (f"{OWN} closed", [0, 0, 0, 0, 0]), ("python3 -c *", [0, 0, 0, 0, 0])]
+    for kind, verdict in (("ask", "would-prompt"), ("deny", "denied")):
+        for rule, stopped in cases:
+            settings(runs, "user", allow=[OWN_RULE], **{kind: [f"Bash({rule})"]})
+            code, lines = runs.run("preflight", "--plan", runs.plan(commands=[]))
+            assert own_lines(lines) == [verdict if hit else "allowed" for hit in stopped], (kind, rule)
+            assert code == (1 if any(stopped) else 0), (kind, rule)
+    settings(runs, "user", allow=[OWN_RULE], ask=[f"Bash({OWN} log --kind skipped*)"])
+    lines = runs.run("preflight", "--plan", runs.plan(commands=[]))[1]
+    assert lines[-4] == f"would-prompt {OWN} log * [ask: {OWN} log --kind skipped*; the run itself needs this]"
+    settings(runs, "user", allow=[OWN_RULE], ask=["Bash"])
+    assert own_lines(runs.run("preflight", "--plan", runs.plan(commands=[]))[1]) == ["would-prompt"] * 5
+    settings(runs, "user")
+    settings(runs, "project", ask=[f"Bash({OWN} log --kind done *)"])
+    settings(runs, "local", allow=[OWN_RULE], deny=[f"Bash({OWN} close --why *)"])
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[]), "--project", str(runs.cwd))
+    assert own_lines(lines) == ["allowed", "allowed", "would-prompt", "allowed", "denied"], "the rules of each settings file count"
+    assert own_lines(runs.run("preflight", "--plan", runs.plan(commands=[]))[1]) == ["would-prompt"] * 5, "with no project, none of them"
+
+
+def test_a_line_for_every_command_agrees_with_the_verdict_of_each_command():
+    """Against the judge of one command, on random rules: when the line `start *`, `log *` or `close *` is `allowed`, each
+    command that starts so is `allowed` too. The words of a command are options of the script and words that
+    stand in no rule. The rules that stop are made from the start of a real command: one that starts with `*`
+    and goes on into the text, or one for a word of the text, is the limit that the known limits state."""
+    script, rng = load_script(), random.Random(20261120)
+    options = ["--kind", "heartbeat", "decision", "skipped", "done", "--task", "--text", "--needs", "--why"]
+
+    def tail():
+        return " ".join(rng.choice(options + ["w%04d" % rng.randrange(10000)]) for _ in range(rng.randint(1, 6)))
+
+    def cut(text):
+        return text[:rng.randint(0, len(text))]
+
+    seen = {"allowed": 0, "other": 0, "stopped by a rule": 0}
+    for _ in range(4000):
+        name = rng.choice(["start", "log", "close"])
+        head = f"{OWN} {name}"
+        full = f"{head} {' '.join(rng.choice(options) for _ in range(rng.randint(1, 4)))}"
+        allow = [rng.choice([f"{OWN} *", f"{head} *", f"{head}:*", f"{head}*", cut(full) + "*", cut(full), cut(full) + ":*",
+                             cut(full) + "*" + rng.choice(options) + "*", f"{head} * *", "*", "python3 *", f"{OWN} {name[:2]}*"])
+                 for _ in range(rng.randint(1, 3))]
+        begin = rng.choice([full, "contract.py" + full[len(OWN):], full.replace(" ", "  ", 1)])
+        stop = [rng.choice([cut(begin) + "*", cut(begin), cut(begin) + ":*", cut(begin) + " *", "*" + cut(OWN[rng.randint(0, 40):]) + "*",
+                            cut(begin) + "*" + rng.choice(options) + "*", "git push *", f"{OWN} prune *"])
+                for _ in range(rng.choice([0, 0, 1, 2]))]
+        stop = [rule for rule in stop if rule.split("*")[0].strip() or rule.strip("* ") in OWN]
+        rules = [{"permissions": {"allow": [f"Bash({rule})" for rule in allow], rng.choice(["ask", "deny"]): [f"Bash({rule})" for rule in stop]}}]
+        verdict = script.judge_every(head, rules)[0]
+        each = [script.judge(f"{head} {tail()}", rules)[0] for _ in range(12)]
+        if verdict == "allowed":
+            assert each == ["allowed"] * 12, (allow, stop, head)
+        seen["allowed" if verdict == "allowed" else "other"] += 1
+        seen["stopped by a rule"] += verdict in ("denied", "would-prompt") and bool(stop) and script.judge_every(
+            head, [{"permissions": {"allow": [f"Bash({rule})" for rule in allow]}}])[0] == "allowed"
+    assert min(seen.values()) > 300, seen
+
+
 def test_a_deny_or_ask_rule_with_a_colon_is_read_in_its_wider_sense(runs):
     """The docs say that `rm:*` is `rm *`. An older reading takes it as a plain prefix. For a rule that stops a
     command, the script takes whichever reading stops more; for a rule that allows one, the reading of the docs."""
     settings(runs, "user", allow=["Bash(ls:*)", "Bash(rmdir build)", "Bash(ghost run)"], deny=["Bash(rm:*)"], ask=["Bash(gh:*)"])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=["ls -la", "lsof", "rm -rf x", "rmdir build", "ghost run", "gh pr list"]))
+    lines = of_the_plan(lines)
     assert [line.split(" ", 1)[0] for line in lines[:-1]] == ["allowed", "would-prompt", "denied", "denied", "would-prompt",
                                                              "would-prompt"], lines
     assert lines[3] == "denied rmdir build [deny: rm:*]"
@@ -1177,6 +1861,7 @@ def test_a_rule_that_stops_a_command_is_read_with_its_spaces_made_even(runs, den
     before it matches. Read letter for letter, a deny rule missed the command and a wide allow rule passed it."""
     settings(runs, "user", allow=["Bash", "Bash(*)", "Bash(git *)"], deny=deny, ask=ask)
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=[command]))
+    lines = of_the_plan(lines)
     assert code == 1 and lines[0].split(" ", 1)[0] == verdict, lines
 
 
@@ -1186,6 +1871,7 @@ def test_a_rule_that_stops_counts_from_each_of_the_three_settings_files(runs):
     settings(runs, "local", allow=["Bash"], deny=["Bash(git push *)"])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git push origin x", "make deploy", "make test"]),
                            "--project", str(runs.cwd))
+    lines = of_the_plan(lines)
     assert [line.split(" ", 1)[0] for line in lines[:-1]] == ["denied", "would-prompt", "allowed"], lines
 
 
@@ -1199,24 +1885,44 @@ def test_a_rule_that_stops_counts_from_each_of_the_three_settings_files(runs):
 def test_an_allow_rule_in_a_form_that_the_script_does_not_know_for_sure_allows_nothing(runs, allow, command):
     settings(runs, "user", allow=[allow])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=[command]))
+    lines = of_the_plan(lines)
     assert code == 1 and lines[0].split(" ", 1)[0] in ("would-prompt", "unsure"), lines
 
 
 def test_preflight_prints_the_command_with_the_spaces_that_were_judged(runs):
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git  push   origin"]))
+    lines = of_the_plan(lines)
     assert lines[0].startswith("would-prompt git  push   origin [")
 
 
 def test_preflight_passes_only_when_every_command_is_allowed(runs):
     settings(runs, "user", allow=["Bash"])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git push origin work", "anything at all"]))
-    assert (code, lines[-1]) == (0, "unattended: preflight allowed=2 would-prompt=0 unsure=0 denied=0")
-    assert runs.run("preflight", "--plan", runs.plan(commands=[])) == (0, ["unattended: preflight allowed=0 would-prompt=0 unsure=0 denied=0"])
+    lines = of_the_plan(lines)
+    assert (code, lines[-1]) == (0, "unattended: preflight allowed=7 would-prompt=0 unsure=0 denied=0")
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[]))
+    assert code == 0 and of_the_plan(lines) == ["unattended: preflight allowed=5 would-prompt=0 unsure=0 denied=0"]
+    settings(runs, "user", allow=["Bash(git push *)", "Bash(anything at all)"])
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git push origin work", "anything at all"]))
+    assert (code, lines[-1]) == (1, "unattended: preflight allowed=2 would-prompt=5 unsure=0 denied=0"), \
+        "every command of the plan is allowed, and the commands of the script itself are not"
+    assert own_lines(lines) == ["would-prompt"] * 5
+    settings(runs, "user", allow=["Bash(git push *)", "Bash(anything at all)", OWN_RULE])
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git push origin work", "anything at all"]))
+    assert (code, lines[-1]) == (0, "unattended: preflight allowed=7 would-prompt=0 unsure=0 denied=0")
+    assert lines[-3:-1] == [f"allowed {OWN} close [allow: {OWN} *; the run itself needs this]",
+                            f"allowed {OWN} close * [allow: {OWN} *; the run itself needs this]"]
+    settings(runs, "user", allow=["Bash"], deny=["Bash(python3 *)"])
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[]))
+    assert (code, lines[-1]) == (1, "unattended: preflight allowed=0 would-prompt=0 unsure=0 denied=5")
+    settings(runs, "user", allow=["Bash"], deny=["Bash(python3 *)"], ask=["Bash(python3 *)"])
+    assert own_lines(runs.run("preflight", "--plan", runs.plan(commands=[]))[1]) == ["denied"] * 5, "a deny rule wins"
 
 
 def test_without_the_project_only_the_settings_of_the_user_count(runs):
     settings(runs, "project", allow=["Bash(git push *)"])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git push origin work"]))
+    lines = of_the_plan(lines)
     assert code == 1 and lines[0].startswith("would-prompt git push origin work")
 
 
@@ -1240,6 +1946,7 @@ def test_a_command_that_is_not_plain_words_is_never_called_allowed(runs, command
     letters, digits and `_ @ % + = : , . / ~ -`. A list of the marks that are not read was open at one end."""
     settings(runs, "user", allow=["Bash", "Bash(*)"])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=[command]))
+    lines = of_the_plan(lines)
     assert code == 1 and lines[0].split(" ", 1)[0] == "unsure", lines
     assert "not plain words" in lines[0]
 
@@ -1316,12 +2023,14 @@ def test_no_random_command_that_runs_a_denied_program_is_called_allowed():
 def test_a_command_of_plain_words_can_be_allowed(runs, command):
     settings(runs, "user", allow=["Bash"])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=[command]))
+    lines = of_the_plan(lines)
     assert code == 0 and lines[0].split(" ", 1)[0] == "allowed", lines
 
 
 def test_a_rule_that_stops_is_read_before_the_command_is_called_unsure(runs):
     settings(runs, "user", allow=["Bash"], deny=["Bash(git push *)"])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git push origin 'work'", "git status && git push origin work"]))
+    lines = of_the_plan(lines)
     assert [line.split(" ", 1)[0] for line in lines[:-1]] == ["denied", "denied"], lines
 
 
@@ -1337,7 +2046,8 @@ def test_preflight_judges_the_command_as_it_is_written_and_not_as_it_is_printed(
     for the first command of several covered them all."""
     settings(runs, "user", allow=["Bash(git status *)"])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=[command]))
-    assert code == 1 and lines[-1] == "unattended: preflight allowed=0 would-prompt=0 unsure=1 denied=0", lines[-1]
+    lines = of_the_plan(lines)
+    assert code == 1 and lines[-1] == "unattended: preflight allowed=0 would-prompt=5 unsure=1 denied=0", lines[-1]
     assert len(lines) == 2 and lines[0].startswith("unsure git status ")
 
 
@@ -1346,6 +2056,7 @@ def test_a_command_is_matched_letter_for_letter(runs):
     commands = ["git  push origin work", " git push origin work", "git push origin work", "echo " + "x" * 1995,
                 "echo " + "x" * 1996, "echo " + "x" * 3000]
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=commands))
+    lines = of_the_plan(lines)
     assert [line.split(" ", 1)[0] for line in lines[:-1]] == ["would-prompt", "would-prompt", "allowed", "allowed", "unsure",
                                                              "unsure"], lines
     assert lines[4].endswith("… [it is longer than 2,000 characters]") and lines[5].endswith("… [it is longer than 2,000 characters]")
@@ -1361,6 +2072,7 @@ def test_a_rule_with_many_wildcards_does_not_make_preflight_slow(runs):
     commands = [("a " * 999) + "aa", ("-a" * 999) + " c", "a " + "-a " * 600 + "c"]
     began = time.monotonic()
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=commands))
+    lines = of_the_plan(lines)
     assert time.monotonic() - began < 20
     assert [line.split(" ", 1)[0] for line in lines[:-1]] == ["would-prompt"] * 3, [line[:40] for line in lines]
 
