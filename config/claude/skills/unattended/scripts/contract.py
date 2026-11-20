@@ -127,16 +127,17 @@ def session_folder(session, make):
 
 
 def stamped(folder):
-    """The folders of one session whose name is a start time, the oldest first, each with that time. A prune can
-    take one of them after the folder was listed: then this ends with FileNotFoundError, and who called reads
-    again or leaves the session for this time."""
+    """The folders of one session whose name is a start time, the oldest first, each with that time. A name that
+    a prune took after the folder was listed is left out: a prune of many runs must not end a command that
+    reads beside it."""
     found = []
     for name in os.listdir(folder):
         try:
             began = datetime.datetime.strptime(name, STAMP).replace(tzinfo=datetime.timezone.utc)
-        except ValueError:
+            mode = os.lstat(folder / name).st_mode
+        except (ValueError, FileNotFoundError):
             continue
-        if stat.S_ISDIR(os.lstat(folder / name).st_mode):
+        if stat.S_ISDIR(mode):
             found.append((name, began))
     return [(folder / name, began) for name, began in sorted(found)]
 
@@ -147,24 +148,33 @@ def runs_of(folder):
     return [path for path, _ in stamped(folder) if os.path.lexists(path / CONTRACT)]
 
 
-def read_file(path):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+def read_file(name, folder):
+    """The text of one file of a folder that is held open. No link is followed."""
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder)
     with os.fdopen(fd, "rb") as handle:
         if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-            raise Failed(f"{path} is no plain file")
+            raise Failed(f"{name} is no plain file")
         return handle.read().decode("utf-8")
 
 
 class Run:
-    """One run: the contract as it was written, and the lines of the log. A prune takes a run out of its session
-    in one step and removes its files after that. So a run that still has its name after both files were read
-    was read whole; one that has lost it is `Gone`."""
+    """One run: the contract as it was written, and the lines of the log. Both files are read from the folder as
+    it was opened, whatever name it has a moment later. A prune takes a run out of its session in one step and
+    removes its files after that. So a run that still has its name after both files were read was read whole;
+    one that has lost it is `Gone`."""
 
     def __init__(self, folder):
         self.folder = folder
         try:
-            self.contract = json.loads(read_file(folder / CONTRACT))
-            lines = read_file(folder / LOG).splitlines() if os.path.lexists(folder / LOG) else []
+            held = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                self.contract = json.loads(read_file(CONTRACT, held))
+                try:
+                    lines = read_file(LOG, held).splitlines()
+                except FileNotFoundError:           # a start writes the contract first
+                    lines = []
+            finally:
+                os.close(held)
             self.log = [json.loads(line) for line in lines if line.strip()]
             for line in self.log:
                 if not isinstance(line, dict) or not isinstance(line.get("kind"), str):

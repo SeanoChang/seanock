@@ -2824,8 +2824,12 @@ test checks that on random lines in five languages.
   holds the run as `log` and `close` do, reads it again, and gives its
   folder another name (the start time with `.gone` behind it) in one step.
   Then it removes the files. A command that reads at the same time sees
-  the whole run or no run. A reader that finds a run gone reads the session
-  again, up to five times. A run that a command writes to at that moment
+  the whole run or no run: it opens the folder one time and reads both
+  files from it, whatever name the folder has a moment later, and it takes
+  the run only when the folder still has its name after that. A reader
+  that finds a run gone reads the session again, up to five times; a name
+  that is gone from a listing is left out, so a prune of many runs ends no
+  command that reads beside it. A run that a command writes to at that moment
   is kept. A run of which no file can be removed gets its name back. What a
   prune left under the `.gone` name (it was stopped between the two steps)
   is no run, and the next prune removes it. Before this, two first starts
@@ -2834,8 +2838,13 @@ test checks that on random lines in five languages.
   was lost (found by a second adversary on GPT-6.2 Astra, 2026-11-17, and
   confirmed by a refuter). The test for this class runs one command and,
   before each of its calls to the disk, a second command to its end, for
-  thirteen pairs of commands. It does not show two commands that each stop
-  in the middle, or three commands at one time.
+  thirteen pairs of commands. One second command that runs to its end is
+  not the worst case (found by the adversary: a prune of 100 old runs took
+  one more run between each two looks of a `status`, and 2 of 96 calls
+  ended with exit 2). So two more tests choose the moves themselves: a run
+  is taken at each moment when the reader looks at it, and a run loses its
+  name and gets it back while it is read. Not shown: two commands that
+  each stop in the middle in other ways, and three commands at one time.
 - **The log is what the session wrote.** No code checks that a task which
   is logged as done is done: the check of the task does, and the report
   says so.
@@ -2959,9 +2968,10 @@ test checks that on random lines in five languages.
   its start second. In two different seconds, both can pass the check for
   an open run, and the session then has two open runs; the commands take
   the newer one. A session is one agent, and it starts one run at a time.
-- **A `close` that comes while the `start` of the same run is under way**
-  can be written before the `started` line, so the log reads `closed`,
-  `started`. The run counts as closed.
+- **A `log` or a `close` that comes while the `start` of the same run is
+  under way** can be written before the `started` line, so the log reads
+  `heartbeat`, `started` or `closed`, `started`. A run with a `closed`
+  line counts as closed.
 - **A run that is closed, pruned with `--days 0` and started again within
   one second** gets the folder name of the run that was removed. A command
   that reads at that moment can take the old contract with the new log.

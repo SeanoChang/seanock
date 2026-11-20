@@ -130,6 +130,7 @@ def test_the_text_keeps_the_rules_of_a_run_that_nobody_watches():
         "also when it is `allowed`: Claude Code can ask for it whatever the rules say.",
         "`allowed` is what this script reads from the rules. It is not a promise.",
         "It can also read a deny or ask rule more widely than this script does.",
+        "as one that stops while the user is away; some of them would run.",
         "A prompt during the run stops the session until the user answers.",
         "Run each command as its own command, with no pipe.",
     ):

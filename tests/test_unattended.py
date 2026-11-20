@@ -654,22 +654,25 @@ def test_start_prunes_what_is_older_than_fourteen_days(runs):
 # two commands that each stop in the middle (Y always runs to its end), and three commands.
 
 class Watch:
-    """Counts the calls of X to the disk, and runs `between` one time before call number `at`."""
+    """Counts the calls of X to the disk, and runs `between` one time before call number `at`. With `each`, that
+    is run before every call, with the name of the call and what it was given."""
     NAMES = {"os": {"lstat", "mkdir", "listdir", "open", "replace", "rename", "rmdir", "write"},
              "path": {"lexists"}, "shutil": {"rmtree"}, "fcntl": {"flock"}}
 
-    def __init__(self, at, between):
-        self.at, self.between, self.calls, self.armed = at, between, 0, False
+    def __init__(self, at, between, each=None):
+        self.at, self.between, self.each, self.calls, self.armed = at, between, each, 0, False
 
-    def step(self):
+    def step(self, name=None, args=()):
         if self.armed:
             self.calls += 1
-            if self.calls == self.at:
-                self.armed = False
-                try:
+            self.armed = False
+            try:
+                if self.each is not None:
+                    self.each(name, args)
+                if self.calls == self.at:
                     self.between()
-                finally:
-                    self.armed = True
+            finally:
+                self.armed = True
 
     def in_steps(self, folder):
         names = sorted(os.listdir(folder), reverse=True)
@@ -696,7 +699,7 @@ class Watch:
                     return watch.in_steps
 
                 def call(*args, **kwargs):
-                    watch.step()
+                    watch.step(name, args)
                     return value(*args, **kwargs)
                 return call
         return Stepped()
@@ -734,11 +737,23 @@ class Twice:
     def open_run(self, session):
         return Path(self.must(session, "start", "--plan", "PLAN")[0].removeprefix("run folder: "))
 
-    def closed_run(self, session):
+    def closed_run(self, session, name="20200101T000000Z"):
         """A closed run of the session, under the name of a start time long ago: the session can start again."""
         folder = self.open_run(session)
         self.must(session, "close", "--why", "x")
-        return folder.rename(folder.with_name("20200101T000000Z"))
+        return folder.rename(folder.with_name(name))
+
+    def watched(self, session, *args, each):
+        """The command, with `each` run before every call that it makes to the disk."""
+        watch = Watch(None, None, each)
+        script = load_script()
+        script.os, script.shutil, script.fcntl = (watch.module(real, kind) for real, kind in
+                                                  ((os, "os"), (shutil, "shutil"), (script.fcntl, "fcntl")))
+        watch.armed = True
+        try:
+            return self.call(session, *args, script=script)
+        finally:
+            watch.armed = False
 
     def kinds(self, folder):
         return [json.loads(line)["kind"] for line in (folder / "log.jsonl").read_text().splitlines()]
@@ -897,6 +912,45 @@ def test_two_commands_at_one_time_give_what_they_give_one_after_the_other(case, 
             check(world, made, result, got[0])
         except AssertionError as fault:
             raise AssertionError(f"with Y before call {at} of {calls} of X: {fault}") from None
+
+
+@pytest.mark.parametrize("command", [("status",), BEAT])
+def test_a_prune_that_takes_run_after_run_of_a_session_ends_no_command_of_that_session(command, tmp_path, monkeypatch):
+    """Found by the adversary: one Y that runs to its end is not the worst case. A prune of 100 old runs took one
+    more run between each two looks of a `status`, and after five tries the `status` gave up (2 of 96 calls)."""
+    world = Twice(tmp_path / "many", monkeypatch)
+    old = [world.closed_run(world.A, f"2020010{number}T000000Z") for number in range(1, 9)]
+    newest = world.open_run(world.A)
+
+    def take_the_run_that_is_looked_at(name, args):
+        folder = Path(args[0]) if name == "lstat" else None
+        if folder in old and folder.exists():
+            shutil.rmtree(folder.rename(folder.with_name(folder.name + ".gone")))
+    code, lines = world.watched(world.A, *command, each=take_the_run_that_is_looked_at)
+    assert code == 0, lines
+    assert not any(folder.exists() for folder in old), "each old run was taken at the moment when it was looked at"
+    assert world.kinds(newest)[-1] == ("heartbeat" if command == BEAT else "started")
+
+
+def test_a_run_that_loses_its_name_and_gets_it_back_while_it_is_read_is_read_whole(tmp_path, monkeypatch):
+    """Found by the adversary, by reading: a prune that can remove no file of a run gives the folder its name
+    back. A reader that took the log for missing in between must not take the closed run for an open one."""
+    world = Twice(tmp_path / "back", monkeypatch)
+    folder = world.closed_run(world.A)
+    away = folder.with_name(folder.name + ".gone")
+    moves = []
+
+    def lose_the_name_after_the_contract_and_get_it_back_after_the_log(name, args):
+        target = str(args[0]) if name in ("open", "lexists") else ""
+        if name == "open" and target.endswith("contract.json") and not moves:
+            moves.append("the contract is opened")
+        elif moves == ["the contract is opened"]:             # the next call to the disk, whatever it is
+            moves.append(folder.rename(away))
+        elif name == "lexists" and target.endswith("contract.json") and away.exists():
+            moves.append(away.rename(folder))
+    assert world.watched(world.A, "status", each=lose_the_name_after_the_contract_and_get_it_back_after_the_log) == \
+        (1, ["unattended: none"])
+    assert len(moves) == 3 and folder.exists(), "the run had another name while its log was read"
 
 
 def test_six_sessions_that_start_at_one_time_each_get_their_run(runs):
