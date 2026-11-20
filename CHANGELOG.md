@@ -31,13 +31,15 @@ Added:
 
 Changed:
 
-- `preflight` judges the commands of the script that a run types
-  (`status`, `log` of each kind, `close`) with those of the plan, because a
-  prompt for them is not denied by the hook and would stop a run. It reads
-  from the plan how the session starts the script, and puts a random word
-  in the place of each text, so that only an allow rule with a wildcard
-  passes. The skill text names the rule to add. These lines are a best
-  effort, as every line of `preflight`.
+- `preflight` judges what a session types of the script when the user may
+  be gone (`start`, `status`, `log`, `close`) with the commands of the
+  plan, because a prompt for it is not denied by the hook and would stop a
+  run. It reads from the plan how the session starts the script. For
+  `start`, `log` and `close` it judges no list of lines: the line is
+  `allowed` only when one allow rule covers every command that starts so,
+  and no deny or ask rule is written for one of them. The skill text names
+  the rule to add. These lines are a best effort, as every line of
+  `preflight`.
 
 A hook does not fail: on a fault it prints nothing and ends with exit 0,
 and Claude Code does what it does with no hook.

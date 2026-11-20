@@ -3077,24 +3077,48 @@ By design:
   as every prompt, also a `close`; the first form of this check took
   `python3;rm <the script>` and `pythonista <the script>` for a start of
   the script too (found by the adversary).
-- **`preflight` judges the commands of the script that a run types,**
-  because a prompt for them would stop the run: `status`, `log` of each
-  kind, `close` and `close --why`, seven lines. How the session starts the
-  script is read from the plan (the first command of the plan that starts
-  the script; the skill text lists the `status` command for this), and
-  with no such command it is the form of the skill text
-  (`python3 -I ~/.claude/skills/...`). A random word stands in the place
-  of each text and of the task, new at each call, so an allow rule covers
-  such a line only when a wildcard stands where the text is. Two faults of
-  one class led to this form, both a command that the session never types:
-  a fixed start was wrong for a script in another folder (a live session
-  got `would-prompt` for commands that were allowed, and started no run),
-  and `log` with no word behind it passed an allow rule for that one text
-  (found by the adversary), so the first real `log` would have waited.
-  These seven lines are a best effort as every line of `preflight`: a
-  rule that holds for some texts only, or a rule that Claude Code got in
-  another way than a settings file, makes them wrong. A wrong `allowed`
-  here costs a run that waits at its first `log`.
+- **`preflight` judges what a session types of the script when the user
+  may be gone,** because a prompt for it would stop the run. There are
+  five lines for each way in which the plan starts the script: `start *`,
+  `status`, `log *`, `close` and `close *`. A line that ends with ` *`
+  stands for every command that starts so. It is `allowed` only when one
+  allow rule covers all of them (fixed text that the command begins with,
+  and behind it wildcards only), and no deny or ask rule can cover one of
+  them by its fixed beginning. How the session starts the script is read
+  from the plan (each command of the plan that starts the script; the
+  skill text lists the `status` command for this), and with no such
+  command it is the form of the skill text
+  (`python3 -I ~/.claude/skills/...`).
+
+  Three faults of one class led to this form. In each, `preflight` judged
+  a list of commands that was not what the session types. A fixed start
+  was wrong for a script in another folder: a live session got
+  `would-prompt` for commands that were allowed, and started no run. `log`
+  with no word behind it passed an allow rule for that one text. Seven
+  lines with a random word for each text passed a rule for each line,
+  while a heartbeat that names no task had no rule (the last two found by
+  the adversary). Which options a line has, in which order, and its
+  texts, are not known before the run, so no list of lines is judged any
+  more. What this form costs, and what it does not see:
+  - Allow rules that are narrower than the command (`log --kind *`,
+    `start --plan *`) give `would-prompt`, also when they would cover each
+    line of a real run. The line names a rule that is enough.
+  - A deny or ask rule with no fixed beginning for the command (it starts
+    with `*` and goes on into the words behind `log` or `close`, or it is
+    for a word of a text) is tried on one command, with a random word
+    behind it. Such a rule can still hold for a line of the run, by the
+    words of that line.
+  - The texts of a run. Claude Code can ask for a command by what its text
+    holds (a `$(...)`, a backtick), whatever the allow rule says.
+  - A session that starts the script in another way than the plan shows.
+    The skill text has the form with `-I`; a plan that lists another form
+    is judged in that other form only.
+  - `prune` and `preflight`: a session does not type them while the user
+    is away.
+  - As every line of `preflight`: a rule that Claude Code got in another
+    way than a settings file is not read.
+
+  A wrong `allowed` here costs a run that waits at that command.
 - **`log` does not take the kinds of the hooks** (`refused`, `released`,
   `denied`). This is no wall: a session can start the `hook` command
   itself, with an event that it writes, and so put a `denied` or a
@@ -3136,11 +3160,11 @@ Minor:
   reading). A log that stays unreadable gets no answer, as every fault.
 
 What the live tests show (`UNATTENDED_LIVE=1`, three more sessions on
-Sonnet, 2026-11-20), and what they do not. All five live tests ran three
-times before the last change of `preflight` and two times after it, and
-each of the 25 sessions did what its test expects. Before `preflight`
-judged the script's commands in the form of the plan, the control below
-started no run in one of two runs.
+Sonnet, 2026-11-20), and what they do not. All five live tests ran eight
+times, three of them with the last form of `preflight` and of the skill
+text, and each of the 40 sessions did what its test expects. Before
+`preflight` judged the script's commands in the form of the plan, the
+control below started no run in one of two runs.
 
 - A session with the skill and the hooks met a real prompt
   (`python3 selfcheck.py`, no allow rule). Claude Code started the hook

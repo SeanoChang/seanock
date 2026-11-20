@@ -69,9 +69,9 @@ def test_the_plan_of_the_text_starts_a_run(runs):
     (runs.home / ".claude" / "skills").mkdir(parents=True)
     (runs.home / ".claude" / "skills" / "unattended").symlink_to(SKILL)       # as the installer links it
     code, lines = runs.run("preflight", "--plan", str(path), "--project", str(runs.cwd))
-    assert code == 1 and lines[-1] == "unattended: preflight allowed=0 would-prompt=10 unsure=0 denied=0", \
-        "two commands of the tasks, the one that shows how the script is started, and the seven that a run types"
-    assert [line.endswith("; the run itself needs this command]") for line in lines[:-1]] == [False] * 3 + [True] * 7
+    assert code == 1 and lines[-1] == "unattended: preflight allowed=0 would-prompt=8 unsure=0 denied=0", \
+        "two commands of the tasks, the one that shows how the script is started, and the five lines for the script itself"
+    assert [line.endswith("; the run itself needs this]") for line in lines[:-1]] == [False] * 3 + [True] * 5
     assert all(line.split(" ", 1)[1].startswith(START + " ") for line in lines[2:-1])
     code, lines = runs.run("start", "--plan", str(path))
     assert code == 0 and re.fullmatch(r"unattended: started tasks=1 ends=\S+Z", lines[-1])
@@ -144,7 +144,10 @@ def test_the_text_keeps_the_rules_of_a_run_that_nobody_watches():
         "**When a prompt is denied,** do not try the same call in another form.",
         "Until the close, a prompt is denied also when the user would now answer it.",
         "the hook does not deny that form.",
-        "A rule for one exact command of the script is not enough: the texts differ each time.",
+        "A rule for each line that one run types is not enough: the next run types other lines.",
+        "the line is `allowed` only when one allow rule covers them all.",
+        "A line of `preflight` for this script says nothing about the texts of the run, which nobody knows yet.",
+        "Write the texts of the log in plain words.",
         "The hook does not deny a prompt for them, so such a prompt would stop the run until the user answers.",
         "`Bash(python3 -I ~/.claude/skills/unattended/scripts/contract.py *)`.",
         "Run each command as its own command, with no pipe.",

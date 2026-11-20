@@ -480,14 +480,61 @@ def settings_files(project):
     return out
 
 
-def forms_of_a_run():
-    """Each command of this script that a run types, with a word that no rule can hold in the place of each
-    text and of the task. So an allow rule covers such a form only when a wildcard stands where the text is, as
-    it must for the texts of a real run: a rule for one exact command passes `status` and a bare `close` only."""
-    task, text = str(10000 + secrets.randbelow(90000)), secrets.token_hex(6)
-    return ["status", f"log --kind heartbeat --task {task} --text {text}", f"log --kind decision --text {text}",
-            f"log --kind skipped --task {task} --text {text} --needs {text}",
-            f"log --kind done --task {task} --text {text}", "close", f"close --why {text}"]
+# What a session types of this script when the user may be gone, from `start` on: the command, whether it is
+# typed with nothing behind it, and whether with words behind it. This is the command line of the script and not
+# a list of the lines of one run: which options a line has, in which order, and its texts, are not known before
+# the run.
+RUN_TYPES = (("start", False, True), ("status", True, False), ("log", False, True), ("close", True, True))
+FOR_THE_RUN = "; the run itself needs this"
+
+
+def covers_every(rule, head):
+    """Whether an allow rule covers every command that is `head`, a space and any text: the rule is fixed text
+    that `head` and a space begin with, and behind it wildcards only. So a `:*` beside another `*`, which
+    `allows` does not take, covers nothing here either: text stands between its wildcards."""
+    if rule.endswith(":*"):
+        rule = rule[:-2] + " *"
+    first, *others = rule.split("*")
+    return bool(others) and not any(others) and (head + " ").startswith(first)
+
+
+def beginnings(head):
+    """`head` as written and, as `stops` reads a command, from each program name that a word of it can hold."""
+    words = even(head).split(" ")
+    return [head] + [" ".join([name] + words[at + 1:]) for at, word in enumerate(words) for name in names_in(word)]
+
+
+def can_stop(rule, head):
+    """Whether a deny or ask rule can cover a command that is `head`, a space and some text, by its fixed
+    beginning. It is read widely, as in `stops`: the fixed text of the rule goes on behind `head` (a rule for
+    some lines of the run), or `head` goes on behind the fixed text (a rule for more than this script).
+    `prefix:*` needs no line here: a prefix that goes on behind `head` is fixed text as any other, and a
+    shorter one is found by `stops` on the command that `judge_every` tries."""
+    rule = even(rule)
+    first = rule.split("*")[0]
+    return any(first.startswith(begin + " ") or ("*" in rule and first and (begin + " ").startswith(first))
+               for begin in beginnings(head))
+
+
+def judge_every(head, settings_list):
+    """The verdict for every command that is `head`, a space and any text: what a run types of this script, with
+    words that nobody knows before the run. It is `allowed` only when one allow rule covers all of them and no
+    deny or ask rule can cover one of them by its fixed beginning. A deny or ask rule with no such beginning
+    (it starts with `*`, or it is for a word of the text) is tried on one command, with a random word behind
+    `head`: such a rule can still hold for a line of the run, by the words of that line."""
+    probe = f"{head} {secrets.token_hex(6)}"
+    for name, verdict in (("deny", "denied"), ("ask", "would-prompt")):
+        for settings in settings_list:
+            whole, patterns = bash_rules(settings, name)
+            hit = "Bash" if whole else next((p for p in patterns if stops(p, probe) or can_stop(p, head)), None)
+            if hit:
+                return verdict, f"{name}: {hit}"
+    for settings in settings_list:
+        whole, patterns = bash_rules(settings, "allow")
+        hit = "Bash" if whole else next((p for p in patterns if covers_every(p, head)), None)
+        if hit:
+            return "allowed", f"allow: {hit}"
+    return "would-prompt", f"no allow rule covers every such command; this one does: Bash({head} *)"
 
 
 def preflight(args):
@@ -497,20 +544,22 @@ def preflight(args):
     counts = dict.fromkeys(("allowed", "would-prompt", "unsure", "denied"), 0)
     lines = []
     # The run writes its log with this script. A prompt for the script itself is not denied by the hook (see
-    # `own_parts`), so it would stop the run: the commands that a run types are judged with those of the plan.
-    # How the session starts the script is read from the plan, for that is what the session will type; a plan
-    # that starts the script nowhere gets the form of the skill text.
-    start_of_it = next((parts[0] for parts in map(own_parts, commands) if parts), OWN)
-    own = [f"{start_of_it} {form}" for form in forms_of_a_run()]
-    for number, command in enumerate(commands + own):
-        verdict, why = judge(command, settings_list)
-        if number >= len(commands):
-            why += "; the run itself needs this command"
+    # `own_parts`), so it would stop the run: what a run types of the script is judged with the commands of the
+    # plan. How the session starts the script is read from the plan, for that is what the session will type; a
+    # plan that starts the script nowhere gets the form of the skill text. A line that ends with ` *` stands for
+    # every command that starts so.
+    starts = list(dict.fromkeys(parts[0] for parts in map(own_parts, commands) if parts)) or [OWN]
+    judged = [(command, judge(command, settings_list)) for command in commands]
+    for head, bare, words in [(f"{start} {name}", bare, words) for start in starts for name, bare, words in RUN_TYPES]:
+        for text, (verdict, why) in ([(head, judge(head, settings_list))] if bare else []) + (
+                [(f"{head} *", judge_every(head, settings_list))] if words else []):
+            judged.append((text, (verdict, why + FOR_THE_RUN)))
+    for command, (verdict, why) in judged:
         counts[verdict] += 1
         room = MAX_TEXT - len(f"{verdict}  [{why}]")      # a long command is cut here, so that the reason stays
         lines.append(f"{verdict} {command if len(command) <= room else command[:room - 1] + '…'} [{why}]")
     summary = " ".join(f"{name}={count}" for name, count in counts.items())
-    return (0 if counts["allowed"] == len(commands) + len(own) else 1), lines + [f"unattended: preflight {summary}"]
+    return (0 if counts["allowed"] == len(judged) else 1), lines + [f"unattended: preflight {summary}"]
 
 
 # ── the two hooks ────────────────────────────────────────────────────────────

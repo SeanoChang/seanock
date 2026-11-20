@@ -62,15 +62,16 @@ run and for no other:
    command that is `would-prompt`, `unsure` or `denied` as one that stops
    while the user is away; some of them would run.
 
-   A line that ends with "the run itself needs this command" is for a
-   command of this script that the run will type (`log`, `status`,
-   `close`), with a random word in the place of each text. The hook does
-   not deny a prompt for them, so such a prompt would stop the run until the
-   user answers. When one of them is not `allowed`, ask the user to add
-   this allow rule before the run starts:
+   A line that ends with "the run itself needs this" is for this script:
+   `start`, `status`, `log` and `close`, which you type when the user may
+   be gone. A ` *` at the end of such a line stands for every command that
+   starts so, and the line is `allowed` only when one allow rule covers
+   them all. The hook does not deny a prompt for them, so such a prompt
+   would stop the run until the user answers. When one of them is not
+   `allowed`, ask the user to add this allow rule before the run starts:
    `Bash(python3 -I ~/.claude/skills/unattended/scripts/contract.py *)`.
-   A rule for one exact command of the script is not enough: the texts
-   differ each time.
+   A rule for each line that one run types is not enough: the next run
+   types other lines.
 4. **Ask everything in one dialog** (`AskUserQuestion`), before the user
    goes:
    - each kind of action in the plan that needs the user's yes: a push, a
@@ -187,6 +188,11 @@ instruction.
   can call a command `would-prompt`, `unsure` or `denied` that would run.
   It is built to err on that side: a rule that allows is read narrowly, and
   a rule that stops is read widely.
+- A line of `preflight` for this script says nothing about the texts of
+  the run, which nobody knows yet. A deny or ask rule can still hold for a
+  `log` or a `close` by the words of its text, and Claude Code can ask for
+  a text that holds a `$(...)` or a backtick. Write the texts of the log
+  in plain words.
 - `allowed` is what this script reads from the rules. It is not a promise.
   Claude Code has checks of its own that no allow rule overrides, such as
   a path outside the working directories, and it can still ask. It can

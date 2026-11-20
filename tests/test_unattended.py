@@ -1641,31 +1641,27 @@ OWN = "python3 -I ~/.claude/skills/unattended/scripts/contract.py"
 OWN_RULE = f"Bash({OWN} *)"
 
 
-FORMS = [r"status", r"log --kind heartbeat --task (\d{5}) --text ([0-9a-f]{12})", r"log --kind decision --text ([0-9a-f]{12})",
-         r"log --kind skipped --task (\d{5}) --text ([0-9a-f]{12}) --needs ([0-9a-f]{12})",
-         r"log --kind done --task (\d{5}) --text ([0-9a-f]{12})", r"close", r"close --why ([0-9a-f]{12})"]
+FOR_THE_RUN = "; the run itself needs this]"
 
 
 def own_lines(lines, start=OWN):
-    """The seven lines of `preflight` for the commands of the script that a run types, which come before its
-    last line: (the verdict of each, the words that stand for the texts and the task). Each line is checked."""
-    own, verdicts, words = lines[-8:-1], [], set()
-    assert len(own) == 7, lines
-    for line, form in zip(own, FORMS):
+    """The verdicts of the five lines of `preflight` for what a session types of the script from `start` on,
+    which come before its last line: every `start`, `status`, every `log`, a bare `close` and every `close` with
+    words. Each line is checked."""
+    own, verdicts = lines[-6:-1], []
+    assert len(own) == 5, lines
+    for line, form in zip(own, ("start *", "status", "log *", "close", "close *")):
         verdict, rest = line.split(" ", 1)
-        found = re.fullmatch(re.escape(start) + " " + form + r" \[.*; the run itself needs this command\]", rest)
-        assert found, (line, form)
+        assert rest.startswith(f"{start} {form} [") and rest.endswith(FOR_THE_RUN), (line, form)
         verdicts.append(verdict)
-        words.update(found.groups())
-    assert len(words) == 2, "one word for every text and one number for the task, in each line"
-    return verdicts, words
+    return verdicts
 
 
 def of_the_plan(lines):
-    """The lines of `preflight` for the commands of the plan, and its last line. The seven lines for the commands
-    of the script itself are checked and left out."""
+    """The lines of `preflight` for the commands of the plan, and its last line. The five lines for the script
+    itself are checked and left out."""
     own_lines(lines)
-    return lines[:-8] + lines[-1:]
+    return lines[:-6] + lines[-1:]
 
 
 def settings(runs, where, **permissions):
@@ -1683,7 +1679,7 @@ def test_preflight_names_each_command_that_would_prompt(runs):
                 "make test", "npm test", "git status && git push origin work", "git status"]
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=commands), "--project", str(runs.cwd))
     lines = of_the_plan(lines)
-    assert code == 1 and lines[-1] == "unattended: preflight allowed=4 would-prompt=9 unsure=1 denied=1", lines
+    assert code == 1 and lines[-1] == "unattended: preflight allowed=4 would-prompt=7 unsure=1 denied=1", lines
     assert [line.split(" ", 1)[0] for line in lines[:-1]] == ["allowed", "allowed", "denied", "would-prompt", "allowed",
                                                              "would-prompt", "unsure", "allowed"]
     assert lines[1] == "allowed git push origin work [allow: git push *]"
@@ -1698,37 +1694,127 @@ def test_the_commands_of_the_script_are_judged_as_the_plan_starts_the_script(run
     mine = f"/usr/bin/python3 -I {SCRIPT}"
     settings(runs, "user", allow=[f"Bash({mine} *)"])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=[f"{mine} status"]))
-    assert (code, lines[-1]) == (0, "unattended: preflight allowed=8 would-prompt=0 unsure=0 denied=0"), lines
-    assert own_lines(lines, start=mine)[0] == ["allowed"] * 7 and lines[0] == f"allowed {mine} status [allow: {mine} *]"
+    assert (code, lines[-1]) == (0, "unattended: preflight allowed=6 would-prompt=0 unsure=0 denied=0"), lines
+    assert own_lines(lines, start=mine) == ["allowed"] * 5 and lines[0] == f"allowed {mine} status [allow: {mine} *]"
+    assert lines[3] == f"allowed {mine} log * [allow: {mine} *; the run itself needs this]"
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git status", f"{mine}   log --kind done --text x"]))
-    assert code == 1 and own_lines(lines, start=mine)[0] == ["allowed"] * 7, \
+    assert code == 1 and own_lines(lines, start=mine) == ["allowed"] * 5, \
         "any command of the script shows its start, and the start is written with one space between its words"
     assert [line.split(" ", 1)[0] for line in lines[:2]] == ["would-prompt", "allowed"]
     for none in ([], ["git status"], [f"echo {mine} log"], [f"cat {SCRIPT}"], [f"{mine}x status"]):
         code, lines = runs.run("preflight", "--plan", runs.plan(commands=none))
-        assert code == 1 and own_lines(lines)[0] == ["would-prompt"] * 7, f"{none}: the start of the skill text"
-    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[f"python3 {SCRIPT} status", f"{mine} status"]))
-    assert own_lines(lines, start=f"python3 {SCRIPT}")[0] == ["would-prompt"] * 7, "the first one that starts the script"
+        assert code == 1 and own_lines(lines) == ["would-prompt"] * 5, f"{none}: the start of the skill text"
+    other = f"python3 {SCRIPT}"
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[f"{other} status", f"{mine} status", f"{other} close"]))
+    assert code == 1 and len(lines) == 3 + 5 + 5 + 1, "each start of the plan is judged, one time"
+    assert own_lines(lines[:8] + lines[-1:], start=other) == ["would-prompt"] * 5 and own_lines(lines, start=mine) == ["allowed"] * 5
 
 
-def test_a_rule_for_one_exact_command_of_the_script_is_not_enough(runs):
-    """Found by the adversary: `log` was judged with no word behind it, and a run never types it so. An allow
-    rule for that one text gave exit 0, and the first real `log` would have waited for the user all night."""
-    exact = [f"Bash({OWN} {name})" for name in ("log", "status", "close")]
-    settings(runs, "user", allow=exact)
-    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[]))
-    verdicts, words = own_lines(lines)
-    assert code == 1 and verdicts == ["allowed", "would-prompt", "would-prompt", "would-prompt", "would-prompt",
-                                      "allowed", "would-prompt"], "only `status` and a bare `close` are typed as they are"
-    again = own_lines(runs.run("preflight", "--plan", runs.plan(commands=[]))[1])[1]
-    assert not words & again, "the words that stand for a text are new each time, so no rule can hold them"
-    settings(runs, "user", allow=exact + [f"Bash({OWN} log --kind heartbeat *)", f"Bash({OWN} close --why *)"])
-    assert own_lines(runs.run("preflight", "--plan", runs.plan(commands=[]))[1])[0] == [
-        "allowed", "allowed", "would-prompt", "would-prompt", "would-prompt", "allowed", "allowed"]
-    for rule in (f"Bash({OWN} *)", f"Bash({OWN}:*)", "Bash(python3 *)", "Bash"):
-        settings(runs, "user", allow=[rule])
+PER_LINE = ["status", "log --kind heartbeat --task * --text *", "log --kind decision --text *",
+            "log --kind skipped --task * --text * --needs *", "log --kind done --task * --text *", "close", "close --why *"]
+
+
+def test_a_rule_for_each_line_that_a_run_was_seen_to_type_is_not_enough(runs):
+    """Found by the adversary, two times. First `log` was judged with no word behind it, and an allow rule for
+    that one text gave exit 0. Then seven lines were judged, and a rule for each of them gave exit 0, while a
+    heartbeat that names no task had no rule. A list of lines is never the lines of the next run: the first
+    `log` outside the list would have waited for the user all night."""
+    yes, no = "allowed", "would-prompt"
+    cases = [(["log", "status", "close", "start"], [no, yes, no, yes, no]),
+             (PER_LINE, [no, yes, no, yes, no]),
+             (PER_LINE + ["start --plan *"], [no, yes, no, yes, no]),
+             (["start *", "status", "log --kind *", "close *"], [yes, yes, no, yes, yes]),
+             (["status", "log * --text *", "close"], [no, yes, no, yes, no]),
+             (["status", "log *x", "close*"], [no, yes, no, yes, yes]),
+             (["log *", "close --why *"], [no, no, yes, no, no])]
+    for rules, expected in cases:
+        settings(runs, "user", allow=[f"Bash({OWN} {rule})" for rule in rules])
         code, lines = runs.run("preflight", "--plan", runs.plan(commands=[]))
-        assert code == 0 and own_lines(lines)[0] == ["allowed"] * 7, rule
+        assert code == 1 and own_lines(lines) == expected, rules
+    assert lines[-3] == f"would-prompt {OWN} close [no allow rule covers it; the run itself needs this]"
+    assert lines[-2] == (f"would-prompt {OWN} close * [no allow rule covers every such command; this one does: "
+                         f"Bash({OWN} close *); the run itself needs this]")
+    enough = [[f"Bash({OWN} *)"], [f"Bash({OWN}:*)"], ["Bash(python3 *)"], ["Bash"], ["Bash(*)"], [f"Bash({OWN} **)"],
+              [f"Bash({OWN} {rule})" for rule in ("start *", "status", "log *", "close *")],
+              [f"Bash({OWN} {rule})" for rule in ("start:*", "status", "log:*", "close:*")],
+              [f"Bash({OWN} {rule})" for rule in ("s*", "lo*", "close", "close *")]]
+    for rules in enough:
+        settings(runs, "user", allow=rules)
+        code, lines = runs.run("preflight", "--plan", runs.plan(commands=[]))
+        assert code == 0 and own_lines(lines) == ["allowed"] * 5, rules
+    settings(runs, "user", allow=[f"Bash({OWN} *:*)"])
+    assert own_lines(runs.run("preflight", "--plan", runs.plan(commands=[]))[1]) == ["would-prompt"] * 5, \
+        "a `:*` beside another `*` is a form that the script does not take for one that it knows"
+
+
+def test_a_rule_that_stops_some_lines_of_the_run_is_found_by_its_beginning(runs):
+    """A deny or ask rule for one kind of line of the run stops that line, also when an allow rule covers every
+    command of the script. A rule for a command that a run does not type (`prune`) stops nothing of the run."""
+    base = "contract.py"
+    cases = [(f"{OWN} log --kind heartbeat --text *", [0, 0, 1, 0, 0]), (f"{OWN} log --kind heartbeat --text waited", [0, 0, 1, 0, 0]),
+             (f"{OWN} log:*", [0, 0, 1, 0, 0]), (f"{OWN} lo:*", [0, 0, 1, 0, 0]), (f"{OWN} log --kind:*", [0, 0, 1, 0, 0]),
+             (f"{OWN} clos:*", [0, 0, 0, 1, 1]), (f"{OWN} lo*", [0, 0, 1, 0, 0]), (f"{OWN} close", [0, 0, 0, 1, 0]),
+             (f"{OWN} close --why x", [0, 0, 0, 0, 1]), (f"{OWN} close *", [0, 0, 0, 1, 1]), (f"{OWN} close --why*", [0, 0, 0, 0, 1]),
+             (f"{OWN} status", [0, 1, 0, 0, 0]), (f"{OWN} start --plan *", [1, 0, 0, 0, 0]), (f"{OWN} s*", [1, 1, 0, 0, 0]), (f"{OWN} *", [1, 1, 1, 1, 1]), ("python3 *", [1, 1, 1, 1, 1]),
+             ("python3", [1, 1, 1, 1, 1]), ("p*", [1, 1, 1, 1, 1]), (f"*{base}*", [1, 1, 1, 1, 1]), (f"{base} log --kind done*", [0, 0, 1, 0, 0]),
+             (f"*{base} log *", [0, 0, 1, 0, 0]), (f"{base} close*", [0, 0, 0, 1, 1]), (f"python3  -I   {OWN.split()[-1]} log *", [0, 0, 1, 0, 0]),
+             (f"{OWN} prune *", [0, 0, 0, 0, 0]), (f"{OWN} hook *", [0, 0, 0, 0, 0]), (f"{OWN} logs*", [0, 0, 0, 0, 0]),
+             ("git push *", [0, 0, 0, 0, 0]), ("rm *", [0, 0, 0, 0, 0]), (f"{OWN} closed", [0, 0, 0, 0, 0]), ("python3 -c *", [0, 0, 0, 0, 0])]
+    for kind, verdict in (("ask", "would-prompt"), ("deny", "denied")):
+        for rule, stopped in cases:
+            settings(runs, "user", allow=[OWN_RULE], **{kind: [f"Bash({rule})"]})
+            code, lines = runs.run("preflight", "--plan", runs.plan(commands=[]))
+            assert own_lines(lines) == [verdict if hit else "allowed" for hit in stopped], (kind, rule)
+            assert code == (1 if any(stopped) else 0), (kind, rule)
+    settings(runs, "user", allow=[OWN_RULE], ask=[f"Bash({OWN} log --kind skipped*)"])
+    lines = runs.run("preflight", "--plan", runs.plan(commands=[]))[1]
+    assert lines[-4] == f"would-prompt {OWN} log * [ask: {OWN} log --kind skipped*; the run itself needs this]"
+    settings(runs, "user", allow=[OWN_RULE], ask=["Bash"])
+    assert own_lines(runs.run("preflight", "--plan", runs.plan(commands=[]))[1]) == ["would-prompt"] * 5
+    settings(runs, "user")
+    settings(runs, "project", ask=[f"Bash({OWN} log --kind done *)"])
+    settings(runs, "local", allow=[OWN_RULE], deny=[f"Bash({OWN} close --why *)"])
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[]), "--project", str(runs.cwd))
+    assert own_lines(lines) == ["allowed", "allowed", "would-prompt", "allowed", "denied"], "the rules of each settings file count"
+    assert own_lines(runs.run("preflight", "--plan", runs.plan(commands=[]))[1]) == ["would-prompt"] * 5, "with no project, none of them"
+
+
+def test_a_line_for_every_command_agrees_with_the_verdict_of_each_command():
+    """Against the judge of one command, on random rules: when the line `start *`, `log *` or `close *` is `allowed`, each
+    command that starts so is `allowed` too. The words of a command are options of the script and words that
+    stand in no rule. The rules that stop are made from the start of a real command: one that starts with `*`
+    and goes on into the text, or one for a word of the text, is the limit that the known limits state."""
+    script, rng = load_script(), random.Random(20261120)
+    options = ["--kind", "heartbeat", "decision", "skipped", "done", "--task", "--text", "--needs", "--why"]
+
+    def tail():
+        return " ".join(rng.choice(options + ["w%04d" % rng.randrange(10000)]) for _ in range(rng.randint(1, 6)))
+
+    def cut(text):
+        return text[:rng.randint(0, len(text))]
+
+    seen = {"allowed": 0, "other": 0, "stopped by a rule": 0}
+    for _ in range(4000):
+        name = rng.choice(["start", "log", "close"])
+        head = f"{OWN} {name}"
+        full = f"{head} {' '.join(rng.choice(options) for _ in range(rng.randint(1, 4)))}"
+        allow = [rng.choice([f"{OWN} *", f"{head} *", f"{head}:*", f"{head}*", cut(full) + "*", cut(full), cut(full) + ":*",
+                             cut(full) + "*" + rng.choice(options) + "*", f"{head} * *", "*", "python3 *", f"{OWN} {name[:2]}*"])
+                 for _ in range(rng.randint(1, 3))]
+        begin = rng.choice([full, "contract.py" + full[len(OWN):], full.replace(" ", "  ", 1)])
+        stop = [rng.choice([cut(begin) + "*", cut(begin), cut(begin) + ":*", cut(begin) + " *", "*" + cut(OWN[rng.randint(0, 40):]) + "*",
+                            cut(begin) + "*" + rng.choice(options) + "*", "git push *", f"{OWN} prune *"])
+                for _ in range(rng.choice([0, 0, 1, 2]))]
+        stop = [rule for rule in stop if rule.split("*")[0].strip() or rule.strip("* ") in OWN]
+        rules = [{"permissions": {"allow": [f"Bash({rule})" for rule in allow], rng.choice(["ask", "deny"]): [f"Bash({rule})" for rule in stop]}}]
+        verdict = script.judge_every(head, rules)[0]
+        each = [script.judge(f"{head} {tail()}", rules)[0] for _ in range(12)]
+        if verdict == "allowed":
+            assert each == ["allowed"] * 12, (allow, stop, head)
+        seen["allowed" if verdict == "allowed" else "other"] += 1
+        seen["stopped by a rule"] += verdict in ("denied", "would-prompt") and bool(stop) and script.judge_every(
+            head, [{"permissions": {"allow": [f"Bash({rule})" for rule in allow]}}])[0] == "allowed"
+    assert min(seen.values()) > 300, seen
 
 
 def test_a_deny_or_ask_rule_with_a_colon_is_read_in_its_wider_sense(runs):
@@ -1813,21 +1899,24 @@ def test_preflight_passes_only_when_every_command_is_allowed(runs):
     settings(runs, "user", allow=["Bash"])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git push origin work", "anything at all"]))
     lines = of_the_plan(lines)
-    assert (code, lines[-1]) == (0, "unattended: preflight allowed=9 would-prompt=0 unsure=0 denied=0")
+    assert (code, lines[-1]) == (0, "unattended: preflight allowed=7 would-prompt=0 unsure=0 denied=0")
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=[]))
-    assert code == 0 and of_the_plan(lines) == ["unattended: preflight allowed=7 would-prompt=0 unsure=0 denied=0"]
+    assert code == 0 and of_the_plan(lines) == ["unattended: preflight allowed=5 would-prompt=0 unsure=0 denied=0"]
     settings(runs, "user", allow=["Bash(git push *)", "Bash(anything at all)"])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git push origin work", "anything at all"]))
-    assert (code, lines[-1]) == (1, "unattended: preflight allowed=2 would-prompt=7 unsure=0 denied=0"), \
+    assert (code, lines[-1]) == (1, "unattended: preflight allowed=2 would-prompt=5 unsure=0 denied=0"), \
         "every command of the plan is allowed, and the commands of the script itself are not"
-    assert own_lines(lines)[0] == ["would-prompt"] * 7
+    assert own_lines(lines) == ["would-prompt"] * 5
     settings(runs, "user", allow=["Bash(git push *)", "Bash(anything at all)", OWN_RULE])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=["git push origin work", "anything at all"]))
-    assert (code, lines[-1]) == (0, "unattended: preflight allowed=9 would-prompt=0 unsure=0 denied=0")
-    assert lines[-3] == f"allowed {OWN} close [allow: {OWN} *; the run itself needs this command]"
+    assert (code, lines[-1]) == (0, "unattended: preflight allowed=7 would-prompt=0 unsure=0 denied=0")
+    assert lines[-3:-1] == [f"allowed {OWN} close [allow: {OWN} *; the run itself needs this]",
+                            f"allowed {OWN} close * [allow: {OWN} *; the run itself needs this]"]
     settings(runs, "user", allow=["Bash"], deny=["Bash(python3 *)"])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=[]))
-    assert (code, lines[-1]) == (1, "unattended: preflight allowed=0 would-prompt=0 unsure=0 denied=7")
+    assert (code, lines[-1]) == (1, "unattended: preflight allowed=0 would-prompt=0 unsure=0 denied=5")
+    settings(runs, "user", allow=["Bash"], deny=["Bash(python3 *)"], ask=["Bash(python3 *)"])
+    assert own_lines(runs.run("preflight", "--plan", runs.plan(commands=[]))[1]) == ["denied"] * 5, "a deny rule wins"
 
 
 def test_without_the_project_only_the_settings_of_the_user_count(runs):
@@ -1958,7 +2047,7 @@ def test_preflight_judges_the_command_as_it_is_written_and_not_as_it_is_printed(
     settings(runs, "user", allow=["Bash(git status *)"])
     code, lines = runs.run("preflight", "--plan", runs.plan(commands=[command]))
     lines = of_the_plan(lines)
-    assert code == 1 and lines[-1] == "unattended: preflight allowed=0 would-prompt=7 unsure=1 denied=0", lines[-1]
+    assert code == 1 and lines[-1] == "unattended: preflight allowed=0 would-prompt=5 unsure=1 denied=0", lines[-1]
     assert len(lines) == 2 and lines[0].startswith("unsure git status ")
 
 
