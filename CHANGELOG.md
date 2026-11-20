@@ -28,11 +28,13 @@ Added:
   permissions page. Only `allowed` is a pass. A rule that allows is read
   narrowly and a rule that stops (deny, ask) widely, and a command that is
   not plain words (one with a quote, an operator, a wildcard or a variable)
-  is `unsure`, so that a doubt does not end as `allowed`. It is advice:
-  Claude Code has checks that no rule overrides, and it can still ask for
-  a command that `preflight` calls `allowed`.
+  is `unsure`, so that a doubt does not end as `allowed`. It is advice,
+  and a best effort: Claude Code has checks that no rule overrides, and it
+  reads some rules more widely than this script. So it can still ask for a
+  command that `preflight` calls `allowed`, or refuse it.
 - `start` removes runs that ended more than 14 days ago, and `prune` does
-  the same on request.
+  the same on request. A run is taken out of its session in one step, so a
+  command that reads at the same time sees the whole run or no run.
 
 A live test (`UNATTENDED_LIVE=1`, not in CI) gives a session three tasks, of
 which the second needs a command that is not allowed. It passes when the

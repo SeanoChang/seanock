@@ -41,11 +41,17 @@ KEEP_DAYS = 14
 MAX_DAYS = 3650
 MAX_TEXT = 2000
 LOCK_WAIT_S = 10.0
+TRIES = 5                           # how often a command reads again when another command changed a folder under it
+GONE = ".gone"                      # the ending of a run folder that a prune took out of its session
 WORD = re.compile(r"[A-Za-z0-9_@%+:,./~-][A-Za-z0-9_@%+=:,./~-]*")
 
 
 class Failed(Exception):
     pass
+
+
+class Gone(Failed):
+    """The run was removed while it was read."""
 
 
 def now():
@@ -93,17 +99,21 @@ def session_id(given=None):
 
 
 def plain_folder(path, make):
-    """The folder, with no link accepted in its place. With `make`, it is made for this user alone."""
-    try:
-        mode = os.lstat(path).st_mode
-    except FileNotFoundError:
-        if not make:
-            return False
-        os.mkdir(path, 0o700)
+    """The folder, with no link accepted in its place. With `make`, it is made for this user alone. Another
+    command can make it, or remove it, at the same moment: so it is read again after it was made."""
+    for _ in range(TRIES):
+        try:
+            mode = os.lstat(path).st_mode
+        except FileNotFoundError:
+            if not make:
+                return False
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(path, 0o700)
+            continue
+        if not stat.S_ISDIR(mode):
+            raise Failed(f"{path} is no plain folder")
         return True
-    if not stat.S_ISDIR(mode):
-        raise Failed(f"{path} is no plain folder")
-    return True
+    raise Failed(f"{path} is removed each time it is made")
 
 
 def session_folder(session, make):
@@ -117,7 +127,9 @@ def session_folder(session, make):
 
 
 def stamped(folder):
-    """The folders of one session whose name is a start time, the oldest first, each with that time."""
+    """The folders of one session whose name is a start time, the oldest first, each with that time. A prune can
+    take one of them after the folder was listed: then this ends with FileNotFoundError, and who called reads
+    again or leaves the session for this time."""
     found = []
     for name in os.listdir(folder):
         try:
@@ -144,7 +156,9 @@ def read_file(path):
 
 
 class Run:
-    """One run: the contract as it was written, and the lines of the log."""
+    """One run: the contract as it was written, and the lines of the log. A prune takes a run out of its session
+    in one step and removes its files after that. So a run that still has its name after both files were read
+    was read whole; one that has lost it is `Gone`."""
 
     def __init__(self, folder):
         self.folder = folder
@@ -162,7 +176,11 @@ class Run:
         except Failed:
             raise
         except Exception as exc:      # whatever a damaged file does to the reader, the answer is the same
+            if not os.path.lexists(folder / CONTRACT):
+                raise Gone(f"the run in {folder} is gone")
             raise Failed(f"cannot read the run in {folder}: {type(exc).__name__}: {exc}")
+        if not os.path.lexists(folder / CONTRACT):
+            raise Gone(f"the run in {folder} is gone")
 
     def closed(self):
         return any(line["kind"] == "closed" for line in self.log)
@@ -196,16 +214,21 @@ class Run:
 def last_run(session):
     """The newest run of this session, or None. A run in this folder that names another session is not this
     session's: on a disk that takes `abc` and `ABC` for one name, two ids share a folder."""
-    folder = session_folder(session, make=False)
-    if folder is None:
-        return None
-    runs = runs_of(folder)
-    if not runs:
-        return None
-    run = Run(runs[-1])
-    if run.session != session:
-        raise Failed(f"the run in {run.folder} belongs to another session")
-    return run
+    for _ in range(TRIES):
+        folder = session_folder(session, make=False)
+        if folder is None:
+            return None
+        try:
+            runs = runs_of(folder)
+            if not runs:
+                return None
+            run = Run(runs[-1])
+        except (Gone, FileNotFoundError):       # a prune took a run, or the folder, while it was read: read again
+            continue
+        if run.session != session:
+            raise Failed(f"the run in {run.folder} belongs to another session")
+        return run
+    raise Failed("the runs of this session change faster than they can be read")
 
 
 def open_run(session):
@@ -222,7 +245,10 @@ def the_open_run():
     run = open_run(session_id())
     if run is None:
         raise Failed("this session has no open run")
-    held = os.open(run.folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        held = os.open(run.folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        raise Failed("this session has no open run")
     try:
         deadline = time.monotonic() + LOCK_WAIT_S
         while True:
@@ -233,7 +259,10 @@ def the_open_run():
                 if time.monotonic() >= deadline:
                     raise Failed(f"another command holds the run for longer than {LOCK_WAIT_S:g} s")
                 time.sleep(0.05)
-        run = Run(run.folder)
+        try:
+            run = Run(run.folder)
+        except Gone:
+            raise Failed("this session has no open run")
         if run.closed():
             raise Failed("this session has no open run")
         yield run
@@ -458,9 +487,15 @@ def start(args):
         "tasks": [{"id": str(number), "title": title, "check": check} for number, (title, check) in enumerate(tasks, 1)],
         "approvals": [{"what": what, "answer": answer} for what, answer in approvals],
     }
-    folder = session_folder(session, make=True)
-    run_folder = folder / began.strftime(STAMP)
-    os.mkdir(run_folder, 0o700)
+    for _ in range(TRIES):
+        run_folder = session_folder(session, make=True) / began.strftime(STAMP)
+        try:
+            os.mkdir(run_folder, 0o700)
+            break
+        except FileNotFoundError:       # a prune removed the session folder with the last old run in it
+            continue
+    else:
+        raise Failed(f"{run_folder.parent} is removed each time it is made")
     # The contract gets its name when it is whole: a folder with no contract.json is no run.
     fd = os.open(run_folder / (CONTRACT + ".new"), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -527,28 +562,84 @@ def close(args):
         return 0, report(run) + [f"unattended: closed {counts}"]
 
 
-def prune_session(folder, days):
-    """Remove the runs of one session that ended long ago, and return how many. A closed run goes `days` days
-    after its close. A run that was never closed can still have a session that writes to it, and a folder that
-    never got its contract can belong to a start that is under way: both stay for 14 days, whatever `days` says.
-    A run that cannot be read, or cannot be removed, is left alone."""
-    removed = 0
+def ended_long_ago(run_folder, began, days):
+    """A closed run goes `days` days after its close. A run that was never closed can still have a session that
+    writes to it, and a folder that never got its contract can belong to a start that is under way: both stay
+    for 14 days, whatever `days` says."""
     keep_until = now() - datetime.timedelta(days=KEEP_DAYS)
+    if not os.path.lexists(run_folder / CONTRACT):
+        return began <= keep_until
+    run = Run(run_folder)
+    closes = [moment_of(line["t"]) for line in run.log if line["kind"] == "closed"]
+    return closes[-1] <= now() - datetime.timedelta(days=days) if closes else run.ends <= keep_until
+
+
+def remove_run(run_folder, began, days):
+    """Take one run out of its session and remove it. Whether it was taken out is the answer. The run is held
+    as `log` and `close` hold it, and read again: a command that writes to it now keeps it. Then the folder gets
+    another name, in one step, so a command that reads at the same time sees the whole run or no run. A run of
+    which no file can be removed gets its name back."""
+    held = os.open(run_folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        if not ended_long_ago(run_folder, began, days):
+            return False
+        left = run_folder.with_name(run_folder.name + GONE)
+        os.rename(run_folder, left)
+    finally:
+        os.close(held)
+    before = None
+    try:
+        before = sorted(os.listdir(left))
+        shutil.rmtree(left)
+    except FileNotFoundError:
+        return True             # another prune removed it under its new name
+    except OSError:
+        try:
+            after = sorted(os.listdir(left))
+        except OSError:
+            after = None
+        if after != before:
+            return True         # a part is gone, so this is no run any more: the next prune removes the rest
+        os.rename(left, run_folder)
+        raise
+    return True
+
+
+def remove_left(folder):
+    """Remove what an earlier prune left: a real folder whose name is a start time and the ending of a prune.
+    Whether one was removed is the answer."""
+    removed = False
+    for name in os.listdir(folder):
+        try:
+            if not name.endswith(GONE):
+                continue
+            datetime.datetime.strptime(name[:-len(GONE)], STAMP)
+            if stat.S_ISDIR(os.lstat(folder / name).st_mode):
+                shutil.rmtree(folder / name)
+                removed = True
+        except (ValueError, OSError):
+            continue
+    return removed
+
+
+def prune_session(folder, days):
+    """Remove the runs of one session that ended long ago (see `ended_long_ago`), and return how many. A run that
+    cannot be read, or cannot be removed, is left alone."""
+    removed = 0
+    emptied = remove_left(folder)
     for run_folder, began in stamped(folder):
         try:
-            if not os.path.lexists(run_folder / CONTRACT):
-                old = began <= keep_until
-            else:
-                run = Run(run_folder)
-                closes = [moment_of(line["t"]) for line in run.log if line["kind"] == "closed"]
-                old = closes[-1] <= now() - datetime.timedelta(days=days) if closes else run.ends <= keep_until
-            if old:
-                shutil.rmtree(run_folder)
+            if ended_long_ago(run_folder, began, days) and remove_run(run_folder, began, days):
                 removed += 1
         except (Failed, OSError):
             continue
-    if removed and not os.listdir(folder):
-        os.rmdir(folder)        # only a folder that this call emptied: another one may be a start under way
+    if removed or emptied:
+        with contextlib.suppress(OSError):
+            os.rmdir(folder)    # only a folder that this call emptied, and only when a start has put no run in it
     return removed
 
 

@@ -2820,18 +2820,39 @@ test checks that on random lines in five languages.
   close: a `log` that comes second is refused (found by the adversary,
   2026-11-17; 3 of 25 runs lost a line before). A command waits 10 seconds
   for the lock, then ends with exit 2.
+- **A run is removed in two steps, and the first one is whole.** `prune`
+  holds the run as `log` and `close` do, reads it again, and gives its
+  folder another name (the start time with `.gone` behind it) in one step.
+  Then it removes the files. A command that reads at the same time sees
+  the whole run or no run. A reader that finds a run gone reads the session
+  again, up to five times. A run that a command writes to at that moment
+  is kept. A run of which no file can be removed gets its name back. What a
+  prune left under the `.gone` name (it was stopped between the two steps)
+  is no run, and the next prune removes it. Before this, two first starts
+  at one time could end with "File exists", and a prune of an older run
+  made `status` and `log` of that session end with exit 2, so a heartbeat
+  was lost (found by a second adversary on GPT-6.2 Astra, 2026-11-17, and
+  confirmed by a refuter). The test for this class runs one command and,
+  before each of its calls to the disk, a second command to its end, for
+  thirteen pairs of commands. It does not show two commands that each stop
+  in the middle, or three commands at one time.
 - **The log is what the session wrote.** No code checks that a task which
   is logged as done is done: the check of the task does, and the report
   says so.
 - **`close` with a reason always works.** A session can end a run early
   with `--why`. The reason is in the log and the tasks that are left are in
   the report under "Blocked on me", so an early end is seen, not stopped.
-- **`preflight` is advice. `allowed` is no promise that Claude Code will
-  not ask.** A script outside Claude Code cannot be exact about what its
-  permission engine does: the engine has checks that are no rules, and
-  they change with its version. The adversary found two kinds of wrong
-  `allowed` in two passes (2026-11-17); the first kind is fixed below, the
-  second is not and cannot be closed from outside:
+- **`preflight` is advice, and a best effort in both directions.**
+  `allowed` is no promise that Claude Code will not ask, and it is no
+  promise that no deny or ask rule holds for the command. A script outside
+  Claude Code cannot be exact about what its permission engine does: the
+  engine has checks that are no rules, it reads a rule in ways that its
+  docs do not give, and both change with its version. The adversary found
+  three kinds of wrong `allowed` in three passes (2026-11-17). Some cases
+  of the third kind are closed below; the kind is not, and no more code is
+  added for it (the user's decision, 2026-11-20). The guard is at the
+  point of the decision: the hook of the next version denies a prompt
+  during a run, so a wrong `allowed` costs one skipped step.
   - Claude Code 2.1.325 asks for some commands whatever the allow rules
     say: a file command (`cp`, `mv`, `mkdir`, `touch`, `rm`, `cat`, `ls`
     and others) with a path outside the working directories, and an `rm`
@@ -2845,6 +2866,17 @@ test checks that on random lines in five languages.
     calls `env A=1 rm x` `allowed`; the matcher of 2.1.325 refuses that
     match. An allow rule for a wrapper (`env`, `timeout`, `nice`, `xargs`)
     is the form to distrust.
+  - Claude Code can read a deny or ask rule more widely than this script
+    does, so a rule that stops a command is missed. Two cases are known
+    and open (third pass; the adversary ran the program's own functions):
+    - It takes `.exe` off a program name. With a deny rule for `rm`,
+      `preflight` calls `rm.exe -rf x` `allowed`.
+    - It reads `/**/` in a rule as "one folder, several, or none". With
+      the ask rule `cat src/**/secret`, `preflight` calls `cat src/secret`
+      `allowed`.
+
+    There can be others. A command that a deny rule covers is refused by
+    Claude Code when it runs, and the session logs the step as skipped.
 
   The skill text tells the session to ask about each command that writes
   or removes outside the project, also when it is `allowed`. What a wrong
@@ -2860,9 +2892,10 @@ test checks that on random lines in five languages.
   in the two settings files of the project. The two kinds of rule are read
   in opposite ways, so that a doubt does not end as `allowed`:
   - A rule that stops (deny, ask) is read widely: as written, and with each
-    run of spaces and tabs made one space in the rule and in the command,
-    as Claude Code 2.1.325 does it (the adversary ran that program's own
-    matcher, 2026-11-17). `prefix:*` counts for any command that starts
+    run of spaces and tabs made one space in the rule and in the command
+    (Claude Code 2.1.325 evens the spaces too; the adversary ran that
+    program's own matcher, 2026-11-17). This is the script's own wide
+    reading, not a copy of that program's. `prefix:*` counts for any command that starts
     with the prefix. The rule is also tried on each program name that a
     word of the command can hold, alone and with the rest of the command
     behind it: the word, what follows an `=`, every tail of a word that
@@ -2871,7 +2904,9 @@ test checks that on random lines in five languages.
     `flock --command=rm` (Claude Code takes a command out of the value of
     such an option; found by the adversary). It also holds for `echo rm`
     and for `ls --confirm`, which are called `denied` although they would
-    run.
+    run, and for `git log --format=oneline` under a deny rule `rm:*`: the
+    tail `rmat=oneline` of the option starts with `rm` (found by the
+    verifier).
   - A rule that allows is read narrowly: letter for letter, by the three
     wildcard rules of the permissions page. A `:*` beside another `*`
     allows nothing here.
@@ -2919,11 +2954,32 @@ test checks that on random lines in five languages.
   `UNATTENDED_ROOT` several levels deep, the missing parents get mode 755,
   and a link above the root is followed. The default root is in
   `~/.claude`.
-- **A `start` while another session's `prune` removes the last run of the
-  same session folder** can end with exit 2; a second try works. Not
-  reproduced in 335 tries by the adversary.
-- **Two starts of one session in the same second** end the second one with
-  exit 2 ("File exists"): the name of a run folder is its start second.
+- **Two starts of one session at one time.** In the same second, the
+  second one ends with exit 2 ("File exists"): the name of a run folder is
+  its start second. In two different seconds, both can pass the check for
+  an open run, and the session then has two open runs; the commands take
+  the newer one. A session is one agent, and it starts one run at a time.
+- **A `close` that comes while the `start` of the same run is under way**
+  can be written before the `started` line, so the log reads `closed`,
+  `started`. The run counts as closed.
+- **A run that is closed, pruned with `--days 0` and started again within
+  one second** gets the folder name of the run that was removed. A command
+  that reads at that moment can take the old contract with the new log.
+- **A log line is taken as written when the system took a part of it.**
+  The script does not compare the number of bytes that were written with
+  the length of the line. A full disk can so leave half a line, and the
+  run then cannot be read: an error, not a wrong state.
+- **A log whose last line has no line break** gets the next line onto the
+  same line, and the run then cannot be read. The script always writes the
+  break; only another program can leave such a log.
+- **`preflight` without `--project`** reads the settings of the user only,
+  and says nothing about the project rules that it did not read.
+- **The times are the clock's.** A clock that is set back can put a
+  `closed` line before the line in front of it, and can keep a run longer
+  than 14 days.
+- **A run whose log was removed by another program** reads as a run with
+  no line: open, with every task left. `prune` removes it 14 days after
+  its time limit.
 - **The script trusts its own folder.** Another program of the same user
   can change a contract or a log. The folders are mode 700 and the files
   600; a link in the place of a folder or a file is not followed.

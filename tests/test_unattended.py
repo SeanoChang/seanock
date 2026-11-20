@@ -5,7 +5,9 @@
 Each test gets its own folder for the runs (UNATTENDED_ROOT) and its own home, so no test reads or writes the
 real ~/.claude.
 """
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import random
@@ -639,6 +641,362 @@ def test_start_prunes_what_is_older_than_fourteen_days(runs):
     runs.run("close", "--why", "x", session="session-new1")
     runs.started(session="session-new2")
     assert not old.exists() and recent.exists()
+
+
+# ── two commands at one time ─────────────────────────────────────────────────
+#
+# Command X runs in this process. Before its call number k to the disk, command Y runs to its end, as a second
+# session does between two steps of X. Each case is run one time for each k. The result must be one that the two
+# commands can give one after the other: no error, no line that is lost, no run that is seen half.
+#
+# `shutil.rmtree` is one call for X, but not one step on the disk. So X gets a version of it that removes a folder
+# of plain files one file at a time, the log first, with Y possible before each file. What this does not show:
+# two commands that each stop in the middle (Y always runs to its end), and three commands.
+
+class Watch:
+    """Counts the calls of X to the disk, and runs `between` one time before call number `at`."""
+    NAMES = {"os": {"lstat", "mkdir", "listdir", "open", "replace", "rename", "rmdir", "write"},
+             "path": {"lexists"}, "shutil": {"rmtree"}, "fcntl": {"flock"}}
+
+    def __init__(self, at, between):
+        self.at, self.between, self.calls, self.armed = at, between, 0, False
+
+    def step(self):
+        if self.armed:
+            self.calls += 1
+            if self.calls == self.at:
+                self.armed = False
+                try:
+                    self.between()
+                finally:
+                    self.armed = True
+
+    def in_steps(self, folder):
+        names = sorted(os.listdir(folder), reverse=True)
+        if os.path.islink(folder) or any(os.path.isdir(os.path.join(folder, name)) for name in names):
+            self.step()
+            return shutil.rmtree(folder)
+        for name in names:
+            self.step()
+            os.unlink(os.path.join(folder, name))
+        self.step()
+        os.rmdir(folder)
+
+    def module(self, real, kind):
+        watch = self
+
+        class Stepped:
+            def __getattr__(self, name):
+                value = getattr(real, name)
+                if kind == "os" and name == "path":
+                    return watch.module(value, "path")
+                if name not in watch.NAMES[kind]:
+                    return value
+                if name == "rmtree":
+                    return watch.in_steps
+
+                def call(*args, **kwargs):
+                    watch.step()
+                    return value(*args, **kwargs)
+                return call
+        return Stepped()
+
+
+class Twice:
+    """The runs of one test folder, with each command run inside this process."""
+    A, B, C, D = "session-aaaa", "session-bbbb", "session-cccc", "session-dddd"
+
+    def __init__(self, where, monkeypatch):
+        where.mkdir()
+        self.root = where / "runs"
+        (where / "home").mkdir()
+        monkeypatch.setenv("HOME", str(where / "home"))
+        monkeypatch.setenv("UNATTENDED_ROOT", str(self.root))
+        self.monkeypatch = monkeypatch
+        self.plan = where / "plan.json"
+        self.plan.write_text(json.dumps({"tasks": [{"title": "read", "check": "it reads"}], "approvals": []}))
+        self.script = load_script()
+        self.script.LOCK_WAIT_S = 0.2       # X stands still while Y runs, so Y can wait for a lock of X in vain
+
+    def call(self, session, *args, script=None):
+        args = [str(self.plan) if arg == "PLAN" else arg for arg in args]
+        out = io.StringIO()
+        with self.monkeypatch.context() as patch, contextlib.redirect_stdout(out):
+            patch.setenv("CLAUDE_CODE_SESSION_ID", session)
+            code = (script or self.script).main(args)
+        return code, out.getvalue().splitlines()
+
+    def must(self, session, *args):
+        code, lines = self.call(session, *args)
+        assert code == 0, lines
+        return lines
+
+    def open_run(self, session):
+        return Path(self.must(session, "start", "--plan", "PLAN")[0].removeprefix("run folder: "))
+
+    def closed_run(self, session):
+        """A closed run of the session, under the name of a start time long ago: the session can start again."""
+        folder = self.open_run(session)
+        self.must(session, "close", "--why", "x")
+        return folder.rename(folder.with_name("20200101T000000Z"))
+
+    def kinds(self, folder):
+        return [json.loads(line)["kind"] for line in (folder / "log.jsonl").read_text().splitlines()]
+
+    def names(self):
+        return sorted(str(path.relative_to(self.root)) for path in self.root.rglob("*") if path.is_dir())
+
+
+START, BEAT, PRUNE = ("start", "--plan", "PLAN"), ("log", "--kind", "heartbeat", "--text", "at work"), ("prune", "--days", "0")
+CLOSE = ("close", "--why", "x")
+
+
+def no_run_yet(world):
+    return {}
+
+
+def an_old_run_and_an_open_run(world):
+    return {"old": world.closed_run(world.A), "open": world.open_run(world.A)}
+
+
+def an_old_run_only(world):
+    return {"old": world.closed_run(world.A)}
+
+
+def an_open_run_only(world):
+    return {"open": world.open_run(world.A)}
+
+
+def a_late_run_that_was_never_closed(world):
+    folder = world.open_run(world.A)
+    contract = json.loads((folder / "contract.json").read_text())
+    contract["ends"] = world.script.iso(world.script.now() - world.script.datetime.timedelta(days=20))
+    (folder / "contract.json").write_text(json.dumps(contract))
+    return {"open": folder}
+
+
+def both_start(world, made, x, y):
+    assert x[0] == 0 and y[0] == 0, (x, y)
+    for session in (world.A, world.B):
+        assert world.call(session, "status")[1][-1].startswith("unattended: open left=1"), session
+
+
+def the_heartbeat_is_written_and_the_old_run_is_gone(world, made, beat, prune):
+    assert beat == (0, ["unattended: logged heartbeat"]) and prune == (0, ["unattended: pruned 1"]), (beat, prune)
+    assert world.kinds(made["open"]) == ["started", "heartbeat"] and not made["old"].exists()
+
+
+def the_open_run_is_seen(world, made, status, prune):
+    assert status[0] == 0 and status[1][-1].startswith("unattended: open left=1"), status
+    assert prune == (0, ["unattended: pruned 1"]) and not made["old"].exists()
+
+
+def no_run_is_seen(world, made, status, prune):
+    assert status == (1, ["unattended: none"]) and prune == (0, ["unattended: pruned 1"]), (status, prune)
+    assert world.names() == [], "the run is gone whole, and so is the folder that it left empty"
+
+
+def the_new_run_is_open(world, made, start, prune):
+    assert start[0] == 0 and prune == (0, ["unattended: pruned 1"]), (start, prune)
+    assert world.call(world.A, "status")[1][-1].startswith("unattended: open left=1") and not made["old"].exists()
+
+
+def the_close_is_written(world, made, close, prune):
+    assert close[0] == 0 and close[1][-1] == "unattended: closed done=0 skipped=0 left=1", close
+    assert prune == (0, ["unattended: pruned 0"]), "the run was open, or its close held it"
+    assert world.kinds(made["open"]) == ["started", "closed"]
+
+
+def the_run_is_closed_and_kept_or_closed_and_removed(world, made, prune, close):
+    assert close[0] == 0 and close[1][-1] == "unattended: closed done=0 skipped=0 left=1", close
+    assert prune in ((0, ["unattended: pruned 0"]), (0, ["unattended: pruned 1"])), prune
+    if made["open"].exists():
+        assert prune[1] == ["unattended: pruned 0"] and world.kinds(made["open"]) == ["started", "closed"]
+    else:
+        assert prune[1] == ["unattended: pruned 1"] and world.names() == []
+
+
+def the_late_run_is_closed_and_kept_or_removed_before_its_close(world, made, prune, close):
+    if made["open"].exists():
+        assert prune == (0, ["unattended: pruned 0"]) and close[0] == 0, (prune, close)
+        assert world.kinds(made["open"]) == ["started", "closed"], "a run that is closed now is kept for its report"
+    else:
+        assert prune == (0, ["unattended: pruned 1"]) and world.names() == [], prune
+        assert close[0] == 2 and close[1][0].endswith(("this session has no open run",       # the prune was first
+                                                       "holds the run for longer than 0.2 s")), close
+
+
+def one_of_the_two_removes_it(world, made, first, second):
+    assert first[0] == 0 and second[0] == 0, (first, second)
+    assert sorted(first[1] + second[1]) == ["unattended: pruned 0", "unattended: pruned 1"], (first, second)
+    assert world.names() == []
+
+
+def flip(check):
+    return lambda world, made, x, y: check(world, made, y, x)
+
+
+AT_ONE_TIME = {
+    "two sessions start, and no folder for the runs is there yet":
+        (no_run_yet, ("A", *START), ("B", *START), both_start),
+    "a heartbeat, and another session prunes an older run of this session":
+        (an_old_run_and_an_open_run, ("A", *BEAT), ("C", *PRUNE), the_heartbeat_is_written_and_the_old_run_is_gone),
+    "a prune, and a session with an older run writes a heartbeat":
+        (an_old_run_and_an_open_run, ("C", *PRUNE), ("A", *BEAT), flip(the_heartbeat_is_written_and_the_old_run_is_gone)),
+    "status, and another session prunes an older run of this session":
+        (an_old_run_and_an_open_run, ("A", "status"), ("C", *PRUNE), the_open_run_is_seen),
+    "status, and another session prunes the only run of this session":
+        (an_old_run_only, ("A", "status"), ("C", *PRUNE), no_run_is_seen),
+    "a prune of the only run of a session, and that session asks its status":
+        (an_old_run_only, ("C", *PRUNE), ("A", "status"), flip(no_run_is_seen)),
+    "a start, and another session prunes the last run of this session":
+        (an_old_run_only, ("A", *START), ("C", *PRUNE), the_new_run_is_open),
+    "a prune of the last run of a session, and that session starts":
+        (an_old_run_only, ("C", *PRUNE), ("A", *START), flip(the_new_run_is_open)),
+    "a close, and another session prunes":
+        (an_open_run_only, ("A", *CLOSE), ("C", *PRUNE), the_close_is_written),
+    "a prune, and a session closes its run":
+        (an_open_run_only, ("C", *PRUNE), ("A", *CLOSE), the_run_is_closed_and_kept_or_closed_and_removed),
+    "two sessions prune":
+        (an_old_run_only, ("C", *PRUNE), ("D", *PRUNE), one_of_the_two_removes_it),
+    "a prune, and the close of a run that is 20 days late":
+        (a_late_run_that_was_never_closed, ("C", "prune"), ("A", *CLOSE),
+         the_late_run_is_closed_and_kept_or_removed_before_its_close),
+    "the close of a run that is 20 days late, and a prune":
+        (a_late_run_that_was_never_closed, ("A", *CLOSE), ("C", "prune"),
+         flip(the_late_run_is_closed_and_kept_or_removed_before_its_close)),
+}
+
+
+@pytest.mark.parametrize("case", AT_ONE_TIME)
+def test_two_commands_at_one_time_give_what_they_give_one_after_the_other(case, tmp_path, monkeypatch):
+    """Found by a second adversary (GPT-6.2 Astra): two first starts ended with `File exists`, and a prune of
+    another run of the session made `status` and `log` end with exit 2, so a heartbeat was lost."""
+    setup, x, y, check = AT_ONE_TIME[case]
+
+    def one(at, where):
+        world = Twice(where, monkeypatch)
+        made, got = setup(world), []
+        watch = Watch(at, lambda: got.append(world.call(getattr(world, y[0]), *y[1:])))
+        script = load_script()
+        script.os, script.shutil, script.fcntl = (watch.module(real, kind) for real, kind in
+                                                  ((os, "os"), (shutil, "shutil"), (script.fcntl, "fcntl")))
+        watch.armed = True
+        try:
+            result = world.call(getattr(world, x[0]), *x[1:], script=script)
+        finally:
+            watch.armed = False
+        return world, made, watch.calls, result, got
+
+    calls = one(None, tmp_path / "alone")[2]
+    assert calls >= 3, "X made no call that the watch counts"
+    for at in range(1, calls + 1):
+        world, made, _, result, got = one(at, tmp_path / f"at{at}")
+        assert len(got) == 1, f"Y did not run before call {at}"
+        try:
+            check(world, made, result, got[0])
+        except AssertionError as fault:
+            raise AssertionError(f"with Y before call {at} of {calls} of X: {fault}") from None
+
+
+def test_six_sessions_that_start_at_one_time_each_get_their_run(runs):
+    """The same as the first case above, with real processes and no chosen moment: it shows that the commands
+    run so, not that no moment is wrong."""
+    plan = runs.plan()
+    for turn in range(4):
+        shutil.rmtree(runs.root, ignore_errors=True)
+        sessions = [f"session-{turn}{number}00" for number in range(6)]
+        started = [subprocess.Popen([PY, "-I", str(SCRIPT), "start", "--plan", plan], cwd=runs.cwd, env=runs.env(session),
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for session in sessions]
+        for process in started:
+            out, err = process.communicate(timeout=60)
+            assert process.returncode == 0 and err == "", (out, err)
+        for session in sessions:
+            assert runs.run("status", session=session)[0] == 0
+
+
+def test_a_link_that_is_put_in_the_place_of_the_root_while_a_start_makes_it_is_not_followed(tmp_path, monkeypatch):
+    """A folder that this command made, or that another command made at the same moment, is read again."""
+    def one(at, where):
+        world = Twice(where, monkeypatch)
+        elsewhere = where / "elsewhere"
+        elsewhere.mkdir()
+        watch = Watch(at, lambda: os.path.lexists(world.root) or world.root.symlink_to(elsewhere))
+        script = load_script()
+        script.os = watch.module(os, "os")
+        watch.armed = True
+        try:
+            result = world.call(world.A, *START, script=script)
+        finally:
+            watch.armed = False
+        return watch.calls, result, world.root.is_symlink(), list(elsewhere.iterdir())
+
+    calls, result, _, _ = one(None, tmp_path / "alone")
+    assert result[0] == 0 and calls >= 3
+    put = 0
+    for at in range(1, calls + 1):       # the link comes as long as the root is not there: also right before it is made
+        _, result, is_link, written = one(at, tmp_path / f"at{at}")
+        assert written == [], (at, result, written)
+        if is_link:
+            put += 1
+            assert result[0] == 2 and "is no plain folder" in result[1][0], (at, result)
+        else:
+            assert result[0] == 0, (at, result)
+    assert put >= 3, "the link was put before each look at the root, and between the last look and the making"
+
+
+def test_a_run_of_which_a_part_was_removed_does_not_get_its_name_back(runs, monkeypatch):
+    """A prune that cannot remove every file of a run: with no file gone, the run stays a run (tested above with
+    a folder that cannot be written). With a file gone, it is no run any more."""
+    folder = runs.started()
+    runs.run("close", "--why", "x")
+    script = load_script()
+    monkeypatch.setenv("UNATTENDED_ROOT", str(runs.root))
+
+    class Stuck:
+        def rmtree(self, path):
+            os.unlink(os.path.join(path, "log.jsonl"))
+            raise PermissionError(1, "cannot remove", str(path))
+    monkeypatch.setattr(script, "shutil", Stuck())
+    assert script.main(["prune", "--days", "0"]) == 0
+    left = folder.with_name(folder.name + ".gone")
+    assert not folder.exists() and [path.name for path in left.iterdir()] == ["contract.json"]
+    assert runs.run("status") == (1, ["unattended: none"])
+    assert runs.run("prune", session="session-0009") == (0, ["unattended: pruned 0"])
+    assert not left.exists() and not left.parent.exists()
+
+
+def test_a_run_that_a_prune_left_half_removed_is_no_run_and_the_next_prune_removes_it(runs):
+    """A prune that stops between its two steps leaves the run under a name that is no start time."""
+    folder = runs.started()
+    runs.run("close", "--why", "x")
+    left = folder.rename(folder.with_name(folder.name + ".gone"))
+    (left / "log.jsonl").unlink()
+    assert runs.run("status") == (1, ["unattended: none"])
+    assert runs.run("prune", session="session-0009") == (0, ["unattended: pruned 0"]), "it was counted when it was taken"
+    assert not left.exists() and not left.parent.exists()
+
+
+def test_a_folder_with_the_ending_of_a_prune_that_is_no_run_of_a_prune_stays(runs, tmp_path):
+    folder = runs.started()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "keep.txt").write_text("keep\n")
+    (folder.parent / "20200101T000000Z.gone").symlink_to(elsewhere)      # a link with the name of a left run
+    (folder.parent / "notes.gone").mkdir()                              # no start time in front of the ending
+    assert runs.run("prune", "--days", "0", session="session-0009") == (0, ["unattended: pruned 0"])
+    assert (elsewhere / "keep.txt").exists() and (folder.parent / "notes.gone").is_dir()
+    stuck = folder.parent / "20200202T020202Z.gone"                     # one that a prune left, and cannot remove
+    stuck.mkdir()
+    (stuck / "log.jsonl").write_text("")
+    stuck.chmod(0o500)
+    try:
+        runs.run("close", "--why", "x")
+        assert runs.run("prune", "--days", "0", session="session-0009") == (0, ["unattended: pruned 1"]), \
+            "the run beside it is still pruned"
+    finally:
+        stuck.chmod(0o700)
+    assert not folder.exists() and stuck.exists()
 
 
 # ── which command would prompt ───────────────────────────────────────────────

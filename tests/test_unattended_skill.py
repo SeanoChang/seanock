@@ -129,6 +129,7 @@ def test_the_text_keeps_the_rules_of_a_run_that_nobody_watches():
         "Nothing is written into the project.",
         "also when it is `allowed`: Claude Code can ask for it whatever the rules say.",
         "`allowed` is what this script reads from the rules. It is not a promise.",
+        "It can also read a deny or ask rule more widely than this script does.",
         "A prompt during the run stops the session until the user answers.",
         "Run each command as its own command, with no pipe.",
     ):

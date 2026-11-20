@@ -153,7 +153,8 @@ instruction.
   stops is read widely.
 - `allowed` is what this script reads from the rules. It is not a promise.
   Claude Code has checks of its own that no allow rule overrides, such as
-  a path outside the working directories, and it can still ask. A prompt
+  a path outside the working directories, and it can still ask. It can
+  also read a deny or ask rule more widely than this script does. A prompt
   during the run stops the session until the user answers.
 - The log holds what the session wrote. It is not proof that a task is
   done: the check of the task is.
