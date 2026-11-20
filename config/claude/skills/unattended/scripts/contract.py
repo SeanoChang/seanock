@@ -517,7 +517,8 @@ def preflight(args):
 #
 # Claude Code starts a Stop hook when a session wants to end its turn, and a PermissionRequest hook when it is
 # about to ask the user. With no open run of the session, both are silent. With one, nobody is there to answer:
-# a stop is refused while work is left, and a prompt is denied, so the session logs the step and goes on.
+# a stop is refused while work is left, and a prompt is denied, so the session logs the step and goes on. One
+# prompt is not denied: that for a shell command which starts this script (see `own_parts`).
 
 def short(text):
     """A text of the contract or of a tool call, as one line that is short enough for a hook answer."""

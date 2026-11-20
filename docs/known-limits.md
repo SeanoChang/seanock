@@ -2861,8 +2861,11 @@ test checks that on random lines in five languages.
   of the third kind are closed below; the kind is not, and no more code is
   added for it (the user's decision, 2026-11-20). The guard is at the
   point of the decision: from 0.16.0 a hook denies a prompt during a run
-  (see "The two hooks" below), so a wrong `allowed` costs one skipped
-  step.
+  (see "The two hooks" below). So a wrong `allowed` for a command of a
+  task ends as a denied prompt, and the session logs the step as skipped.
+  This does not hold for a command that starts the script of the skill:
+  its prompt is not denied, so a wrong `allowed` there still costs a run
+  that waits.
   - Claude Code 2.1.325 asks for some commands whatever the allow rules
     say: a file command (`cp`, `mv`, `mkdir`, `touch`, `rm`, `cat`, `ls`
     and others) with a path outside the working directories, and an `rm`
@@ -2895,8 +2898,9 @@ test checks that on random lines in five languages.
   to turn that prompt into a refusal at the point of the decision: the
   setting `permissions.denyInsteadOfPrompting`, and a `PermissionRequest`
   hook that answers `deny` (Claude Code docs, read 2026-11-17). From
-  0.16.0 the hook is used; the setting is not, because it would deny in
-  every session, also when the user is at the keyboard.
+  0.16.0 the hook is used, for every prompt but one for the script of the
+  skill; the setting is not, because it would deny in every session, also
+  when the user is at the keyboard.
 
   Where it can, the script errs toward "would prompt". It reads
   the allow, ask and deny rules for `Bash` in `~/.claude/settings.json` and
@@ -3132,10 +3136,11 @@ Minor:
   reading). A log that stays unreadable gets no answer, as every fault.
 
 What the live tests show (`UNATTENDED_LIVE=1`, three more sessions on
-Sonnet, 2026-11-20), and what they do not. On the last commit all five
-live tests ran three times, and each of the 15 sessions did what its test
-expects. Before `preflight` judged the script's commands in the form of
-the plan, the control below started no run in one of two runs.
+Sonnet, 2026-11-20), and what they do not. All five live tests ran three
+times before the last change of `preflight` and two times after it, and
+each of the 25 sessions did what its test expects. Before `preflight`
+judged the script's commands in the form of the plan, the control below
+started no run in one of two runs.
 
 - A session with the skill and the hooks met a real prompt
   (`python3 selfcheck.py`, no allow rule). Claude Code started the hook

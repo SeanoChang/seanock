@@ -1297,7 +1297,7 @@ def own(runs, *args):
     return " ".join(["python3", "-I", "~/.claude/skills/unattended/scripts/contract.py", *args])
 
 
-def test_the_commands_of_the_script_itself_are_never_denied(runs):
+def test_a_command_that_starts_the_script_is_not_denied(runs):
     """A run that denied its own `close` could not be ended by its session. For these commands the hook is
     silent, so Claude Code decides as it does today."""
     folder = runs.started()
