@@ -37,9 +37,10 @@ Changed:
   run. It reads from the plan how the session starts the script. For
   `start`, `log` and `close` it judges no list of lines: the line is
   `allowed` only when one allow rule covers every command that starts so,
-  and no deny or ask rule is written for one of them. The skill text names
-  the rule to add. These lines are a best effort, as every line of
-  `preflight`.
+  and no deny or ask rule can cover one of them by the fixed text that the
+  rule begins with. A deny or ask rule that holds for a line only by the
+  words of its text is not seen. The skill text names the rule to add.
+  These lines are a best effort, as every line of `preflight`.
 
 A hook does not fail: on a fault it prints nothing and ends with exit 0,
 and Claude Code does what it does with no hook.

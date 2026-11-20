@@ -3108,6 +3108,11 @@ By design:
     for a word of a text) is tried on one command, with a random word
     behind it. Such a rule can still hold for a line of the run, by the
     words of that line.
+  - A deny or ask rule for exactly the command with nothing behind it
+    (`<start> log`, with no wildcard). The line `log *` does not see it:
+    such a rule holds only for `log` with spaces and no word behind it,
+    which no session types. For `close`, the line with no ` *` shows it
+    (found by the adversary).
   - The texts of a run. Claude Code can ask for a command by what its text
     holds (a `$(...)`, a backtick), whatever the allow rule says.
   - A session that starts the script in another way than the plan shows.
