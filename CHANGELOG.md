@@ -19,21 +19,27 @@ Added:
   refused so that the session closes the run. A stop passes when a wake-up
   is scheduled. After three refusals with no log line of the session
   between them, the hook writes `released` and lets the session stop.
-- **Permission prompt.** While the run is open, the prompt of every tool
-  is denied, with a message that tells the session to log the step as
-  skipped. So a command that `preflight` wrongly called `allowed` costs one
-  skipped step, not a session that waits all night. The script's own
-  commands are never denied, or a session could not close its run.
+- **Permission prompt.** While the run is open, a permission prompt is
+  denied, for every tool, with a message that tells the session to log the
+  step as skipped. So a command of a task that `preflight` wrongly called
+  `allowed` is denied at its prompt, and does not hold the session all
+  night. One kind of prompt is left as it is: one for a shell command that
+  starts this script (`python3 [-I] <the script> ...`), or a session could
+  not close its run. Such a prompt still waits for the user.
 - The report of `close` names each prompt that was denied and says when
   the session was let go.
 
 Changed:
 
-- `preflight` judges the script's own commands (`log`, `status`, `close`)
-  with those of the plan. A prompt for them is not denied by the hook, so
-  it would stop a run; the skill text names the allow rule to add.
+- `preflight` judges the commands of the script that a run types
+  (`status`, `log` of each kind, `close`) with those of the plan, because a
+  prompt for them is not denied by the hook and would stop a run. It reads
+  from the plan how the session starts the script, and puts a random word
+  in the place of each text, so that only an allow rule with a wildcard
+  passes. The skill text names the rule to add. These lines are a best
+  effort, as every line of `preflight`.
 
-A hook never fails: on any fault it prints nothing and ends with exit 0,
+A hook does not fail: on a fault it prints nothing and ends with exit 0,
 and Claude Code does what it does with no hook.
 
 Three more live tests (`UNATTENDED_LIVE=1`, not in CI): a real prompt that

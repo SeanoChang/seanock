@@ -3027,13 +3027,16 @@ With no open run of that session, a hook prints nothing.
 
 By design:
 
-- **A hook never fails.** It ends with exit 0 and prints one line of JSON
-  or nothing. A wrong command line, an event that cannot be read (also one
-  above 8 MB), a session id that is no plain name, a run that cannot be
-  read, and a fault of the script itself all give nothing, and Claude Code
-  then does what it does with no hook. Claude Code shows a hook that fails
-  as an error at each stop and each prompt, so a fault here would be seen
-  in every session.
+- **A hook does not fail.** It ends with exit 0 and prints one line of
+  JSON or nothing. A wrong command line, an event that cannot be read
+  (also one above 8 MB, and one that is nested some thousand levels deep),
+  a session id that is no plain name, a run that cannot be read, an answer
+  that nobody reads any more, and a fault of the script itself all give
+  nothing, and Claude Code then does what it does with no hook. Claude
+  Code shows a hook that fails as an error at each stop and each prompt,
+  so a fault here would be seen in every session. The one exception is a
+  signal that ends the process (an interrupt while the hook waits for the
+  run): Python then ends with its own message and exit code.
 - **Stop.** With an open run, a stop is refused with the next task while
   tasks are left and the time is not up. With no task left, or at the time
   limit, one stop is refused so that the session closes the run and gives
@@ -3049,26 +3052,45 @@ By design:
   read 2026-11-17); this one comes first. A session that cannot go on is
   so not held in a loop, and the report says that it was let go.
 - **Prompt.** While the run is open, the prompt of every tool is denied,
-  with a message that tells the session to log the step as skipped. This
-  holds after the time limit too, until the run is closed. The log gets a
+  with a message that tells the session to log the step as skipped. There
+  is one exception, which is the next point. This holds after the time
+  limit too, until the run is closed. The log gets a
   `denied` line with the tool and a short text of the call (the command,
   the file or the address, at most 300 characters); the same prompt again
   with no other line between adds none. The prompt is denied also when
   that line cannot be written.
-- **The script's own commands are never denied.** For a shell command
-  that starts this script (`python3 [-I] <the script> ...`), the hook is
-  silent. A run that denied its own `close` could not be ended by its
-  session, and every prompt of that session would be denied from then on.
-  Silence grants nothing: Claude Code judges the command, each part of it,
-  as it does with no hook. The cost: when no allow rule covers the script,
-  its prompt stops the run until the user answers. So `preflight` judges
-  `log`, `status` and `close` of the script with the commands of the plan,
-  and the skill text names the allow rule to add. They are judged in the
-  form in which the plan lists them, which is the form that the session
-  will type; one that the plan does not list is judged in the form of the
-  skill text (`python3 -I ~/.claude/skills/...`). A fixed form alone was
-  wrong for a script in another folder: a live session then got
-  `would-prompt` for commands that were allowed, and started no run.
+- **A shell command that starts the script is not denied.** For such a
+  command the hook is silent. A run that denied its own `close` could not
+  be ended by its session, and every prompt of that session would be
+  denied from then on. Silence grants nothing: Claude Code judges the
+  command, each part of it, as it does with no hook. The cost: a prompt
+  for such a command waits for the user, also when more commands stand
+  behind the script in the same line. A start of the script is
+  `python3 [-I] <the script> ...`: a program with the name `python` and a
+  version or none, the script as a plain path (it is known by its file,
+  so a link to it counts), spaces or tabs between them, and no control
+  character in the whole command. A command in any other form is denied
+  as every prompt, also a `close`; the first form of this check took
+  `python3;rm <the script>` and `pythonista <the script>` for a start of
+  the script too (found by the adversary).
+- **`preflight` judges the commands of the script that a run types,**
+  because a prompt for them would stop the run: `status`, `log` of each
+  kind, `close` and `close --why`, seven lines. How the session starts the
+  script is read from the plan (the first command of the plan that starts
+  the script; the skill text lists the `status` command for this), and
+  with no such command it is the form of the skill text
+  (`python3 -I ~/.claude/skills/...`). A random word stands in the place
+  of each text and of the task, new at each call, so an allow rule covers
+  such a line only when a wildcard stands where the text is. Two faults of
+  one class led to this form, both a command that the session never types:
+  a fixed start was wrong for a script in another folder (a live session
+  got `would-prompt` for commands that were allowed, and started no run),
+  and `log` with no word behind it passed an allow rule for that one text
+  (found by the adversary), so the first real `log` would have waited.
+  These seven lines are a best effort as every line of `preflight`: a
+  rule that holds for some texts only, or a rule that Claude Code got in
+  another way than a settings file, makes them wrong. A wrong `allowed`
+  here costs a run that waits at its first `log`.
 - **`log` does not take the kinds of the hooks** (`refused`, `released`,
   `denied`). This is no wall: a session can start the `hook` command
   itself, with an event that it writes, and so put a `denied` or a
@@ -3096,17 +3118,12 @@ Minor:
   did not close the run. The message says to close it.
 - **A `close` in another form than that of the skill text is denied,** as
   any prompt (`cd x && python3 ... close`, a path in quotes). The message
-  of each denial names the form that is not denied.
-- **A `preflight` line for the script's own command is a best effort,**
-  as every line of `preflight`. It knows a command of the script by its
-  file, in the form `python3 [-I] <the script> <command>`; a rule that
-  Claude Code got in another way than a settings file (a command line
-  option) is not read.
+  of each denial says to use the form of the skill text.
 - **A `denied` line holds up to 300 characters of the tool call,** and
   `close` prints it. A secret that the session wrote into a command is so
   in the log and in the report too (from an automated security note). The
-  log is mode 600 and is removed after 14 days, and the transcript of the
-  session holds the whole call already. No filter is applied: the user
+  log is mode 600 and is removed 14 days after the run ended, and the
+  transcript of the session holds the whole call already. No filter is applied: the user
   needs the text to know what to allow, and a filter for the forms of a
   secret would be a list with an open end.
 - **The prompt hook reads the run without holding it.** A log line that

@@ -27,6 +27,7 @@ import fcntl
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import sys
@@ -45,7 +46,7 @@ REFUSALS = 3                        # stops that are refused in a row, with no l
 MAX_EVENT = 8 * 1024 * 1024         # bytes of one hook event
 SHORT = 300                         # the length of a text of the contract or of a tool call inside a hook answer
 OWN = "python3 -I ~/.claude/skills/unattended/scripts/contract.py"      # this script, as the skill text starts it
-OWN_COMMANDS = ("log", "status", "close")                               # what a run needs while the user is away
+PYTHON = re.compile(r"python[0-9.]*")
 LOOK_AGAIN_S = 0.05                 # how long a hook waits before it reads a run again that it could not read
 DEFAULT_HOURS = 8.0
 MAX_HOURS = 72.0
@@ -479,6 +480,16 @@ def settings_files(project):
     return out
 
 
+def forms_of_a_run():
+    """Each command of this script that a run types, with a word that no rule can hold in the place of each
+    text and of the task. So an allow rule covers such a form only when a wildcard stands where the text is, as
+    it must for the texts of a real run: a rule for one exact command passes `status` and a bare `close` only."""
+    task, text = str(10000 + secrets.randbelow(90000)), secrets.token_hex(6)
+    return ["status", f"log --kind heartbeat --task {task} --text {text}", f"log --kind decision --text {text}",
+            f"log --kind skipped --task {task} --text {text} --needs {text}",
+            f"log --kind done --task {task} --text {text}", "close", f"close --why {text}"]
+
+
 def preflight(args):
     plan = read_plan(args.plan)
     commands = [values[0] for values in texts(plan, "commands", ("command",), as_written=True)]
@@ -486,20 +497,20 @@ def preflight(args):
     counts = dict.fromkeys(("allowed", "would-prompt", "unsure", "denied"), 0)
     lines = []
     # The run writes its log with this script. A prompt for the script itself is not denied by the hook (see
-    # `own_arguments`), so it would stop the run: its commands are judged with those of the plan. They are judged
-    # in the form in which the plan lists them, for that is the form which the session will type. One that the
-    # plan does not list is judged in the form of the skill text.
-    listed = {words[0] for words in map(own_arguments, commands) if words}
-    missing = [f"{OWN} {name}" for name in OWN_COMMANDS if name not in listed]
-    for number, command in enumerate(commands + missing):
+    # `own_parts`), so it would stop the run: the commands that a run types are judged with those of the plan.
+    # How the session starts the script is read from the plan, for that is what the session will type; a plan
+    # that starts the script nowhere gets the form of the skill text.
+    start_of_it = next((parts[0] for parts in map(own_parts, commands) if parts), OWN)
+    own = [f"{start_of_it} {form}" for form in forms_of_a_run()]
+    for number, command in enumerate(commands + own):
         verdict, why = judge(command, settings_list)
-        if number >= len(commands) or (own_arguments(command) or [""])[0] in OWN_COMMANDS:
+        if number >= len(commands):
             why += "; the run itself needs this command"
         counts[verdict] += 1
         room = MAX_TEXT - len(f"{verdict}  [{why}]")      # a long command is cut here, so that the reason stays
         lines.append(f"{verdict} {command if len(command) <= room else command[:room - 1] + '…'} [{why}]")
     summary = " ".join(f"{name}={count}" for name, count in counts.items())
-    return (0 if counts["allowed"] == len(commands) + len(missing) else 1), lines + [f"unattended: preflight {summary}"]
+    return (0 if counts["allowed"] == len(commands) + len(own) else 1), lines + [f"unattended: preflight {summary}"]
 
 
 # ── the two hooks ────────────────────────────────────────────────────────────
@@ -567,19 +578,25 @@ def stop_answer(run, event):
     return {"decision": "block", "reason": reason}
 
 
-def own_arguments(command):
-    """The words behind the script in a shell command that starts this script (`python3 [-I] <this file> ...`),
-    or None for every other command. Such a command is never denied by the hook, or a session could not close
-    its run. The hook is silent for it, so it grants nothing: Claude Code judges the command, each part of it,
-    as it does with no hook."""
+def own_parts(command):
+    """(how the script is started, the words behind it) for a shell command that starts this script, or None
+    for every other command. The start is `python3 [-I] <this file>`: a program whose name is `python` with a
+    version or none, the script as a plain path, spaces or tabs between them, and no control character in the
+    whole command. The hook does not deny such a command, or a session could not close its run. It is silent
+    for it, so it grants nothing: Claude Code judges the command, each part of it, as it does with no hook."""
+    if any(not ch.isprintable() and ch != "\t" for ch in command):
+        return None
     words = command.split()
-    if len(words) < 2 or not os.path.basename(words[0]).startswith("python"):
+    if len(words) < 2 or not PYTHON.fullmatch(os.path.basename(words[0])):
         return None
     at = 2 if words[1] == "-I" and len(words) > 2 else 1
+    if not all(WORD.fullmatch(word) for word in words[:at + 1]):
+        return None
     try:
-        return words[at + 1:] if os.path.samefile(os.path.expanduser(words[at]), __file__) else None
+        same = os.path.samefile(os.path.expanduser(words[at]), __file__)
     except (OSError, ValueError):
         return None
+    return (" ".join(words[:at + 1]), words[at + 1:]) if same else None
 
 
 def asked_for(event):
@@ -595,12 +612,13 @@ def asked_for(event):
 
 def permission_answer(run, event):
     """The answer that denies the prompt, or None when the prompt stays. Every tool is denied while the run is
-    open, also after its time limit: the prompts come back with the close."""
+    open, also after its time limit: the prompts come back with the close. The one prompt that stays is for a
+    shell command that starts this script (see `own_parts`)."""
     if asked_for(event) is None:
         return None
     given = event.get("tool_input")
     command = given.get("command") if isinstance(given, dict) else None
-    if event["tool_name"] == "Bash" and isinstance(command, str) and own_arguments(command) is not None:
+    if event["tool_name"] == "Bash" and isinstance(command, str) and own_parts(command) is not None:
         return None
     message = ("An unattended run of this session is open, so nobody can answer this prompt: it is denied. Do not "
                "try the same call in another form. Log the step with --kind skipped, say with --needs what the user "
@@ -644,15 +662,19 @@ def hook_answer(argv, data):
 
 
 def hook(argv):
-    """Answer one event of Claude Code. Whatever goes wrong, nothing is printed and the exit code is 0: a hook that
-    fails is shown as an error at each stop and each prompt of every session, and it must not decide anything."""
+    """Answer one event of Claude Code. On a fault, nothing is printed and the exit code is 0: a hook that fails
+    is shown as an error at each stop and each prompt of every session, and it must not decide anything."""
     try:
         answer = hook_answer(argv, sys.stdin.buffer.read(MAX_EVENT + 1))
         text = json.dumps(answer) if answer is not None else ""
     except Exception:
         text = ""
-    if text:
-        print(text, flush=True)
+    try:
+        if text:
+            print(text, flush=True)
+    except OSError:             # nobody reads the answer any more: no error for that, now or when Python ends
+        with contextlib.suppress(OSError):
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
     return 0
 
 

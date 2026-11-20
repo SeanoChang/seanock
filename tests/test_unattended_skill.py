@@ -69,9 +69,10 @@ def test_the_plan_of_the_text_starts_a_run(runs):
     (runs.home / ".claude" / "skills").mkdir(parents=True)
     (runs.home / ".claude" / "skills" / "unattended").symlink_to(SKILL)       # as the installer links it
     code, lines = runs.run("preflight", "--plan", str(path), "--project", str(runs.cwd))
-    assert code == 1 and lines[-1] == "unattended: preflight allowed=0 would-prompt=5 unsure=0 denied=0", \
-        "two commands of the tasks and the three of the script, each one time"
-    assert [line.endswith("; the run itself needs this command]") for line in lines[:-1]] == [False, False, True, True, True]
+    assert code == 1 and lines[-1] == "unattended: preflight allowed=0 would-prompt=10 unsure=0 denied=0", \
+        "two commands of the tasks, the one that shows how the script is started, and the seven that a run types"
+    assert [line.endswith("; the run itself needs this command]") for line in lines[:-1]] == [False] * 3 + [True] * 7
+    assert all(line.split(" ", 1)[1].startswith(START + " ") for line in lines[2:-1])
     code, lines = runs.run("start", "--plan", str(path))
     assert code == 0 and re.fullmatch(r"unattended: started tasks=1 ends=\S+Z", lines[-1])
     contract = json.loads((runs.root / SESSION / lines[0].rsplit("/", 1)[1] / "contract.json").read_text())
@@ -137,11 +138,13 @@ def test_the_text_keeps_the_rules_of_a_run_that_nobody_watches():
         "`allowed` is what this script reads from the rules. It is not a promise.",
         "It can also read a deny or ask rule more widely than this script does.",
         "as one that stops while the user is away; some of them would run.",
-        "With the hooks, a prompt during the run is denied and its step is skipped.",
-        "With no hooks in the settings, a prompt during the run stops the session until the user answers.",
-        "**A stop is refused while tasks are left.** Take the task that the refusal names.",
-        "**A prompt is denied while the run is open.** Do not try the same call in another form.",
-        "Until the close, every prompt is denied, also one that the user would now answer.",
+        "a prompt for this script itself is not denied and waits.",
+        "With no hooks in the settings, every prompt during the run stops the session until the user answers.",
+        "**When a stop is refused,** take the task that the refusal names.",
+        "**When a prompt is denied,** do not try the same call in another form.",
+        "Until the close, a prompt is denied also when the user would now answer it.",
+        "the hook does not deny that form.",
+        "A rule for one exact command of the script is not enough: the texts differ each time.",
         "The hook does not deny a prompt for them, so such a prompt would stop the run until the user answers.",
         "`Bash(python3 -I ~/.claude/skills/unattended/scripts/contract.py *)`.",
         "Run each command as its own command, with no pipe.",
