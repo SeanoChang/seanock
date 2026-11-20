@@ -1246,6 +1246,8 @@ def test_a_prompt_during_an_open_run_is_denied_and_the_session_is_told_what_to_d
     message = runs.asked(command="git push origin work", description="push the branch")
     assert "it is denied" in message and "--kind skipped" in message and "--needs" in message
     assert 'close --why "the user is back"' in message
+    assert "as its own command, in the form of the skill text" in message, "a close in another form would be denied too"
+    assert len(message) < 1000
     assert runs.log_lines(folder)[-1] | {"t": ""} == {"t": "", "kind": "denied", "tool": "Bash", "text": "git push origin work"}
 
 
@@ -1488,11 +1490,33 @@ def test_a_fault_inside_a_hook_is_no_answer_and_no_traceback(runs, monkeypatch, 
     assert capsys.readouterr() == ("", "")
 
 
-def test_the_session_cannot_write_the_lines_of_the_hooks(runs):
+def test_log_does_not_take_the_kinds_of_the_hooks(runs):
     runs.started()
     for kind in ("refused", "released", "denied", "started", "closed"):
         code, lines = runs.run("log", "--kind", kind, "--text", "x")
         assert code == 2 and "invalid choice" in lines[0], (kind, lines)
+
+
+def test_a_prompt_that_comes_while_a_log_line_is_half_written_is_still_denied(tmp_path, monkeypatch):
+    """Found by the verifier, by reading: the hook reads the run without holding it. A line that is on the disk
+    in part at that moment made the run unreadable, the hook was silent, and the prompt waited for the user."""
+    world = Twice(tmp_path / "half", monkeypatch)
+    folder = world.open_run(world.A)
+    log, whole = folder / "log.jsonl", (folder / "log.jsonl").read_bytes()
+    state = []
+
+    def half_a_line_at_the_first_look(name, args):
+        if name == "open" and str(args[0]).endswith("log.jsonl") and not state:
+            state.append("half")
+            log.write_bytes(whole + b'{"t": "2026-11-20T00:00:00Z", "kind": "hear')
+        elif state == ["half"] and name == "open" and str(args[0]).endswith("contract.json"):
+            state.append("whole")                # the next read of the run comes after the writer is done
+            log.write_bytes(whole + b'{"t": "2026-11-20T00:00:00Z", "kind": "heartbeat", "text": "x"}\n')
+    code, lines = world.watched(world.A, *ASKED, each=half_a_line_at_the_first_look)
+    assert code == 0 and json.loads(lines[0])["hookSpecificOutput"]["decision"]["behavior"] == "deny", lines
+    assert state == ["half", "whole"] and world.kinds(folder) == ["started", "heartbeat", "denied"]
+    log.write_bytes(whole + b'{"t": "2026-11-20T00:00:00Z", "kind": "hear')
+    assert world.call(world.A, *ASKED) == (0, []), "a log that stays damaged gets no answer"
 
 
 def test_the_report_counts_the_refusals_and_names_what_was_denied(runs):
@@ -1611,6 +1635,25 @@ def test_preflight_names_each_command_that_would_prompt(runs):
     assert lines[2] == "denied git push --force origin work [deny: git push --force *]", "a deny rule wins over an allow rule"
     assert lines[3] == "would-prompt gh pr merge 7 --squash [ask: gh pr merge *]"
     assert "never printed" not in "\n".join(lines)
+
+
+def test_the_commands_of_the_script_are_judged_in_the_form_in_which_the_plan_lists_them(runs):
+    """Found by a live session: the script ran from another folder than the one of the skill text. `preflight`
+    judged a form that the session would never type, called it `would-prompt`, and the session started no run."""
+    mine = f"/usr/bin/python3 -I {SCRIPT}"
+    settings(runs, "user", allow=[f"Bash({mine} *)"])
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[f"{mine} log", f"{mine} status", f"{mine} close"]))
+    assert (code, lines[-1]) == (0, "unattended: preflight allowed=3 would-prompt=0 unsure=0 denied=0"), lines
+    assert lines[:-1] == [f"allowed {mine} {name} [allow: {mine} *; the run itself needs this command]"
+                          for name in ("log", "status", "close")], "and no line for the form of the skill text"
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[f"{mine} log --kind heartbeat", "git status"]))
+    assert code == 1 and [line.split(" [")[0] for line in lines[:-1]] == [
+        f"allowed {mine} log --kind heartbeat", "would-prompt git status", f"would-prompt {OWN} status", f"would-prompt {OWN} close"], \
+        "a command of the script that the plan does not list is judged in the form of the skill text"
+    assert not lines[1].endswith("needs this command]") and all(line.endswith("needs this command]") for line in lines[2:4])
+    code, lines = runs.run("preflight", "--plan", runs.plan(commands=[f"echo {mine} log", f"{mine}", f"{mine} prune"]))
+    assert [line.split(" ", 1)[0] for line in lines[-4:-1]] == ["would-prompt"] * 3 and len(lines) == 7, \
+        "a command that only names the script, or starts another command of it, lists none of the three"
 
 
 def test_a_deny_or_ask_rule_with_a_colon_is_read_in_its_wider_sense(runs):

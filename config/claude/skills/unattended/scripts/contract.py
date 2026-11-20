@@ -46,6 +46,7 @@ MAX_EVENT = 8 * 1024 * 1024         # bytes of one hook event
 SHORT = 300                         # the length of a text of the contract or of a tool call inside a hook answer
 OWN = "python3 -I ~/.claude/skills/unattended/scripts/contract.py"      # this script, as the skill text starts it
 OWN_COMMANDS = ("log", "status", "close")                               # what a run needs while the user is away
+LOOK_AGAIN_S = 0.05                 # how long a hook waits before it reads a run again that it could not read
 DEFAULT_HOURS = 8.0
 MAX_HOURS = 72.0
 KEEP_DAYS = 14
@@ -485,17 +486,20 @@ def preflight(args):
     counts = dict.fromkeys(("allowed", "would-prompt", "unsure", "denied"), 0)
     lines = []
     # The run writes its log with this script. A prompt for the script itself is not denied by the hook (see
-    # `own_command`), so it would stop the run: its commands are judged with those of the plan.
-    own = [f"{OWN} {name}" for name in OWN_COMMANDS]
-    for number, command in enumerate(commands + own):
+    # `own_arguments`), so it would stop the run: its commands are judged with those of the plan. They are judged
+    # in the form in which the plan lists them, for that is the form which the session will type. One that the
+    # plan does not list is judged in the form of the skill text.
+    listed = {words[0] for words in map(own_arguments, commands) if words}
+    missing = [f"{OWN} {name}" for name in OWN_COMMANDS if name not in listed]
+    for number, command in enumerate(commands + missing):
         verdict, why = judge(command, settings_list)
-        if number >= len(commands):
+        if number >= len(commands) or (own_arguments(command) or [""])[0] in OWN_COMMANDS:
             why += "; the run itself needs this command"
         counts[verdict] += 1
         room = MAX_TEXT - len(f"{verdict}  [{why}]")      # a long command is cut here, so that the reason stays
         lines.append(f"{verdict} {command if len(command) <= room else command[:room - 1] + '…'} [{why}]")
     summary = " ".join(f"{name}={count}" for name, count in counts.items())
-    return (0 if counts["allowed"] == len(commands) + len(own) else 1), lines + [f"unattended: preflight {summary}"]
+    return (0 if counts["allowed"] == len(commands) + len(missing) else 1), lines + [f"unattended: preflight {summary}"]
 
 
 # ── the two hooks ────────────────────────────────────────────────────────────
@@ -563,18 +567,19 @@ def stop_answer(run, event):
     return {"decision": "block", "reason": reason}
 
 
-def own_command(command):
-    """Whether a shell command starts this script: `python3 [-I] <this file> ...`. Such a command is never
-    denied by the hook, or a session could not close its run. The hook is silent for it, so it grants nothing:
-    Claude Code judges the command, each part of it, as it does with no hook."""
+def own_arguments(command):
+    """The words behind the script in a shell command that starts this script (`python3 [-I] <this file> ...`),
+    or None for every other command. Such a command is never denied by the hook, or a session could not close
+    its run. The hook is silent for it, so it grants nothing: Claude Code judges the command, each part of it,
+    as it does with no hook."""
     words = command.split()
     if len(words) < 2 or not os.path.basename(words[0]).startswith("python"):
-        return False
-    path = words[2] if words[1] == "-I" and len(words) > 2 else words[1]
+        return None
+    at = 2 if words[1] == "-I" and len(words) > 2 else 1
     try:
-        return os.path.samefile(os.path.expanduser(path), __file__)
+        return words[at + 1:] if os.path.samefile(os.path.expanduser(words[at]), __file__) else None
     except (OSError, ValueError):
-        return False
+        return None
 
 
 def asked_for(event):
@@ -595,12 +600,14 @@ def permission_answer(run, event):
         return None
     given = event.get("tool_input")
     command = given.get("command") if isinstance(given, dict) else None
-    if event["tool_name"] == "Bash" and isinstance(command, str) and own_command(command):
+    if event["tool_name"] == "Bash" and isinstance(command, str) and own_arguments(command) is not None:
         return None
     message = ("An unattended run of this session is open, so nobody can answer this prompt: it is denied. Do not "
                "try the same call in another form. Log the step with --kind skipped, say with --needs what the user "
                "must allow or decide, and take the next task. If the user is back and has written to you, close "
-               'the run first (close --why "the user is back"); after the close, prompts work again.')
+               'the run first (close --why "the user is back"); after the close, prompts work again. Run a command '
+               "of the contract script as its own command, in the form of the skill text: in that form it is "
+               "not denied.")
     return {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
                                    "decision": {"behavior": "deny", "message": message}}}
 
@@ -624,7 +631,11 @@ def hook_answer(argv, data):
     if argv[1] == "stop":
         with the_open_run(session) as run:
             return stop_answer(run, event)
-    run = open_run(session)
+    try:
+        run = open_run(session)
+    except Failed:              # the run is read without holding it: a line that is being written is whole a
+        time.sleep(LOOK_AGAIN_S)                                                                # moment later
+        run = open_run(session)
     answer = permission_answer(run, event) if run is not None else None
     if answer is not None:
         with contextlib.suppress(Exception):    # the prompt is denied also when the line for it cannot be written

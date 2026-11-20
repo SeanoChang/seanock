@@ -66,8 +66,12 @@ def test_the_plan_of_the_text_starts_a_run(runs):
     (plan,) = blocks("json")
     path = runs.tmp / "plan.json"
     path.write_text(plan)
+    (runs.home / ".claude" / "skills").mkdir(parents=True)
+    (runs.home / ".claude" / "skills" / "unattended").symlink_to(SKILL)       # as the installer links it
     code, lines = runs.run("preflight", "--plan", str(path), "--project", str(runs.cwd))
-    assert code == 1 and lines[-1] == "unattended: preflight allowed=0 would-prompt=5 unsure=0 denied=0"
+    assert code == 1 and lines[-1] == "unattended: preflight allowed=0 would-prompt=5 unsure=0 denied=0", \
+        "two commands of the tasks and the three of the script, each one time"
+    assert [line.endswith("; the run itself needs this command]") for line in lines[:-1]] == [False, False, True, True, True]
     code, lines = runs.run("start", "--plan", str(path))
     assert code == 0 and re.fullmatch(r"unattended: started tasks=1 ends=\S+Z", lines[-1])
     contract = json.loads((runs.root / SESSION / lines[0].rsplit("/", 1)[1] / "contract.json").read_text())
@@ -191,9 +195,15 @@ ACCEPT = "import calc\nassert calc.add(2, 3) == 5 and calc.double(4) == 8 and ca
 
 
 def live_project(tmp_path):
+    """The project of a live session. Its local settings hold the one allow rule that the session gets on its
+    command line (see `live_session`). The session does not read that file, for it runs in restricted mode; it
+    is there for `preflight`, which reads the settings files and not a command line. Without it, `preflight`
+    calls the script's own commands `would-prompt`, and a session that takes that for true starts no run."""
     runs = Runs(tmp_path)
     (runs.cwd / "calc.py").write_text(CALC)
     (runs.cwd / "selfcheck.py").write_text(SELFCHECK)
+    (runs.cwd / ".claude").mkdir()
+    (runs.cwd / ".claude" / "settings.local.json").write_text(json.dumps({"permissions": {"allow": [f"Bash({PY} -I {SCRIPT} *)"]}}))
     return runs
 
 

@@ -39,13 +39,18 @@ run and for no other:
    {
      "hours": 8,
      "tasks": [{"title": "add the parser", "check": "pytest tests/test_parser.py passes"}],
-     "commands": ["git push origin work", "python3 -m pytest tests"],
+     "commands": ["git push origin work", "python3 -m pytest tests",
+                  "python3 -I ~/.claude/skills/unattended/scripts/contract.py log",
+                  "python3 -I ~/.claude/skills/unattended/scripts/contract.py status",
+                  "python3 -I ~/.claude/skills/unattended/scripts/contract.py close"],
      "approvals": []
    }
    ```
 
    `hours` is the time that the user named, or 8. `commands` holds each shell
-   command that the tasks will need, written as you will run it.
+   command that the tasks will need, written as you will run it. The last
+   three are the `log`, `status` and `close` commands of this script: the
+   run itself needs them. Write them as you will run them too.
 3. **Check the commands against the permission rules:**
 
    ```bash
@@ -56,11 +61,11 @@ run and for no other:
    command that is `would-prompt`, `unsure` or `denied` as one that stops
    while the user is away; some of them would run.
 
-   The last three lines are for this script's own commands (`log`,
-   `status`, `close`), which the run needs. The hook does not deny a prompt
-   for them, so such a prompt would stop the run until the user answers.
-   When one of them is not `allowed`, ask the user to add this allow rule
-   before the run starts:
+   A line that ends with "the run itself needs this command" is for one of
+   this script's own commands. The hook does not deny a prompt for them, so
+   such a prompt would stop the run until the user answers. When one of
+   them is not `allowed`, ask the user to add this allow rule before the
+   run starts:
    `Bash(python3 -I ~/.claude/skills/unattended/scripts/contract.py *)`.
 4. **Ask everything in one dialog** (`AskUserQuestion`), before the user
    goes:
@@ -119,7 +124,8 @@ More rules for the run:
   them, the hook lets you stop: use that only when you cannot go on.
 - **When the user writes to you, the run is watched again.** Close it first
   (`close --why "the user is back"`), then answer. Until the close, every
-  prompt is denied, also one that the user would now answer.
+  prompt is denied, also one that the user would now answer. Run `close`
+  as its own command, in the form above: in that form it is never denied.
 - Take no task that is not in the contract.
 
 `status` shows the state of each task at any time.

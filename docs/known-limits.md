@@ -3063,9 +3063,18 @@ By design:
   as it does with no hook. The cost: when no allow rule covers the script,
   its prompt stops the run until the user answers. So `preflight` judges
   `log`, `status` and `close` of the script with the commands of the plan,
-  and the skill text names the allow rule to add.
-- **The session cannot write the lines of the hooks.** `log` takes
-  `heartbeat`, `decision`, `skipped` and `done` only.
+  and the skill text names the allow rule to add. They are judged in the
+  form in which the plan lists them, which is the form that the session
+  will type; one that the plan does not list is judged in the form of the
+  skill text (`python3 -I ~/.claude/skills/...`). A fixed form alone was
+  wrong for a script in another folder: a live session then got
+  `would-prompt` for commands that were allowed, and started no run.
+- **`log` does not take the kinds of the hooks** (`refused`, `released`,
+  `denied`). This is no wall: a session can start the `hook` command
+  itself, with an event that it writes, and so put a `denied` or a
+  `refused` line into its own log (found by the verifier). The effect is a
+  wrong line in the report, or a release that comes sooner. The log is
+  what the session wrote, as said above.
 - **Cost.** Each stop and each prompt of every session starts the script
   one time: 30 ms with no open run (the median of 30 starts on the build
   machine, 2026-11-20).
@@ -3085,12 +3094,31 @@ Minor:
   still waits for the user.
 - **The first prompt after the user is back is denied** when the session
   did not close the run. The message says to close it.
+- **A `close` in another form than that of the skill text is denied,** as
+  any prompt (`cd x && python3 ... close`, a path in quotes). The message
+  of each denial names the form that is not denied.
 - **A `preflight` line for the script's own command is a best effort,**
-  as every line of `preflight`: it reads the command in the form of the
-  skill text (`python3 -I ~/.claude/skills/...`), letter for letter.
+  as every line of `preflight`. It knows a command of the script by its
+  file, in the form `python3 [-I] <the script> <command>`; a rule that
+  Claude Code got in another way than a settings file (a command line
+  option) is not read.
+- **A `denied` line holds up to 300 characters of the tool call,** and
+  `close` prints it. A secret that the session wrote into a command is so
+  in the log and in the report too (from an automated security note). The
+  log is mode 600 and is removed after 14 days, and the transcript of the
+  session holds the whole call already. No filter is applied: the user
+  needs the text to know what to allow, and a filter for the forms of a
+  secret would be a list with an open end.
+- **The prompt hook reads the run without holding it.** A log line that
+  is on the disk in part at that moment makes the run unreadable; the hook
+  then waits 50 ms and reads one more time (found by the verifier, by
+  reading). A log that stays unreadable gets no answer, as every fault.
 
 What the live tests show (`UNATTENDED_LIVE=1`, three more sessions on
-Sonnet, one run each, 2026-11-20), and what they do not:
+Sonnet, 2026-11-20), and what they do not. On the last commit all five
+live tests ran three times, and each of the 15 sessions did what its test
+expects. Before `preflight` judged the script's commands in the form of
+the plan, the control below started no run in one of two runs.
 
 - A session with the skill and the hooks met a real prompt
   (`python3 selfcheck.py`, no allow rule). Claude Code started the hook
@@ -3114,6 +3142,10 @@ Not tested:
   wake-up in `session_crons`.
 - Two hooks of one session at the same time, beyond one hook beside a
   `close` or a `prune`.
+- What the session id of an event is after `/clear` or `--resume`. With
+  another id, the hooks are silent for the old run; with the same id, a
+  run that is still open denies the prompts until it is closed.
+- Windows, and other hooks in the user's settings beside these two.
 
 ### Not tested
 
