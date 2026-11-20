@@ -2981,8 +2981,11 @@ test checks that on random lines in five languages.
   no line: open, with every task left. `prune` removes it 14 days after
   its time limit.
 - **The script trusts its own folder.** Another program of the same user
-  can change a contract or a log. The folders are mode 700 and the files
-  600; a link in the place of a folder or a file is not followed.
+  can change a contract or a log. It can also give a run folder the
+  `.gone` ending, and the next prune then removes that run without the 14
+  days; a program that can do this can remove the run itself. The folders
+  are mode 700 and the files 600; a link in the place of a folder or a
+  file is not followed.
 - **The time limit is not enforced by this version.** `status` and `close`
   read it, and the skill text tells the session to close at the limit.
   Nothing stops a session that goes on.
